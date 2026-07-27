@@ -287,6 +287,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	if !ok {
 		return
 	}
+	canonicalBody := body
 	// body-signal compact：上游 unary 等待期间向下游发 SSE 注释行心跳，防止
 	// 反向代理空闲超时掐断长压缩连接（#3887）。首拍延迟一个心跳间隔，快速
 	// 失败仍走 JSON+状态码链路；未标记客户端流式或间隔为 0 时是 no-op。
@@ -312,12 +313,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Model is not supported by this OpenAI-compatible endpoint for composite groups")
 		return
 	}
-	if apiKey.Group != nil && apiKey.Group.Platform == service.PlatformOpenAI {
-		if cappedBody, changed := service.ApplyOpenAIReasoningEffortPolicy(body, apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings); changed {
-			body = cappedBody
-		}
-	}
-
 	reqStream, ok := parseOpenAICompatibleStream(body)
 	if !ok {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", invalidStreamFieldTypeMessage)
@@ -353,23 +348,31 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.openAISecurityAuditError(c, decision)
 		return
 	}
-	// Include the group-level alias in model-scope matching. The directive is
-	// about the effective GPT target, not only the client-facing model name.
-	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
-	if !isOpenAIRemoteCompactPath(c) {
-		if injectedBody, _, injectErr := injectOptionalResponsesInstructions(body, apiKey, reqModel, channelMapping.MappedModel); injectErr != nil {
-			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to inject optional instructions")
-			return
-		} else {
-			body = injectedBody
-		}
+	// Build a request-scoped view so a later group fallback can replace every
+	// group-sensitive input (policy, prompt, mapping, billing and usage) together.
+	subscription, _ := middleware2.GetSubscriptionFromContext(c)
+	requireCompact := isOpenAIRemoteCompactPath(c)
+	currentState, err := h.prepareOpenAIGroupRequestState(
+		c.Request.Context(),
+		apiKey,
+		subscription,
+		canonicalBody,
+		reqModel,
+		openAIGroupRequestResponses,
+		!requireCompact,
+	)
+	if err != nil {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to inject optional instructions")
+		return
 	}
+	body = currentState.body
+	channelMapping := currentState.channelMapping
 
 	// 使用 IsExplicitImageGenerationIntent 排除被动 image_gen namespace 声明。
 	// Codex 在所有请求中被动声明 image_gen namespace，宽泛检测会导致禁了生图的
 	// 分组中所有 Codex 请求被 403（#4447），并误占生图并发槽位。
 	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, body)
-	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
+	if imageIntent && !service.GroupAllowsImageGeneration(currentState.apiKey.Group) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
 	}
@@ -385,7 +388,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 	}
 
-	forwardBody := openAIModelMappedBody(body, channelMapping.Mapped, channelMapping.MappedModel, h.gatewayService.ReplaceModelInBody)
+	forwardBody := currentState.forwardBody
 	seedOpenAIForwardImageIntentHint(c, channelMapping.Mapped, imageIntent)
 
 	// 提前校验 function_call_output 是否具备可关联上下文，避免上游 400。
@@ -398,9 +401,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		service.BindErrorPassthroughService(c, h.errorPassthroughService)
 	}
 
-	// Get subscription info (may be nil)
-	subscription, _ := middleware2.GetSubscriptionFromContext(c)
-	requestPlatform := openAICompatibleRequestPlatform(c.Request.Context(), apiKey)
+	requestPlatform := openAICompatibleRequestPlatform(c.Request.Context(), currentState.apiKey)
 
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	routingStart := time.Now()
@@ -415,7 +416,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 
 	// 2. Re-check billing eligibility after wait
-	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
+	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), currentState.apiKey.User, currentState.apiKey, currentState.apiKey.Group, currentState.subscription, service.QuotaPlatform(c.Request.Context(), currentState.apiKey)); err != nil {
 		reqLog.Info("openai.billing_eligibility_check_failed", zap.Error(err))
 		status, code, message, retryAfter := billingErrorDetails(err)
 		if retryAfter > 0 {
@@ -427,10 +428,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	// Generate session hash (header first; fallback to prompt_cache_key)
 	sessionHash := h.gatewayService.GenerateSessionHash(c, sessionHashBody)
-	if h.rejectIfCyberSessionBlocked(c, apiKey, sessionHashBody, reqModel, cyberBlockFormatResponses) {
+	if h.rejectIfCyberSessionBlocked(c, currentState.apiKey, sessionHashBody, reqModel, cyberBlockFormatResponses) {
 		return
 	}
-	requireCompact := isOpenAIRemoteCompactPath(c)
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
@@ -440,6 +440,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	var lastFailoverErr *service.UpstreamFailoverError
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
 	var passthroughFailoverState openAIPassthroughFailoverState
+	fallbackUsed := false
 
 	// 生图意图的 /v1/responses 请求必须调度到确实支持 Responses API 的账号，否则
 	// 会在 forward 阶段被静默降级为无法生图的 Chat Completions 直转（#4417）。
@@ -447,6 +448,64 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// 复用前置权限与并发阶段在未修改 body 上确认的显式生图意图，避免大 tools 请求重复扫描。
 	// 该判断已排除 Codex 被动 image_gen namespace，避免 CC-only 账号被误过滤（#4476）。
 	requiredCapability := openAIResponsesRequiredCapability(imageIntent, requestPlatform)
+	tryGroupFallback := func(reason string) (switched bool, terminal bool) {
+		if fallbackUsed || currentState == nil || currentState.apiKey == nil {
+			return false, false
+		}
+		fallbackState, fallbackErr := h.resolveOpenAIAvailabilityFallbackState(
+			c.Request.Context(),
+			currentState.apiKey,
+			canonicalBody,
+			reqModel,
+			openAIGroupRequestResponses,
+			!requireCompact,
+		)
+		if fallbackErr != nil {
+			reqLog.Warn("openai.group_fallback_resolve_failed", zap.String("reason", reason), zap.Error(fallbackErr))
+			return false, false
+		}
+		if fallbackState == nil {
+			return false, false
+		}
+		if imageIntent && !service.GroupAllowsImageGeneration(fallbackState.apiKey.Group) {
+			reqLog.Warn("openai.group_fallback_image_not_allowed",
+				zap.String("reason", reason),
+				zap.Any("fallback_group_id", fallbackState.apiKey.GroupID),
+			)
+			return false, false
+		}
+		if fallbackErr := h.checkOpenAIAvailabilityFallbackBilling(c, fallbackState); fallbackErr != nil {
+			reqLog.Info("openai.group_fallback_billing_eligibility_failed",
+				zap.String("reason", reason),
+				zap.Any("fallback_group_id", fallbackState.apiKey.GroupID),
+				zap.Error(fallbackErr),
+			)
+			h.writeOpenAIBillingError(c, fallbackErr, streamStarted)
+			return false, true
+		}
+
+		fromGroupID := currentState.apiKey.GroupID
+		currentState = fallbackState
+		bindOpenAIGroupRequestState(c, currentState)
+		body = currentState.body
+		forwardBody = currentState.forwardBody
+		channelMapping = currentState.channelMapping
+		requestPlatform = openAICompatibleRequestPlatform(c.Request.Context(), currentState.apiKey)
+		requiredCapability = openAIResponsesRequiredCapability(imageIntent, requestPlatform)
+		switchCount = 0
+		firstOutputTimeoutSwitchCount = 0
+		sameAccountRetryCount = make(map[int64]int)
+		lastFailoverErr = nil
+		oauth429FailoverState = service.OpenAIOAuth429FailoverState{}
+		fallbackUsed = true
+		seedOpenAIForwardImageIntentHint(c, channelMapping.Mapped, imageIntent)
+		reqLog.Warn("openai.group_fallback_activated",
+			zap.String("reason", reason),
+			zap.Any("from_group_id", fromGroupID),
+			zap.Any("to_group_id", currentState.apiKey.GroupID),
+		)
+		return true, false
+	}
 
 	for {
 		// Streaming Forward intentionally detaches the upstream request so usage can
@@ -459,7 +518,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
 			c.Request.Context(),
-			apiKey.GroupID,
+			currentState.apiKey.GroupID,
 			previousResponseID,
 			sessionHash,
 			reqModel,
@@ -482,16 +541,31 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			)
 			if len(failedAccountIDs) == 0 {
 				if errors.Is(err, service.ErrNoAvailableCompactAccounts) {
+					if switched, terminal := tryGroupFallback("no_compact_account"); terminal {
+						return
+					} else if switched {
+						continue
+					}
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "compact_not_supported", "No available accounts support /responses/compact", streamStarted)
 					return
 				}
-				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, requestPlatform)
+				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, currentState.apiKey, reqModel, reqModel, requestPlatform)
 				if !cls.ModelNotFound {
+					if switched, terminal := tryGroupFallback("no_available_account"); terminal {
+						return
+					} else if switched {
+						continue
+					}
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 				}
 				h.handleStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
 				return
+			}
+			if switched, terminal := tryGroupFallback("accounts_exhausted"); terminal {
+				return
+			} else if switched {
+				continue
 			}
 			if lastFailoverErr != nil {
 				h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
@@ -501,8 +575,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			return
 		}
 		if selection == nil || selection.Account == nil {
-			cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, requestPlatform)
+			cls := classifyNoAccountErrorFromGin(c, h.gatewayService, currentState.apiKey, reqModel, reqModel, requestPlatform)
 			if !cls.ModelNotFound {
+				if switched, terminal := tryGroupFallback("empty_account_selection"); terminal {
+					return
+				} else if switched {
+					continue
+				}
 				markOpsRoutingCapacityLimited(c)
 			}
 			h.handleStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
@@ -525,7 +604,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		reqLog.Debug("openai.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
-		accountReleaseFunc, acquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
+		accountReleaseFunc, acquired := h.acquireResponsesAccountSlot(c, currentState.apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
 		if !acquired {
 			return
 		}
@@ -544,7 +623,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			accountMappedModel := optionalInstructionsAccountMappedModel(account, reqModel, channelMapping.MappedModel)
 			injectedBody, _, injectErr := injectOptionalResponsesInstructions(
 				attemptBaseBody,
-				apiKey,
+				currentState.apiKey,
 				reqModel,
 				channelMapping.MappedModel,
 				accountMappedModel,
@@ -569,9 +648,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}()
 		cyberBlockKeyHTTP := ""
 		if service.GetOpsCyberPolicy(c) != nil {
-			cyberBlockKeyHTTP = service.CyberSessionBlockKey(apiKey.ID, c, sessionHashBody)
+			cyberBlockKeyHTTP = service.CyberSessionBlockKey(currentState.apiKey.ID, c, sessionHashBody)
 		}
-		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
+		h.recordCyberPolicyIfMarked(c, currentState.apiKey, account, currentState.subscription, reqModel, err != nil, cyberBlockKeyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
@@ -614,6 +693,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						return
 					}
 					if openAIFirstOutputFailoverExhausted(failoverErr, &firstOutputTimeoutSwitchCount) {
+						if switched, terminal := tryGroupFallback("first_output_timeout_exhausted"); terminal {
+							return
+						} else if switched {
+							continue
+						}
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
@@ -640,11 +724,21 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
+						if switched, terminal := tryGroupFallback("account_switch_limit_reached"); terminal {
+							return
+						} else if switched {
+							continue
+						}
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
 					switchCount++
 					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount, &oauth429FailoverState) {
+						if switched, terminal := tryGroupFallback("oauth_429_failover_stopped"); terminal {
+							return
+						} else if switched {
+							continue
+						}
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
@@ -703,7 +797,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		requestPayloadHash := service.HashUsageRequestPayload(body)
 		inboundEndpoint := GetInboundEndpoint(c)
 		upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, result)
-		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
+		usageAPIKey := currentState.apiKey
+		usageSubscription := currentState.subscription
+		usageChannelMapping := channelMapping
+		quotaPlatform := service.QuotaPlatform(c.Request.Context(), usageAPIKey)
 		sessionID := service.ExtractClientSessionID(c)
 
 		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
@@ -711,10 +808,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.submitOpenAIUsageRecordTask(c.Request.Context(), result, func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 				Result:             result,
-				APIKey:             apiKey,
-				User:               apiKey.User,
+				APIKey:             usageAPIKey,
+				User:               usageAPIKey.User,
 				Account:            account,
-				Subscription:       subscription,
+				Subscription:       usageSubscription,
 				InboundEndpoint:    inboundEndpoint,
 				UpstreamEndpoint:   upstreamEndpoint,
 				UserAgent:          userAgent,
@@ -723,14 +820,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				APIKeyService:      h.apiKeyService,
 				QuotaPlatform:      quotaPlatform,
 				SessionID:          sessionID,
-				ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
+				ChannelUsageFields: clientRequestedUsageFields(c, usageChannelMapping, reqModel, result.UpstreamModel),
 				CyberBlocked:       cyberBlocked,
 			}); err != nil {
 				logger.L().With(
 					zap.String("component", "handler.openai_gateway.responses"),
 					zap.Int64("user_id", subject.UserID),
-					zap.Int64("api_key_id", apiKey.ID),
-					zap.Any("group_id", apiKey.GroupID),
+					zap.Int64("api_key_id", usageAPIKey.ID),
+					zap.Any("group_id", usageAPIKey.GroupID),
 					zap.String("model", reqModel),
 					zap.Int64("account_id", account.ID),
 				).Error("openai.record_usage_failed", zap.Error(err))
@@ -739,6 +836,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		reqLog.Debug("openai.request_completed",
 			zap.Int64("account_id", account.ID),
 			zap.Int("switch_count", switchCount),
+			zap.Bool("group_fallback_used", fallbackUsed),
 		)
 		return
 	}

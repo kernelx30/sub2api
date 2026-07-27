@@ -1074,6 +1074,11 @@ export default {
         fallbackHint: 'Non-Claude Code requests will use this group. Leave empty to reject directly.',
         noFallback: 'No Fallback (Reject)'
       },
+      openaiAvailabilityFallback: {
+        title: 'GPT Automatic Failover',
+        hint: 'Uses this group first, then switches after no account is available or retryable upstream failures are exhausted. Billing, rate limits, and usage follow the fallback group.',
+        disabled: 'Automatic failover disabled'
+      },
       openaiMessages: {
         title: 'OpenAI Messages Dispatch',
         allowDispatch: 'Allow /v1/messages dispatch',

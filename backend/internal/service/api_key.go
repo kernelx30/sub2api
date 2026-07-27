@@ -65,6 +65,27 @@ type APIKey struct {
 	Window7dStart *time.Time // Start of current 7d window
 }
 
+// CloneAPIKeyWithGroup creates a request-scoped API key view for another
+// group. The auth snapshot RPM override belongs to the original (user, group)
+// pair, so a cross-group request must resolve it again for the target group.
+func CloneAPIKeyWithGroup(apiKey *APIKey, group *Group) *APIKey {
+	if apiKey == nil || group == nil {
+		return apiKey
+	}
+
+	cloned := *apiKey
+	groupID := group.ID
+	cloned.GroupID = &groupID
+	cloned.Group = group
+
+	if apiKey.User != nil && (apiKey.GroupID == nil || *apiKey.GroupID != group.ID) {
+		clonedUser := *apiKey.User
+		clonedUser.UserGroupRPMOverride = nil
+		cloned.User = &clonedUser
+	}
+	return &cloned
+}
+
 func (k *APIKey) IsActive() bool {
 	return k.Status == StatusActive
 }

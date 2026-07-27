@@ -1089,9 +1089,30 @@ func TestAdminService_ValidateFallbackGroup_DetectsCycle(t *testing.T) {
 	}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	err := svc.validateFallbackGroup(context.Background(), groupID, fallbackID)
+	err := svc.validateFallbackGroup(context.Background(), groupID, PlatformAnthropic, fallbackID)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "fallback group cycle")
+}
+
+func TestAdminService_ValidateFallbackGroup_OpenAIRequiresActiveOpenAITarget(t *testing.T) {
+	const fallbackID int64 = 2
+	tests := []struct {
+		name  string
+		group *Group
+	}{
+		{name: "wrong platform", group: &Group{ID: fallbackID, Platform: PlatformAnthropic, Status: StatusActive}},
+		{name: "inactive", group: &Group{ID: fallbackID, Platform: PlatformOpenAI, Status: StatusDisabled}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &groupRepoStubForFallbackCycle{groups: map[int64]*Group{fallbackID: tt.group}}
+			svc := &adminServiceImpl{groupRepo: repo}
+
+			err := svc.validateFallbackGroup(context.Background(), 1, PlatformOpenAI, fallbackID)
+
+			require.Error(t, err)
+		})
+	}
 }
 
 type groupRepoStubForFallbackCycle struct {

@@ -385,9 +385,13 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		return nil, err
 	}
 
-	// 校验降级分组
-	if input.FallbackGroupID != nil {
-		if err := s.validateFallbackGroup(ctx, 0, *input.FallbackGroupID); err != nil {
+	// Claude 客户端降级与 OpenAI 可用性故障转移复用同一字段。
+	fallbackGroupID := input.FallbackGroupID
+	if fallbackGroupID != nil && *fallbackGroupID <= 0 {
+		fallbackGroupID = nil
+	}
+	if fallbackGroupID != nil {
+		if err := s.validateFallbackGroup(ctx, 0, platform, *fallbackGroupID); err != nil {
 			return nil, err
 		}
 	}
@@ -474,7 +478,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		VideoPrice1080P:                 videoPrice1080P,
 		WebSearchPricePerCall:           webSearchPricePerCall,
 		ClaudeCodeOnly:                  input.ClaudeCodeOnly,
-		FallbackGroupID:                 input.FallbackGroupID,
+		FallbackGroupID:                 fallbackGroupID,
 		FallbackGroupIDOnInvalidRequest: fallbackOnInvalidRequest,
 		ModelRouting:                    input.ModelRouting,
 		MCPXMLInject:                    mcpXMLInject,
@@ -557,7 +561,7 @@ func normalizePrice(price *float64) *float64 {
 // validateFallbackGroup 校验降级分组的有效性
 // currentGroupID: 当前分组 ID（新建时为 0）
 // fallbackGroupID: 降级分组 ID
-func (s *adminServiceImpl) validateFallbackGroup(ctx context.Context, currentGroupID, fallbackGroupID int64) error {
+func (s *adminServiceImpl) validateFallbackGroup(ctx context.Context, currentGroupID int64, currentPlatform string, fallbackGroupID int64) error {
 	// 不能将自己设置为降级分组
 	if currentGroupID > 0 && currentGroupID == fallbackGroupID {
 		return fmt.Errorf("cannot set self as fallback group")
@@ -578,6 +582,14 @@ func (s *adminServiceImpl) validateFallbackGroup(ctx context.Context, currentGro
 		fallbackGroup, err := s.groupRepo.GetByIDLite(ctx, nextID)
 		if err != nil {
 			return fmt.Errorf("fallback group not found: %w", err)
+		}
+		if currentPlatform == PlatformOpenAI {
+			if fallbackGroup.Platform != PlatformOpenAI {
+				return fmt.Errorf("OpenAI availability fallback group must use openai platform")
+			}
+			if !fallbackGroup.IsActive() {
+				return fmt.Errorf("OpenAI availability fallback group must be active")
+			}
 		}
 
 		// 降级分组不能启用 claude_code_only，否则会造成死循环
@@ -754,7 +766,7 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.FallbackGroupID != nil {
 		// 校验降级分组
 		if *input.FallbackGroupID > 0 {
-			if err := s.validateFallbackGroup(ctx, id, *input.FallbackGroupID); err != nil {
+			if err := s.validateFallbackGroup(ctx, id, group.Platform, *input.FallbackGroupID); err != nil {
 				return nil, err
 			}
 			group.FallbackGroupID = input.FallbackGroupID

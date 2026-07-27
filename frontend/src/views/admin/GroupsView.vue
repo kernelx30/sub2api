@@ -1359,6 +1359,24 @@
           </div>
         </div>
 
+        <!-- OpenAI 可用性故障转移 -->
+        <div
+          v-if="createForm.platform === 'openai'"
+          class="border-t border-gray-200 pt-4 mt-4 dark:border-dark-400"
+        >
+          <h4 class="mb-3 text-sm font-medium text-gray-700 dark:text-gray-300">
+            {{ t("admin.groups.openaiAvailabilityFallback.title") }}
+          </h4>
+          <Select
+            v-model="createForm.fallback_group_id"
+            :options="openAIAvailabilityFallbackOptions"
+            :placeholder="t('admin.groups.openaiAvailabilityFallback.disabled')"
+          />
+          <p class="input-hint">
+            {{ t("admin.groups.openaiAvailabilityFallback.hint") }}
+          </p>
+        </div>
+
         <!-- Codex 网页搜索按次计费（仅 openai 平台） -->
         <div
           v-if="createForm.platform === 'openai'"
@@ -2941,6 +2959,24 @@
           </div>
         </div>
 
+        <!-- OpenAI 可用性故障转移 -->
+        <div
+          v-if="editForm.platform === 'openai'"
+          class="border-t border-gray-200 pt-4 mt-4 dark:border-dark-400"
+        >
+          <h4 class="mb-3 text-sm font-medium text-gray-700 dark:text-gray-300">
+            {{ t("admin.groups.openaiAvailabilityFallback.title") }}
+          </h4>
+          <Select
+            v-model="editForm.fallback_group_id"
+            :options="openAIAvailabilityFallbackOptionsForEdit"
+            :placeholder="t('admin.groups.openaiAvailabilityFallback.disabled')"
+          />
+          <p class="input-hint">
+            {{ t("admin.groups.openaiAvailabilityFallback.hint") }}
+          </p>
+        </div>
+
         <!-- Codex 网页搜索按次计费（仅 openai 平台） -->
         <div
           v-if="editForm.platform === 'openai'"
@@ -4453,6 +4489,52 @@ const fallbackGroupOptionsForEdit = computed(() => {
   eligibleGroups.forEach((g) => {
     options.push({ value: g.id, label: g.name });
   });
+  return options;
+});
+
+const openAIAvailabilityFallbackOptions = computed(() => {
+  const options: { value: number | null; label: string }[] = [
+    {
+      value: null,
+      label: t("admin.groups.openaiAvailabilityFallback.disabled"),
+    },
+  ];
+  groups.value
+    .filter((g) => g.platform === "openai" && g.status === "active")
+    .forEach((g) => options.push({ value: g.id, label: g.name }));
+  return options;
+});
+
+const fallbackChainContains = (candidate: AdminGroup, targetGroupID: number) => {
+  const groupsByID = new Map(groups.value.map((group) => [group.id, group]));
+  const visited = new Set<number>();
+  let current: AdminGroup | undefined = candidate;
+  while (current && !visited.has(current.id)) {
+    if (current.id === targetGroupID) return true;
+    visited.add(current.id);
+    const nextID: number | null = current.fallback_group_id;
+    current = nextID ? groupsByID.get(nextID) : undefined;
+  }
+  return false;
+};
+
+const openAIAvailabilityFallbackOptionsForEdit = computed(() => {
+  const options: { value: number | null; label: string }[] = [
+    {
+      value: null,
+      label: t("admin.groups.openaiAvailabilityFallback.disabled"),
+    },
+  ];
+  const currentID = editingGroup.value?.id;
+  groups.value
+    .filter(
+      (g) =>
+        g.platform === "openai" &&
+        g.status === "active" &&
+        g.id !== currentID &&
+        (currentID === undefined || !fallbackChainContains(g, currentID)),
+    )
+    .forEach((g) => options.push({ value: g.id, label: g.name }));
   return options;
 });
 
