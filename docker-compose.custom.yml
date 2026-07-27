@@ -5,7 +5,7 @@
 #   docker compose -f docker-compose.yml -f docker-compose.custom.yml up -d --build
 services:
   sub2api:
-    image: ${SUB2API_CUSTOM_IMAGE:-kernelx30/sub2api:optional-instructions}
+    image: ${SUB2API_CUSTOM_IMAGE:-ghcr.io/kernelx30/sub2api:optional-instructions}
     build:
       context: .
       dockerfile: Dockerfile
