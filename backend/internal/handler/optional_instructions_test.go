@@ -106,14 +106,14 @@ func TestInjectOptionalChatCompletionsPrefersDeveloperAndPreservesContentBlocks(
 	require.JSONEq(t, string(got), string(second))
 }
 
-func TestInjectOptionalChatCompletionsAddsSystemWithoutReorderingClientMessages(t *testing.T) {
+func TestInjectOptionalChatCompletionsAddsDeveloperWithoutReorderingClientMessages(t *testing.T) {
 	got, changed, err := injectOptionalChatCompletionsMessages(
 		[]byte(`{"model":"gpt","messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"}]}`),
 		optionalInstructionsTestKey(true, true, "admin"),
 	)
 	require.NoError(t, err)
 	require.True(t, changed)
-	require.Equal(t, "system", gjson.GetBytes(got, "messages.0.role").String())
+	require.Equal(t, "developer", gjson.GetBytes(got, "messages.0.role").String())
 	require.Equal(t, "user", gjson.GetBytes(got, "messages.1.role").String())
 	require.Equal(t, "assistant", gjson.GetBytes(got, "messages.2.role").String())
 }

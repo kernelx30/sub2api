@@ -69,8 +69,13 @@ func injectOptionalChatCompletionsMessages(body []byte, apiKey *service.APIKey) 
 			return updated, err == nil, err
 		}
 	}
+	// Current GPT models give developer messages higher priority than legacy
+	// system messages on the Chat Completions compatibility path. When the
+	// client did not supply either role, create a developer message so the
+	// group instruction has the same effective priority as Responses
+	// `instructions`. Existing client messages remain in their original order.
 	root["messages"] = append([]any{map[string]any{
-		"role":    "system",
+		"role":    "developer",
 		"content": formatOptionalInstructions(instructions),
 	}}, messages...)
 	updated, err := json.Marshal(root)
