@@ -12,6 +12,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Keep the production path explicit while preserving the original RPM test
+// call sites under the unit build tag.
+func (s *BillingCacheService) checkRPM(ctx context.Context, user *User, group *Group) error {
+	return s.checkRPMWithUserLimit(ctx, user, group, true)
+}
+
 // userRPMCacheStub 记录每种计数器被调用的次数，并可注入返回值与错误。
 type userRPMCacheStub struct {
 	userGroupCalls int32

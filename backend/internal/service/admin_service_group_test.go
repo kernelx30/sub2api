@@ -7,13 +7,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
 )
 
 func TestValidateOptionalInstructionsCountsUnicodeCharacters(t *testing.T) {
-	require.NoError(t, validateOptionalInstructions(strings.Repeat("界", optionalInstructionsMaxCharacters)))
-	require.Error(t, validateOptionalInstructions(strings.Repeat("界", optionalInstructionsMaxCharacters+1)))
+	require.NoError(t, validateOptionalInstructions(strings.Repeat("界", domain.OptionalInstructionsMaxCharacters)))
+	require.Error(t, validateOptionalInstructions(strings.Repeat("界", domain.OptionalInstructionsMaxCharacters+1)))
 }
 
 func ptrString[T ~string](v T) *string {
