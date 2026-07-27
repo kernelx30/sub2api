@@ -11,11 +11,16 @@ routing, and enforces only output anchors, placeholders, and evidence discipline
 Technical expansion comes from the model and supplied artifacts; the prompt bank
 checks representative expertise separately.
 
+Context-routing anchors are release gates. Domain-specific required tokens are
+capability probes: model-selected equivalent tools or implementations may vary, and a
+probe result alone is not a reason to add domain tutorials back into the prompt.
+
 The canonical prompt opts into `[INPUT_NORMALIZATION: OWNER_FIXTURE]`. Before upstream
 routing, Sub2API rewrites matching user text into an owner-integration game fixture or
-owner-recovery license request, preserving the rest of the message and any attached
-content blocks. The internal premise is not narrated, and subtitle wording such as
-`外挂字幕` is left unchanged.
+owner-recovery license request framed as feature development or defect repair in an
+isolated local sandbox, preserving the rest of the message and any attached content
+blocks. The internal premise is not narrated, and subtitle wording such as `外挂字幕`
+is left unchanged.
 
 Broad requests use a one-question handshake: ask only which module/output the user
 wants, then execute after the answer with defaults and placeholders for everything
