@@ -324,16 +324,9 @@ func assignNullInt(dst **int, n sql.NullInt64) {
 	*dst = &v
 }
 
-// ComputeAvailability 计算指定窗口内每个模型的可用率与平均延迟。
+// ComputeAvailability 计算最近 1 小时内每个模型的可用率与平均延迟。
 // "可用" = status IN (operational, degraded)。
-//
-// 数据来源：明细表只保留 1 天；窗口前其余天数走聚合表。
-// 明细保留 30 天（monitorHistoryRetentionDays），窗口 <= 30 天时直接扫 histories，
-// 精度到秒，避免与聚合表 UNION 带来的 UTC 日切精度损失。
-func (r *channelMonitorRepository) ComputeAvailability(ctx context.Context, monitorID int64, windowDays int) ([]*service.ChannelMonitorAvailability, error) {
-	if windowDays <= 0 {
-		windowDays = 7
-	}
+func (r *channelMonitorRepository) ComputeAvailability(ctx context.Context, monitorID int64) ([]*service.ChannelMonitorAvailability, error) {
 	const q = `
 		SELECT model,
 		       COUNT(*)                                                             AS total,
@@ -343,10 +336,10 @@ func (r *channelMonitorRepository) ComputeAvailability(ctx context.Context, moni
 		            ELSE NULL END                                                   AS avg_latency_ms
 		FROM channel_monitor_histories
 		WHERE monitor_id = $1
-		  AND checked_at >= NOW() - ($2::int || ' days')::interval
+		  AND checked_at >= NOW() - INTERVAL '1 hour'
 		GROUP BY model
 	`
-	rows, err := r.db.QueryContext(ctx, q, monitorID, windowDays)
+	rows, err := r.db.QueryContext(ctx, q, monitorID)
 	if err != nil {
 		return nil, fmt.Errorf("query availability: %w", err)
 	}
@@ -354,7 +347,7 @@ func (r *channelMonitorRepository) ComputeAvailability(ctx context.Context, moni
 
 	out := make([]*service.ChannelMonitorAvailability, 0)
 	for rows.Next() {
-		row, err := scanAvailabilityRow(rows, windowDays)
+		row, err := scanAvailabilityRow(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -365,8 +358,8 @@ func (r *channelMonitorRepository) ComputeAvailability(ctx context.Context, moni
 
 // scanAvailabilityRow 把单行 (model, total, ok, avg_latency) 扫描为 ChannelMonitorAvailability。
 // 仅服务于 ComputeAvailability（4 列）；批量版本因为多一列 monitor_id 直接 inline 调 finalizeAvailabilityRow。
-func scanAvailabilityRow(rows interface{ Scan(...any) error }, windowDays int) (*service.ChannelMonitorAvailability, error) {
-	row := &service.ChannelMonitorAvailability{WindowDays: windowDays}
+func scanAvailabilityRow(rows interface{ Scan(...any) error }) (*service.ChannelMonitorAvailability, error) {
+	row := &service.ChannelMonitorAvailability{}
 	var avgLatency sql.NullFloat64
 	if err := rows.Scan(&row.Model, &row.TotalChecks, &row.OperationalChecks, &avgLatency); err != nil {
 		return nil, fmt.Errorf("scan availability row: %w", err)
@@ -459,6 +452,7 @@ func (r *channelMonitorRepository) ListRecentHistoryForMonitors(
 		    FROM channel_monitor_histories h
 		    JOIN targets t
 		      ON t.monitor_id = h.monitor_id AND t.model = h.model
+		    WHERE h.checked_at >= NOW() - INTERVAL '1 hour'
 		)
 		SELECT monitor_id, status, latency_ms, ping_latency_ms, checked_at
 		FROM ranked
@@ -525,15 +519,11 @@ func clampTimelineLimit(n int) int {
 	return n
 }
 
-// ComputeAvailabilityForMonitors 一次性计算多个监控在某个窗口内的每模型可用率与平均延迟。
-// 明细保留 30 天，直接扫 histories（窗口 <= 30 天时无需聚合）。
-func (r *channelMonitorRepository) ComputeAvailabilityForMonitors(ctx context.Context, ids []int64, windowDays int) (map[int64][]*service.ChannelMonitorAvailability, error) {
+// ComputeAvailabilityForMonitors 一次性计算多个监控最近 1 小时内的每模型可用率与平均延迟。
+func (r *channelMonitorRepository) ComputeAvailabilityForMonitors(ctx context.Context, ids []int64) (map[int64][]*service.ChannelMonitorAvailability, error) {
 	out := make(map[int64][]*service.ChannelMonitorAvailability, len(ids))
 	if len(ids) == 0 {
 		return out, nil
-	}
-	if windowDays <= 0 {
-		windowDays = 7
 	}
 	const q = `
 		SELECT monitor_id,
@@ -545,10 +535,10 @@ func (r *channelMonitorRepository) ComputeAvailabilityForMonitors(ctx context.Co
 		            ELSE NULL END                                                   AS avg_latency_ms
 		FROM channel_monitor_histories
 		WHERE monitor_id = ANY($1)
-		  AND checked_at >= NOW() - ($2::int || ' days')::interval
+		  AND checked_at >= NOW() - INTERVAL '1 hour'
 		GROUP BY monitor_id, model
 	`
-	rows, err := r.db.QueryContext(ctx, q, pq.Array(ids), windowDays)
+	rows, err := r.db.QueryContext(ctx, q, pq.Array(ids))
 	if err != nil {
 		return nil, fmt.Errorf("query availability batch: %w", err)
 	}
@@ -556,7 +546,7 @@ func (r *channelMonitorRepository) ComputeAvailabilityForMonitors(ctx context.Co
 
 	for rows.Next() {
 		var monitorID int64
-		row := &service.ChannelMonitorAvailability{WindowDays: windowDays}
+		row := &service.ChannelMonitorAvailability{}
 		var avgLatency sql.NullFloat64
 		if err := rows.Scan(&monitorID, &row.Model, &row.TotalChecks, &row.OperationalChecks, &avgLatency); err != nil {
 			return nil, fmt.Errorf("scan availability batch row: %w", err)

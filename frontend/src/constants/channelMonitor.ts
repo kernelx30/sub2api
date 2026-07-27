@@ -44,5 +44,5 @@ export const MONITOR_STATUSES: readonly MonitorStatus[] = [
   STATUS_ERROR,
 ]
 
-/** Default polling interval (seconds) for new monitors. */
-export const DEFAULT_INTERVAL_SECONDS = 60
+/** Fixed probe and status-page refresh interval in seconds. */
+export const FIXED_INTERVAL_SECONDS = 60

@@ -49,7 +49,7 @@ type channelMonitorUserListItem struct {
 	PrimaryStatus        string                               `json:"primary_status"`
 	PrimaryLatencyMs     *int                                 `json:"primary_latency_ms"`
 	PrimaryPingLatencyMs *int                                 `json:"primary_ping_latency_ms"`
-	Availability7d       float64                              `json:"availability_7d"`
+	Availability1h       float64                              `json:"availability_1h"`
 	ExtraModels          []dto.ChannelMonitorExtraModelStatus `json:"extra_models"`
 	Timeline             []channelMonitorUserTimelinePoint    `json:"timeline"`
 }
@@ -75,10 +75,8 @@ type channelMonitorUserModelStat struct {
 	Model           string  `json:"model"`
 	LatestStatus    string  `json:"latest_status"`
 	LatestLatencyMs *int    `json:"latest_latency_ms"`
-	Availability7d  float64 `json:"availability_7d"`
-	Availability15d float64 `json:"availability_15d"`
-	Availability30d float64 `json:"availability_30d"`
-	AvgLatency7dMs  *int    `json:"avg_latency_7d_ms"`
+	Availability1h  float64 `json:"availability_1h"`
+	AvgLatency1hMs  *int    `json:"avg_latency_1h_ms"`
 }
 
 func userMonitorViewToItem(v *service.UserMonitorView) channelMonitorUserListItem {
@@ -108,7 +106,7 @@ func userMonitorViewToItem(v *service.UserMonitorView) channelMonitorUserListIte
 		PrimaryStatus:        v.PrimaryStatus,
 		PrimaryLatencyMs:     v.PrimaryLatencyMs,
 		PrimaryPingLatencyMs: v.PrimaryPingLatencyMs,
-		Availability7d:       v.Availability7d,
+		Availability1h:       v.Availability1h,
 		ExtraModels:          extras,
 		Timeline:             timeline,
 	}
@@ -121,10 +119,8 @@ func userMonitorDetailToResponse(d *service.UserMonitorDetail) *channelMonitorUs
 			Model:           m.Model,
 			LatestStatus:    m.LatestStatus,
 			LatestLatencyMs: m.LatestLatencyMs,
-			Availability7d:  m.Availability7d,
-			Availability15d: m.Availability15d,
-			Availability30d: m.Availability30d,
-			AvgLatency7dMs:  m.AvgLatency7dMs,
+			Availability1h:  m.Availability1h,
+			AvgLatency1hMs:  m.AvgLatency1hMs,
 		})
 	}
 	return &channelMonitorUserDetailResponse{

@@ -32,7 +32,7 @@ const HSL_LIGHTNESS = 42
 
 export interface AvailabilityRow {
   primary_status: MonitorStatus | ''
-  availability_7d: number | null | undefined
+  availability_1h: number | null | undefined
 }
 
 export function useChannelMonitorFormat() {
@@ -126,7 +126,7 @@ export function useChannelMonitorFormat() {
 
   function formatAvailability(row: AvailabilityRow): string {
     if (!row.primary_status) return '-'
-    return formatPercent(row.availability_7d)
+    return formatPercent(row.availability_1h)
   }
 
   function formatRelativeTime(iso: string | null | undefined): string {

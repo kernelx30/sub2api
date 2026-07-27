@@ -223,17 +223,22 @@ func TestRunOne_DecryptFailureUnschedulesTask(t *testing.T) {
 	stoppedWithin(t, r, 3*time.Second)
 }
 
-// TestSchedule_InvalidIntervalSkipped 验证 IntervalSeconds<=0 不会注册任务（防御性检查）。
-func TestSchedule_InvalidIntervalSkipped(t *testing.T) {
+// TestSchedule_UsesFixedInterval 验证旧数据里的 interval/jitter 不会改变固定 60 秒调度策略。
+func TestSchedule_UsesFixedInterval(t *testing.T) {
 	svc := &stubMonitorSvc{}
 	r := newRunnerForTest(svc)
 	r.Start()
 
-	r.Schedule(&ChannelMonitor{ID: 1, Enabled: true, IntervalSeconds: 0})
-	if got := runnerTaskCount(r); got != 0 {
-		t.Fatalf("expected no task for invalid interval, got %d", got)
+	r.Schedule(&ChannelMonitor{ID: 1, Enabled: true, IntervalSeconds: 15, JitterSeconds: 10})
+	task := runnerTaskPtr(r, 1)
+	if task == nil {
+		t.Fatal("expected legacy monitor to be scheduled")
 	}
-	r.Stop()
+	want := time.Duration(ChannelMonitorFixedIntervalSeconds) * time.Second
+	if task.interval != want {
+		t.Fatalf("expected fixed interval %s, got %s", want, task.interval)
+	}
+	stoppedWithin(t, r, 3*time.Second)
 }
 
 // TestSchedule_BeforeStartIsNoOp 验证 Start 之前调用 Schedule 不会注册任务。

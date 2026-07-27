@@ -343,36 +343,19 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 	}, nil
 }
 
-// channelMonitorIntervalMin / channelMonitorIntervalMax bound the default interval
-// (mirrors the monitor-level constraint but lives here so setting_service stays decoupled).
-const (
-	channelMonitorIntervalMin      = 15
-	channelMonitorIntervalMax      = 3600
-	channelMonitorIntervalFallback = 60
-)
+const channelMonitorIntervalFallback = ChannelMonitorFixedIntervalSeconds
 
-// parseChannelMonitorInterval parses the stored string and clamps to [15, 3600].
-// Empty / invalid input falls back to channelMonitorIntervalFallback.
-func parseChannelMonitorInterval(raw string) int {
-	v, err := strconv.Atoi(strings.TrimSpace(raw))
-	if err != nil {
-		return channelMonitorIntervalFallback
-	}
-	return clampChannelMonitorInterval(v)
+// parseChannelMonitorInterval 保留旧设置字段的读取兼容，但运行时始终返回固定 60 秒。
+func parseChannelMonitorInterval(_ string) int {
+	return ChannelMonitorFixedIntervalSeconds
 }
 
-// clampChannelMonitorInterval clamps v to the allowed range. 0 means "not provided".
+// clampChannelMonitorInterval 保留旧更新接口的兼容；正数统一落库为 60，0 表示未提供。
 func clampChannelMonitorInterval(v int) int {
 	if v <= 0 {
 		return 0
 	}
-	if v < channelMonitorIntervalMin {
-		return channelMonitorIntervalMin
-	}
-	if v > channelMonitorIntervalMax {
-		return channelMonitorIntervalMax
-	}
-	return v
+	return ChannelMonitorFixedIntervalSeconds
 }
 
 // ChannelMonitorRuntime is the lightweight view of the channel monitor feature

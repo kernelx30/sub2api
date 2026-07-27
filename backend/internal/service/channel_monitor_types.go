@@ -28,18 +28,20 @@ const (
 
 // ChannelMonitor 渠道监控配置（service 层模型，不直接暴露 ent 类型）。
 type ChannelMonitor struct {
-	ID              int64
-	Name            string
-	Provider        string
-	APIMode         string
-	Endpoint        string
-	APIKey          string // 解密后的明文 API Key（仅在 service 内部使用，handler 层不应直接序列化返回）
-	PrimaryModel    string
-	ExtraModels     []string
-	GroupName       string
-	Enabled         bool
+	ID           int64
+	Name         string
+	Provider     string
+	APIMode      string
+	Endpoint     string
+	APIKey       string // 解密后的明文 API Key（仅在 service 内部使用，handler 层不应直接序列化返回）
+	PrimaryModel string
+	ExtraModels  []string
+	GroupName    string
+	Enabled      bool
+	// IntervalSeconds/JitterSeconds 保留用于兼容现有表结构与 API 响应。
+	// service 和 runner 会统一规范化为 60/0，不再接受每条监控独立配置。
 	IntervalSeconds int
-	JitterSeconds   int // 每次调度 ± [0, jitter] 的随机偏移（秒），0 = 固定间隔
+	JitterSeconds   int
 	LastCheckedAt   *time.Time
 	CreatedBy       int64
 	CreatedAt       time.Time
@@ -124,7 +126,7 @@ type CheckResult struct {
 	CheckedAt     time.Time
 }
 
-// UserMonitorView 用户只读视图：监控概览（含主模型最近状态 + 7d 可用率 + 附加模型最近状态）。
+// UserMonitorView 用户只读视图：监控概览（含主模型最近状态 + 1h 可用率 + 附加模型最近状态）。
 type UserMonitorView struct {
 	ID                   int64
 	Name                 string
@@ -134,7 +136,7 @@ type UserMonitorView struct {
 	PrimaryStatus        string
 	PrimaryLatencyMs     *int
 	PrimaryPingLatencyMs *int    // 主模型最近一次 ping 延迟
-	Availability7d       float64 // 0-100
+	Availability1h       float64 // 0-100
 	ExtraModels          []ExtraModelStatus
 	Timeline             []UserMonitorTimelinePoint // 主模型最近 N 个历史点（按 checked_at DESC，最新在前）
 }
@@ -154,7 +156,7 @@ type ExtraModelStatus struct {
 	LatencyMs *int
 }
 
-// UserMonitorDetail 用户只读视图：监控详情（含全部模型 7d/15d/30d 可用率与平均延迟）。
+// UserMonitorDetail 用户只读视图：监控详情（含全部模型最近 1h 可用率与平均延迟）。
 type UserMonitorDetail struct {
 	ID        int64
 	Name      string
@@ -168,10 +170,8 @@ type ModelDetail struct {
 	Model           string
 	LatestStatus    string
 	LatestLatencyMs *int
-	Availability7d  float64 // 0-100
-	Availability15d float64
-	Availability30d float64
-	AvgLatency7dMs  *int
+	Availability1h  float64 // 0-100
+	AvgLatency1hMs  *int
 }
 
 // ChannelMonitorHistoryRow 历史记录入库行（service 层向 repository 提交的数据）。
@@ -208,7 +208,6 @@ type ChannelMonitorLatest struct {
 // ChannelMonitorAvailability 单个模型在某窗口内的可用率与平均延迟（用于 UserMonitorDetail 聚合）。
 type ChannelMonitorAvailability struct {
 	Model             string
-	WindowDays        int
 	TotalChecks       int
 	OperationalChecks int // operational + degraded 视为可用
 	AvailabilityPct   float64
@@ -216,11 +215,11 @@ type ChannelMonitorAvailability struct {
 }
 
 // MonitorStatusSummary 监控状态聚合（admin list 用，单次 repo 查询消除前端 N+1）。
-// PrimaryStatus / PrimaryLatencyMs 描述主模型最近状态；Availability7d 是主模型 7 天可用率；
+// PrimaryStatus / PrimaryLatencyMs 描述主模型最近状态；Availability1h 是主模型最近 1 小时可用率；
 // ExtraModels 描述附加模型最近状态（用于 hover 展示）。
 type MonitorStatusSummary struct {
 	PrimaryStatus    string // 空字符串表示无历史
 	PrimaryLatencyMs *int
-	Availability7d   float64 // 0-100，无历史时为 0
+	Availability1h   float64 // 0-100，无历史时为 0
 	ExtraModels      []ExtraModelStatus
 }

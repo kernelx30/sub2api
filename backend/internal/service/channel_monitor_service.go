@@ -37,11 +37,11 @@ type ChannelMonitorRepository interface {
 
 	// 用户视图聚合
 	ListLatestPerModel(ctx context.Context, monitorID int64) ([]*ChannelMonitorLatest, error)
-	ComputeAvailability(ctx context.Context, monitorID int64, windowDays int) ([]*ChannelMonitorAvailability, error)
+	ComputeAvailability(ctx context.Context, monitorID int64) ([]*ChannelMonitorAvailability, error)
 
 	// 批量聚合（admin/user list 用，避免 N+1）
 	ListLatestForMonitorIDs(ctx context.Context, ids []int64) (map[int64][]*ChannelMonitorLatest, error)
-	ComputeAvailabilityForMonitors(ctx context.Context, ids []int64, windowDays int) (map[int64][]*ChannelMonitorAvailability, error)
+	ComputeAvailabilityForMonitors(ctx context.Context, ids []int64) (map[int64][]*ChannelMonitorAvailability, error)
 	// ListRecentHistoryForMonitors 批量取多个 monitor 各自主模型（primaryModels[monitorID]）最近 perMonitorLimit 条历史。
 	// 返回的 entry 已按 checked_at DESC 排序（最新在前），不含 message 字段。
 	ListRecentHistoryForMonitors(ctx context.Context, ids []int64, primaryModels map[int64]string, perMonitorLimit int) (map[int64][]*ChannelMonitorHistoryEntry, error)
@@ -99,6 +99,7 @@ func (s *ChannelMonitorService) List(ctx context.Context, params ChannelMonitorL
 		return nil, 0, fmt.Errorf("list channel monitors: %w", err)
 	}
 	for _, it := range items {
+		normalizeMonitorSchedule(it)
 		s.decryptInPlace(it)
 	}
 	return items, total, nil
@@ -110,6 +111,7 @@ func (s *ChannelMonitorService) Get(ctx context.Context, id int64) (*ChannelMoni
 	if err != nil {
 		return nil, err
 	}
+	normalizeMonitorSchedule(m)
 	s.decryptInPlace(m)
 	return m, nil
 }
@@ -139,8 +141,8 @@ func (s *ChannelMonitorService) Create(ctx context.Context, p ChannelMonitorCrea
 		ExtraModels:      normalizeModels(p.ExtraModels),
 		GroupName:        strings.TrimSpace(p.GroupName),
 		Enabled:          p.Enabled,
-		IntervalSeconds:  p.IntervalSeconds,
-		JitterSeconds:    p.JitterSeconds,
+		IntervalSeconds:  ChannelMonitorFixedIntervalSeconds,
+		JitterSeconds:    0,
 		CreatedBy:        p.CreatedBy,
 		TemplateID:       p.TemplateID,
 		ExtraHeaders:     emptyHeadersIfNil(p.ExtraHeaders),
@@ -204,8 +206,8 @@ func (s *ChannelMonitorService) Duplicate(
 		ExtraModels:          append([]string{}, source.ExtraModels...),
 		GroupName:            source.GroupName,
 		Enabled:              false,
-		IntervalSeconds:      source.IntervalSeconds,
-		JitterSeconds:        source.JitterSeconds,
+		IntervalSeconds:      ChannelMonitorFixedIntervalSeconds,
+		JitterSeconds:        0,
 		CreatedBy:            createdBy,
 		TemplateID:           cloneInt64Pointer(source.TemplateID),
 		ExtraHeaders:         cloneChannelMonitorHeaders(source.ExtraHeaders),
@@ -242,6 +244,7 @@ func (s *ChannelMonitorService) RecoverDuplicate(
 	if monitor == nil {
 		return nil, nil
 	}
+	normalizeMonitorSchedule(monitor)
 	s.decryptInPlace(monitor)
 	return monitor, nil
 }
@@ -325,12 +328,6 @@ func validateCreateParams(p ChannelMonitorCreateParams) error {
 	if err := validateAPIMode(p.Provider, p.APIMode); err != nil {
 		return err
 	}
-	if err := validateInterval(p.IntervalSeconds); err != nil {
-		return err
-	}
-	if err := validateJitter(p.JitterSeconds, p.IntervalSeconds); err != nil {
-		return err
-	}
 	if err := validateEndpoint(p.Endpoint); err != nil {
 		return err
 	}
@@ -369,8 +366,7 @@ func (s *ChannelMonitorService) Update(ctx context.Context, id int64, p ChannelM
 		s.decryptInPlace(existing)
 	}
 	if s.scheduler != nil {
-		// Schedule 内部根据 Enabled 自动选择 Unschedule 或重建任务，
-		// IntervalSeconds 变化也会被自然吸收（旧 task 取消 + 新 task 用新 interval）。
+		// Schedule 内部根据 Enabled 自动选择 Unschedule 或按固定 60 秒重建任务。
 		s.scheduler.Schedule(existing)
 	}
 	return existing, nil
@@ -514,6 +510,7 @@ func (s *ChannelMonitorService) ListEnabledMonitors(ctx context.Context) ([]*Cha
 		return nil, err
 	}
 	for _, m := range all {
+		normalizeMonitorSchedule(m)
 		s.decryptInPlace(m)
 	}
 	return all, nil
@@ -648,6 +645,7 @@ func (s *ChannelMonitorService) decryptInPlace(m *ChannelMonitor) {
 // 行数稍超过 30：这是逐字段平铺的 dispatcher，每个 if 都是 1-3 行的"非 nil 则覆盖"模式，
 // 拆分反而会增加跳转噪音、影响可读性，故保留为单函数。
 func applyMonitorUpdate(existing *ChannelMonitor, p ChannelMonitorUpdateParams) error {
+	normalizeMonitorSchedule(existing)
 	providerChanged := false
 	if p.Name != nil {
 		existing.Name = strings.TrimSpace(*p.Name)
@@ -683,22 +681,16 @@ func applyMonitorUpdate(existing *ChannelMonitor, p ChannelMonitorUpdateParams) 
 	if p.Enabled != nil {
 		existing.Enabled = *p.Enabled
 	}
-	if p.IntervalSeconds != nil {
-		if err := validateInterval(*p.IntervalSeconds); err != nil {
-			return err
-		}
-		existing.IntervalSeconds = *p.IntervalSeconds
-	}
-	if p.JitterSeconds != nil {
-		existing.JitterSeconds = *p.JitterSeconds
-	}
-	if p.IntervalSeconds != nil || p.JitterSeconds != nil {
-		// interval 与 jitter 任一变化都需要重新校验组合约束（interval - jitter >= 下限）。
-		if err := validateJitter(existing.JitterSeconds, existing.IntervalSeconds); err != nil {
-			return err
-		}
-	}
 	return applyMonitorAdvancedUpdate(existing, p, providerChanged)
+}
+
+// normalizeMonitorSchedule 把旧数据和旧客户端传入的可变调度配置收口为固定策略。
+func normalizeMonitorSchedule(m *ChannelMonitor) {
+	if m == nil {
+		return
+	}
+	m.IntervalSeconds = ChannelMonitorFixedIntervalSeconds
+	m.JitterSeconds = 0
 }
 
 // applyMonitorAdvancedUpdate 处理自定义请求快照相关字段，从 applyMonitorUpdate 拆出避免过长。

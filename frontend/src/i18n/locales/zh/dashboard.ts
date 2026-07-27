@@ -433,7 +433,7 @@ export default {
     availabilityPrefix: '可用性',
     dialogLatency: '对话延迟',
     endpointPing: '端点 PING',
-    history60pts: '近 {n} 次记录',
+    historyOneHour: '最近 1 小时记录',
     nextUpdateIn: '{n}s 后刷新',
     past: 'PAST',
     now: 'NOW',
@@ -457,11 +457,7 @@ export default {
     detailLoadError: '加载渠道详情失败',
     detailTitle: '渠道详情',
     closeDetail: '关闭',
-    windowTab: {
-      '7d': '7 天',
-      '15d': '15 天',
-      '30d': '30 天'
-    },
+    windowLabel: '最近 1 小时',
     overall: {
       operational: 'OPERATIONAL',
       degraded: 'DEGRADED',
@@ -472,17 +468,15 @@ export default {
       provider: '供应商',
       groupName: '分组',
       primaryModel: '主模型',
-      availability7d: '7 天可用率',
+      availability1h: '1 小时可用率',
       latency: '延迟 (ms)'
     },
     detailColumns: {
       model: '模型',
       latestStatus: '最新状态',
       latestLatency: '最新延迟 (ms)',
-      availability7d: '7 天可用率',
-      availability15d: '15 天可用率',
-      availability30d: '30 天可用率',
-      avgLatency7d: '7 天平均延迟 (ms)'
+      availability1h: '1 小时可用率',
+      avgLatency1h: '1 小时平均延迟 (ms)'
     },
     empty: {
       title: '暂无可显示的渠道',

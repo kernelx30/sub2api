@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -35,7 +34,7 @@ type monitorRunnerSvc interface {
 // ChannelMonitorRunner 渠道监控调度器。
 //
 // 设计：
-//   - 每个 enabled monitor 对应一个独立 goroutine + ticker（按各自 IntervalSeconds）
+//   - 每个 enabled monitor 对应一个独立 goroutine，固定每 60 秒触发
 //   - Start 时一次性加载所有 enabled monitor 并为每个建立任务
 //   - Service 在 Create/Update/Delete 后通过 MonitorScheduler 接口回调，
 //     即时重建/取消对应任务（无需轮询 DB）
@@ -70,23 +69,7 @@ type scheduledMonitor struct {
 	id       int64
 	name     string
 	interval time.Duration
-	jitter   time.Duration // 每轮 ± [0, jitter] 的均匀随机偏移；0 = 固定间隔
 	cancel   context.CancelFunc
-}
-
-// nextDelay 计算下一次触发的等待时长：interval ± [0, jitter] 的均匀随机偏移。
-// 校验链路已保证 interval - jitter >= monitorMinIntervalSeconds，
-// 这里仍 clamp 一次下限，兜底数据库中违反约束的脏数据。
-func (t *scheduledMonitor) nextDelay() time.Duration {
-	if t.jitter <= 0 {
-		return t.interval
-	}
-	offset := time.Duration(rand.Int64N(int64(2*t.jitter) + 1)) // [0, 2*jitter]
-	d := t.interval - t.jitter + offset
-	if floor := monitorMinIntervalSeconds * time.Second; d < floor {
-		d = floor
-	}
-	return d
 }
 
 // NewChannelMonitorRunner 构造调度器。Start 在 wire 中调用一次。
@@ -141,8 +124,8 @@ func (r *ChannelMonitorRunner) Start() {
 
 // Schedule 为指定监控创建（或重置）独立定时任务。
 //   - m.Enabled=false 或 APIKeyDecryptFailed=true → 等同于 Unschedule(m.ID)
-//   - 已存在的任务会先被取消再重建（适用于 IntervalSeconds 变更场景）
-//   - 新任务立即触发首次检测，之后按 IntervalSeconds 周期触发
+//   - 已存在的任务会先被取消再重建
+//   - 新任务立即触发首次检测，之后固定每 60 秒触发
 func (r *ChannelMonitorRunner) Schedule(m *ChannelMonitor) {
 	if r == nil || m == nil {
 		return
@@ -151,18 +134,7 @@ func (r *ChannelMonitorRunner) Schedule(m *ChannelMonitor) {
 		r.Unschedule(m.ID)
 		return
 	}
-	interval := time.Duration(m.IntervalSeconds) * time.Second
-	if interval <= 0 {
-		// Create/Update 已通过 validateInterval 校验区间，正常路径不可能到这里。
-		// 真触发说明数据库中存在违反约束的数据或校验链路有 bug，记 Error 暴露问题。
-		slog.Error("channel_monitor: skip schedule for invalid interval",
-			"monitor_id", m.ID, "interval_seconds", m.IntervalSeconds)
-		return
-	}
-	jitter := time.Duration(m.JitterSeconds) * time.Second
-	if jitter < 0 {
-		jitter = 0
-	}
+	interval := time.Duration(ChannelMonitorFixedIntervalSeconds) * time.Second
 
 	r.mu.Lock()
 	if r.stopped {
@@ -187,7 +159,6 @@ func (r *ChannelMonitorRunner) Schedule(m *ChannelMonitor) {
 		id:       m.ID,
 		name:     m.Name,
 		interval: interval,
-		jitter:   jitter,
 		cancel:   cancel,
 	}
 	r.tasks[m.ID] = task
@@ -234,14 +205,13 @@ func (r *ChannelMonitorRunner) Stop() {
 }
 
 // runScheduled 单个监控的循环：立即触发首次（满足"新建/启用即跑"），
-// 之后按 interval ± jitter 周期触发；ctx 取消即退出。
-// 用 timer 而非 ticker：jitter > 0 时每轮等待时长都需要重新随机化。
+// 之后固定按 60 秒周期触发；ctx 取消即退出。
 func (r *ChannelMonitorRunner) runScheduled(ctx context.Context, task *scheduledMonitor) {
 	defer r.wg.Done()
 
 	r.fire(ctx, task)
 
-	timer := time.NewTimer(task.nextDelay())
+	timer := time.NewTimer(task.interval)
 	defer timer.Stop()
 	for {
 		select {
@@ -249,7 +219,7 @@ func (r *ChannelMonitorRunner) runScheduled(ctx context.Context, task *scheduled
 			return
 		case <-timer.C:
 			r.fire(ctx, task)
-			timer.Reset(task.nextDelay())
+			timer.Reset(task.interval)
 		}
 	}
 }

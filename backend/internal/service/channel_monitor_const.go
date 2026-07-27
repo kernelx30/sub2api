@@ -16,7 +16,7 @@ const (
 	// monitorDegradedThreshold 主请求成功但耗时超过该阈值视为 degraded。
 	monitorDegradedThreshold = 6 * time.Second
 	// monitorHistoryRetentionDays 明细历史保留天数。
-	// 60s 默认间隔 * 30 天 ≈ 43200 行/monitor/model，一般部署总量 <= 2M 行，
+	// 60s 固定间隔 * 30 天 ≈ 43200 行/monitor/model，一般部署总量 <= 2M 行，
 	// PG 无压力；所以直接保留完整明细一个月，可用率查询可以全走原始行不依赖聚合。
 	// 聚合表 channel_monitor_daily_rollups 仍然保留，作为长期历史回填/降级查询的兜底。
 	monitorHistoryRetentionDays = 30
@@ -30,9 +30,9 @@ const (
 	monitorWorkerConcurrency = 5
 	// monitorStartupLoadTimeout Start 时一次性加载所有 enabled monitor 的总超时。
 	monitorStartupLoadTimeout = 10 * time.Second
-	// monitorMinIntervalSeconds / monitorMaxIntervalSeconds 用户配置的检测间隔上下限。
-	monitorMinIntervalSeconds = 15
-	monitorMaxIntervalSeconds = 3600
+	// ChannelMonitorFixedIntervalSeconds 是所有渠道监控唯一的探测间隔。
+	// 保留导出常量，供 handler 和测试使用，避免各层重复 magic number。
+	ChannelMonitorFixedIntervalSeconds = 60
 	// monitorMessageMaxBytes message 字段最大字节数（与 schema/migration 一致）。
 	monitorMessageMaxBytes = 500
 	// monitorResponseMaxBytes 单次模型响应最大读取字节，防止 OOM。
@@ -70,11 +70,6 @@ const (
 	MonitorStatusDegraded    = "degraded"
 	MonitorStatusFailed      = "failed"
 	MonitorStatusError       = "error"
-
-	// monitorAvailability7Days / 15 / 30 用于聚合查询窗口。
-	monitorAvailability7Days  = 7
-	monitorAvailability15Days = 15
-	monitorAvailability30Days = 30
 
 	// MonitorHistoryDefaultLimit 历史查询默认返回条数（handler 层共享）。
 	MonitorHistoryDefaultLimit = 100
@@ -125,12 +120,6 @@ var (
 	)
 	ErrChannelMonitorInvalidRequestBody = infraerrors.BadRequest(
 		"CHANNEL_MONITOR_INVALID_REQUEST_BODY", "openai-compatible replace-mode body_override must include non-empty messages for chat_completions or non-empty instructions and input for responses",
-	)
-	ErrChannelMonitorInvalidInterval = infraerrors.BadRequest(
-		"CHANNEL_MONITOR_INVALID_INTERVAL", "interval_seconds must be in [15, 3600]",
-	)
-	ErrChannelMonitorInvalidJitter = infraerrors.BadRequest(
-		"CHANNEL_MONITOR_INVALID_JITTER", "jitter_seconds must be >= 0 and interval_seconds - jitter_seconds must be >= 15",
 	)
 	ErrChannelMonitorInvalidEndpoint = infraerrors.BadRequest(
 		"CHANNEL_MONITOR_INVALID_ENDPOINT", "endpoint must be a valid https URL",
