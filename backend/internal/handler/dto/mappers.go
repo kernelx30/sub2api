@@ -3,7 +3,6 @@ package dto
 
 import (
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -209,7 +208,7 @@ func groupFromServiceBase(g *service.Group) Group {
 		FallbackGroupIDOnInvalidRequest: g.FallbackGroupIDOnInvalidRequest,
 		AllowMessagesDispatch:           g.AllowMessagesDispatch,
 		AllowLive:                       g.AllowLive,
-		OptionalInstructionsAvailable:   g.Platform == service.PlatformOpenAI && g.OptionalInstructionsEnabled && strings.TrimSpace(g.OptionalInstructions) != "",
+		OptionalInstructionsAvailable:   service.GroupOffersOptionalInstructions(g),
 		RequireOAuthOnly:                g.RequireOAuthOnly,
 		RequirePrivacySet:               g.RequirePrivacySet,
 		RPMLimit:                        g.RPMLimit,

@@ -47,15 +47,15 @@ type CreateAPIKeyRequest struct {
 
 // UpdateAPIKeyRequest represents the update API key request payload
 type UpdateAPIKeyRequest struct {
-	Name                        string    `json:"name"`
-	GroupID                     *int64    `json:"group_id"`
-	OptionalInstructionsEnabled *bool     `json:"optional_instructions_enabled"`
-	Status                      string    `json:"status" binding:"omitempty,oneof=active inactive"`
-	IPWhitelist                 *[]string `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
-	IPBlacklist                 *[]string `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
-	Quota                       *float64  `json:"quota"`        // 配额限制 (USD), 0=无限制
-	ExpiresAt                   *string   `json:"expires_at"`   // 过期时间 (ISO 8601)
-	ResetQuota                  *bool     `json:"reset_quota"`  // 重置已用配额
+	Name                        string                 `json:"name"`
+	GroupID                     dto.NullableInt64Field `json:"group_id,omitempty"`
+	OptionalInstructionsEnabled *bool                  `json:"optional_instructions_enabled"`
+	Status                      string                 `json:"status" binding:"omitempty,oneof=active inactive"`
+	IPWhitelist                 *[]string              `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
+	IPBlacklist                 *[]string              `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
+	Quota                       *float64               `json:"quota"`        // 配额限制 (USD), 0=无限制
+	ExpiresAt                   *string                `json:"expires_at"`   // 过期时间 (ISO 8601)
+	ResetQuota                  *bool                  `json:"reset_quota"`  // 重置已用配额
 
 	// Rate limit fields (nil = no change, 0 = unlimited)
 	RateLimit5h         *float64 `json:"rate_limit_5h"`
@@ -217,11 +217,12 @@ func (h *APIKeyHandler) Update(c *gin.Context) {
 		RateLimit7d:                 req.RateLimit7d,
 		ResetRateLimitUsage:         req.ResetRateLimitUsage,
 		OptionalInstructionsEnabled: req.OptionalInstructionsEnabled,
+		GroupIDSet:                  req.GroupID.Set,
+		GroupID:                     req.GroupID.Value,
 	}
 	if req.Name != "" {
 		svcReq.Name = &req.Name
 	}
-	svcReq.GroupID = req.GroupID
 	if req.Status != "" {
 		svcReq.Status = &req.Status
 	}

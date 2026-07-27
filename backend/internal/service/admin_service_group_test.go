@@ -4,11 +4,17 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
 )
+
+func TestValidateOptionalInstructionsCountsUnicodeCharacters(t *testing.T) {
+	require.NoError(t, validateOptionalInstructions(strings.Repeat("界", optionalInstructionsMaxCharacters)))
+	require.Error(t, validateOptionalInstructions(strings.Repeat("界", optionalInstructionsMaxCharacters+1)))
+}
 
 func ptrString[T ~string](v T) *string {
 	s := string(v)

@@ -26,6 +26,8 @@ import (
 //   - deletedIDs: 记录被调用删除的 API Key ID，用于断言验证
 type apiKeyRepoStub struct {
 	apiKey                 *APIKey // GetKeyAndOwnerID 的返回值
+	allowCreate            bool
+	createdKeys            []APIKey
 	getByIDErr             error   // GetKeyAndOwnerID 的错误返回值
 	deleteErr              error   // Delete 的错误返回值
 	updateErr              error   // Update 的错误返回值
@@ -50,7 +52,16 @@ type apiKeyRepoStub struct {
 // 以下方法在本测试中不应被调用，使用 panic 确保测试失败时能快速定位问题
 
 func (s *apiKeyRepoStub) Create(ctx context.Context, key *APIKey) error {
-	panic("unexpected Create call")
+	if !s.allowCreate {
+		panic("unexpected Create call")
+	}
+	if key != nil {
+		clone := *key
+		clone.ID = int64(len(s.createdKeys) + 1)
+		key.ID = clone.ID
+		s.createdKeys = append(s.createdKeys, clone)
+	}
+	return nil
 }
 
 func (s *apiKeyRepoStub) GetByID(ctx context.Context, id int64) (*APIKey, error) {

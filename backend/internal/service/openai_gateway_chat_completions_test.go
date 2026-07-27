@@ -325,6 +325,19 @@ func TestForwardAsChatCompletions_OAuthPromotesSystemMessageWithoutDuplication(t
 	require.Equal(t, 1, strings.Count(string(upstreamBody), systemPrompt))
 }
 
+func TestForwardAsChatCompletions_OAuthPreservesDeveloperInstructions(t *testing.T) {
+	const developerPrompt = "<group_optional_instructions>\nadmin\n</group_optional_instructions>"
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"developer","content":"<group_optional_instructions>\nadmin\n</group_optional_instructions>"},{"role":"system","content":"client system"},{"role":"user","content":"hello"}],"stream":false}`)
+
+	upstreamBody := forwardOAuthChatCompletionsForUpstreamBody(t, body)
+
+	require.Equal(t, "developer", gjson.GetBytes(upstreamBody, "input.0.role").String())
+	require.Equal(t, developerPrompt, gjson.GetBytes(upstreamBody, "input.0.content").String())
+	require.Equal(t, "client system", gjson.GetBytes(upstreamBody, "instructions").String())
+	require.Equal(t, "user", gjson.GetBytes(upstreamBody, "input.1.role").String())
+	require.Equal(t, int64(2), gjson.GetBytes(upstreamBody, "input.#").Int())
+}
+
 func TestForwardAsChatCompletions_OAuthJsonObjectKeepsSystemMessageInInput(t *testing.T) {
 	const systemPrompt = "Return JSON only."
 	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"system","content":"` + systemPrompt + `"},{"role":"user","content":"symbol data"}],"response_format":{"type":" JSON_OBJECT "},"stream":false}`)

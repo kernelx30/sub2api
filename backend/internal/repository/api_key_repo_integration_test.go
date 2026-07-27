@@ -9,6 +9,7 @@ import (
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/ent/apikey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
@@ -335,6 +336,11 @@ func (s *APIKeyRepoSuite) TestClearGroupIDByGroupID() {
 	k1 := s.mustCreateApiKey(user.ID, "sk-clr-1", "K1", &group.ID)
 	k2 := s.mustCreateApiKey(user.ID, "sk-clr-2", "K2", &group.ID)
 	s.mustCreateApiKey(user.ID, "sk-clr-3", "K3", nil) // no group
+	_, err := s.client.APIKey.Update().
+		Where(apikey.IDIn(k1.ID, k2.ID)).
+		SetOptionalInstructionsEnabled(true).
+		Save(s.ctx)
+	require.NoError(s.T(), err)
 
 	affected, err := s.repo.ClearGroupIDByGroupID(s.ctx, group.ID)
 	s.Require().NoError(err, "ClearGroupIDByGroupID")
@@ -344,9 +350,32 @@ func (s *APIKeyRepoSuite) TestClearGroupIDByGroupID() {
 	got2, _ := s.repo.GetByID(s.ctx, k2.ID)
 	s.Require().Nil(got1.GroupID)
 	s.Require().Nil(got2.GroupID)
+	s.Require().False(got1.OptionalInstructionsEnabled)
+	s.Require().False(got2.OptionalInstructionsEnabled)
 
 	count, _ := s.repo.CountByGroupID(s.ctx, group.ID)
 	s.Require().Zero(count)
+}
+
+func (s *APIKeyRepoSuite) TestUpdateGroupIDByUserAndGroupClearsUnavailableOptionalInstructions(t *testing.T) {
+	user := s.mustCreateUser("movegrp@test.com")
+	source := s.mustCreateGroup("g-move-source")
+	target := s.mustCreateGroup("g-move-target")
+	key := s.mustCreateApiKey(user.ID, "sk-move-1", "K1", &source.ID)
+	_, err := s.client.APIKey.UpdateOneID(key.ID).
+		SetOptionalInstructionsEnabled(true).
+		Save(s.ctx)
+	require.NoError(t, err)
+
+	affected, err := s.repo.UpdateGroupIDByUserAndGroup(s.ctx, user.ID, source.ID, target.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), affected)
+
+	got, err := s.repo.GetByID(s.ctx, key.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.GroupID)
+	require.Equal(t, target.ID, *got.GroupID)
+	require.False(t, got.OptionalInstructionsEnabled)
 }
 
 // --- Combined CRUD/Search/ClearGroupID (original test preserved as integration) ---

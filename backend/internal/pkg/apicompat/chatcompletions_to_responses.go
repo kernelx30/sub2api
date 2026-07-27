@@ -115,8 +115,8 @@ func convertChatMessagesToResponsesInput(msgs []ChatMessage) ([]ResponsesInputIt
 // ResponsesInputItem values.
 func chatMessageToResponsesItems(m ChatMessage) ([]ResponsesInputItem, error) {
 	switch m.Role {
-	case "system":
-		return chatSystemToResponses(m)
+	case "system", "developer":
+		return chatInstructionToResponses(m)
 	case "user":
 		return chatUserToResponses(m)
 	case "assistant":
@@ -130,8 +130,10 @@ func chatMessageToResponsesItems(m ChatMessage) ([]ResponsesInputItem, error) {
 	}
 }
 
-// chatSystemToResponses converts a system message.
-func chatSystemToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
+// chatInstructionToResponses converts a system/developer message while
+// preserving its instruction role. Treating developer as the default user
+// role silently lowers its priority on the Responses API path.
+func chatInstructionToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 	parsed, err := parseChatMessageContent(m.Content)
 	if err != nil {
 		return nil, err
@@ -140,7 +142,7 @@ func chatSystemToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []ResponsesInputItem{{Role: "system", Content: content}}, nil
+	return []ResponsesInputItem{{Role: m.Role, Content: content}}, nil
 }
 
 // chatUserToResponses converts a user message, handling both plain strings and

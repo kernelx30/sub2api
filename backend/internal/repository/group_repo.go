@@ -846,6 +846,13 @@ func (r *groupRepository) DeleteCascade(ctx context.Context, id int64) ([]int64,
 		return nil, err
 	}
 
+	// A deleted group intentionally remains bound to its keys so authentication
+	// can reject the stale binding. Clear only the optional-instructions opt-in,
+	// otherwise the key carries a misleading latent enabled state in the UI.
+	if _, err := exec.ExecContext(ctx, "UPDATE api_keys SET optional_instructions_enabled = FALSE, updated_at = NOW() WHERE group_id = $1 AND optional_instructions_enabled = TRUE", id); err != nil {
+		return nil, err
+	}
+
 	// 5. Soft-delete group itself.
 	if _, err := txClient.Group.Delete().Where(group.IDEQ(id)).Exec(ctx); err != nil {
 		return nil, err

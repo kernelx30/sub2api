@@ -667,11 +667,13 @@ func (r *apiKeyRepository) SearchAPIKeys(ctx context.Context, userID int64, keyw
 	return outKeys, nil
 }
 
-// ClearGroupIDByGroupID 将指定分组的所有 API Key 的 group_id 设为 nil
+// ClearGroupIDByGroupID unbinds all active API keys from a group. An unbound
+// key must never retain a latent optional-instructions opt-in.
 func (r *apiKeyRepository) ClearGroupIDByGroupID(ctx context.Context, groupID int64) (int64, error) {
 	n, err := r.client.APIKey.Update().
 		Where(apikey.GroupIDEQ(groupID), apikey.DeletedAtIsNil()).
 		ClearGroupID().
+		SetOptionalInstructionsEnabled(false).
 		Save(ctx)
 	return int64(n), err
 }
@@ -679,10 +681,17 @@ func (r *apiKeyRepository) ClearGroupIDByGroupID(ctx context.Context, groupID in
 // UpdateGroupIDByUserAndGroup 将用户下绑定 oldGroupID 的所有 Key 迁移到 newGroupID
 func (r *apiKeyRepository) UpdateGroupIDByUserAndGroup(ctx context.Context, userID, oldGroupID, newGroupID int64) (int64, error) {
 	client := clientFromContext(ctx, r.client)
-	n, err := client.APIKey.Update().
+	target, err := client.Group.Query().Where(group.IDEQ(newGroupID)).Only(ctx)
+	if err != nil {
+		return 0, err
+	}
+	update := client.APIKey.Update().
 		Where(apikey.UserIDEQ(userID), apikey.GroupIDEQ(oldGroupID), apikey.DeletedAtIsNil()).
-		SetGroupID(newGroupID).
-		Save(ctx)
+		SetGroupID(newGroupID)
+	if !service.GroupOffersOptionalInstructions(groupEntityToService(target)) {
+		update.SetOptionalInstructionsEnabled(false)
+	}
+	n, err := update.Save(ctx)
 	return int64(n), err
 }
 

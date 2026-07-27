@@ -198,8 +198,11 @@ type CreateAPIKeyRequest struct {
 
 // UpdateAPIKeyRequest 更新API Key请求
 type UpdateAPIKeyRequest struct {
-	Name                        *string   `json:"name"`
-	GroupID                     *int64    `json:"group_id"`
+	Name    *string `json:"name"`
+	GroupID *int64  `json:"group_id"`
+	// GroupIDSet distinguishes an omitted field from an explicit JSON null.
+	// Direct service callers that provide a non-nil GroupID remain compatible.
+	GroupIDSet                  bool      `json:"-"`
 	Status                      *string   `json:"status"`
 	OptionalInstructionsEnabled *bool     `json:"optional_instructions_enabled"`
 	IPWhitelist                 *[]string `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
@@ -421,6 +424,7 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		}
 	}
 
+	var selectedGroup *Group
 	// 验证分组权限（如果指定了分组）
 	if req.GroupID != nil {
 		group, err := s.groupRepo.GetByID(ctx, *req.GroupID)
@@ -432,6 +436,7 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		if !s.canUserBindGroup(ctx, user, group) {
 			return nil, ErrGroupNotAllowed
 		}
+		selectedGroup = group
 	}
 
 	var key string
@@ -475,7 +480,7 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		Key:                         key,
 		Name:                        html.EscapeString(req.Name),
 		GroupID:                     req.GroupID,
-		OptionalInstructionsEnabled: req.OptionalInstructionsEnabled,
+		OptionalInstructionsEnabled: req.OptionalInstructionsEnabled && GroupOffersOptionalInstructions(selectedGroup),
 		Status:                      StatusActive,
 		IPWhitelist:                 req.IPWhitelist,
 		IPBlacklist:                 req.IPBlacklist,
@@ -726,7 +731,14 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 		apiKey.Name = html.EscapeString(*req.Name)
 	}
 
-	if req.GroupID != nil {
+	targetGroup := apiKey.Group
+	groupIDSet := req.GroupIDSet || req.GroupID != nil
+	if groupIDSet && req.GroupID == nil {
+		apiKey.GroupID = nil
+		apiKey.Group = nil
+		targetGroup = nil
+		apiKey.OptionalInstructionsEnabled = false
+	} else if req.GroupID != nil {
 		// 验证分组权限
 		user, err := s.userRepo.GetByID(ctx, userID)
 		if err != nil {
@@ -742,7 +754,10 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 			return nil, ErrGroupNotAllowed
 		}
 
-		apiKey.GroupID = req.GroupID
+		groupID := *req.GroupID
+		apiKey.GroupID = &groupID
+		apiKey.Group = group
+		targetGroup = group
 	}
 
 	if req.Status != nil {
@@ -753,7 +768,11 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 		}
 	}
 	if req.OptionalInstructionsEnabled != nil {
-		apiKey.OptionalInstructionsEnabled = *req.OptionalInstructionsEnabled
+		apiKey.OptionalInstructionsEnabled = *req.OptionalInstructionsEnabled && GroupOffersOptionalInstructions(targetGroup)
+	} else if groupIDSet && !GroupOffersOptionalInstructions(targetGroup) {
+		// Moving a key to a group that does not offer the feature must not leave
+		// a latent opt-in that springs back to life if that group is enabled later.
+		apiKey.OptionalInstructionsEnabled = false
 	}
 
 	// Update quota fields

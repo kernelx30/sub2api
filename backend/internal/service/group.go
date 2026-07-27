@@ -110,6 +110,15 @@ type Group struct {
 	RateLimitedAccountCount int64
 }
 
+// GroupOffersOptionalInstructions is the single eligibility rule shared by
+// user-facing DTOs, API-key opt-in persistence, and request injection.
+func GroupOffersOptionalInstructions(group *Group) bool {
+	return group != nil &&
+		group.Platform == PlatformOpenAI &&
+		group.OptionalInstructionsEnabled &&
+		strings.TrimSpace(group.OptionalInstructions) != ""
+}
+
 func (g *Group) IsActive() bool {
 	return g.Status == StatusActive
 }

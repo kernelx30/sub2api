@@ -104,7 +104,10 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		h.openAISecurityAuditError(c, decision)
 		return
 	}
-	if injectedBody, _, injectErr := injectOptionalChatCompletionsMessages(body, apiKey); injectErr != nil {
+	// Resolve the group-level alias before injection so a model-scoped prompt
+	// applies to the model that will actually be forwarded as well as its alias.
+	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+	if injectedBody, _, injectErr := injectOptionalChatCompletionsMessages(body, apiKey, reqModel, channelMapping.MappedModel); injectErr != nil {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to inject optional instructions")
 		return
 	} else {
@@ -113,9 +116,6 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	if h.rejectIfCyberSessionBlocked(c, apiKey, body, reqModel, cyberBlockFormatChat) {
 		return
 	}
-
-	// 解析渠道级模型映射
-	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
 
 	if h.errorPassthroughService != nil {
 		service.BindErrorPassthroughService(c, h.errorPassthroughService)
@@ -224,6 +224,22 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		forwardBody := body
 		if channelMapping.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
+		}
+		accountMappedModel := optionalInstructionsAccountMappedModel(account, reqModel, channelMapping.MappedModel)
+		if injectedBody, _, injectErr := injectOptionalChatCompletionsMessages(
+			forwardBody,
+			apiKey,
+			reqModel,
+			channelMapping.MappedModel,
+			accountMappedModel,
+		); injectErr != nil {
+			if accountReleaseFunc != nil {
+				accountReleaseFunc()
+			}
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to inject optional instructions")
+			return
+		} else {
+			forwardBody = injectedBody
 		}
 		writerSizeBeforeForward := c.Writer.Size()
 		result, err := func() (*service.OpenAIForwardResult, error) {

@@ -206,7 +206,7 @@ func (Group) Fields() []ent.Field {
 			Comment("Whether this OpenAI group offers optional server-side instructions"),
 		field.String("optional_instructions").
 			Default("").
-			MaxLen(16384).
+			MaxRuneLen(domain.OptionalInstructionsMaxCharacters).
 			SchemaType(map[string]string{dialect.Postgres: "text"}).
 			Comment("Optional server-side instructions offered by this OpenAI group"),
 		field.Bool("require_oauth_only").

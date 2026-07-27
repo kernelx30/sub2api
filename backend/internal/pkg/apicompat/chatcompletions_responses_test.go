@@ -92,6 +92,26 @@ func TestChatCompletionsToResponses_SystemMessage(t *testing.T) {
 	assert.Equal(t, "user", items[1].Role)
 }
 
+func TestChatCompletionsToResponses_DeveloperMessagePreservesRole(t *testing.T) {
+	req := &ChatCompletionsRequest{
+		Model: "gpt-5.4",
+		Messages: []ChatMessage{
+			{Role: "developer", Content: json.RawMessage(`"Group instructions"`)},
+			{Role: "user", Content: json.RawMessage(`"Hi"`)},
+		},
+	}
+
+	resp, err := ChatCompletionsToResponses(req)
+	require.NoError(t, err)
+
+	var items []ResponsesInputItem
+	require.NoError(t, json.Unmarshal(resp.Input, &items))
+	require.Len(t, items, 2)
+	assert.Equal(t, "developer", items[0].Role)
+	assert.JSONEq(t, `"Group instructions"`, string(items[0].Content))
+	assert.Equal(t, "user", items[1].Role)
+}
+
 func TestChatCompletionsToResponses_ToolCalls(t *testing.T) {
 	req := &ChatCompletionsRequest{
 		Model: "gpt-4o",

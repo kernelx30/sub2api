@@ -111,11 +111,12 @@ func TestGroupRepository_DeleteCascade_PreservesApiKeyGroupID(t *testing.T) {
 	require.NoError(t, userRepo.Create(ctx, u))
 
 	key := &service.APIKey{
-		UserID:  u.ID,
-		Key:     uniqueTestValue(t, "sk-test-delete-cascade"),
-		Name:    "test key",
-		GroupID: &targetGroup.ID,
-		Status:  service.StatusActive,
+		UserID:                      u.ID,
+		Key:                         uniqueTestValue(t, "sk-test-delete-cascade"),
+		Name:                        "test key",
+		GroupID:                     &targetGroup.ID,
+		Status:                      service.StatusActive,
+		OptionalInstructionsEnabled: true,
 	}
 	require.NoError(t, apiKeyRepo.Create(ctx, key))
 
@@ -144,4 +145,5 @@ func TestGroupRepository_DeleteCascade_PreservesApiKeyGroupID(t *testing.T) {
 	require.NotNil(t, keyAfter.GroupID)
 	require.Equal(t, targetGroup.ID, *keyAfter.GroupID)
 	require.Nil(t, keyAfter.Group)
+	require.False(t, keyAfter.OptionalInstructionsEnabled)
 }

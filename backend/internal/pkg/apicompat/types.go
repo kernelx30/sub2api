@@ -648,7 +648,7 @@ type ChatStreamOptions struct {
 
 // ChatMessage is a single message in the Chat Completions conversation.
 type ChatMessage struct {
-	Role             string          `json:"role"` // "system" | "user" | "assistant" | "tool" | "function"
+	Role             string          `json:"role"` // "developer" | "system" | "user" | "assistant" | "tool" | "function"
 	Content          json.RawMessage `json:"content,omitempty"`
 	ReasoningContent string          `json:"reasoning_content,omitempty"`
 	Name             string          `json:"name,omitempty"`

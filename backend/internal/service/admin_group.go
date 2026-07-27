@@ -9,6 +9,7 @@ import (
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -18,6 +19,15 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
+
+const optionalInstructionsMaxCharacters = domain.OptionalInstructionsMaxCharacters
+
+func validateOptionalInstructions(instructions string) error {
+	if err := domain.ValidateOptionalInstructions(instructions); err != nil {
+		return infraerrors.Newf(http.StatusBadRequest, "OPTIONAL_INSTRUCTIONS_TOO_LONG", "%v", err)
+	}
+	return nil
+}
 
 // Group management implementations
 func (s *adminServiceImpl) ListGroups(ctx context.Context, page, pageSize int, platform, status, search string, isExclusive *bool, sortBy, sortOrder string) ([]Group, int64, error) {
@@ -488,8 +498,8 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		group.OptionalInstructionsEnabled = false
 		group.OptionalInstructions = ""
 	}
-	if len(group.OptionalInstructions) > 16*1024 {
-		return nil, infraerrors.Newf(http.StatusBadRequest, "OPTIONAL_INSTRUCTIONS_TOO_LONG", "optional instructions must not exceed 16384 bytes")
+	if err := validateOptionalInstructions(group.OptionalInstructions); err != nil {
+		return nil, err
 	}
 	sanitizeGroupReasoningEffortPolicy(group)
 	if err := s.groupRepo.Create(ctx, group); err != nil {
@@ -796,8 +806,8 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	if input.OptionalInstructions != nil {
 		group.OptionalInstructions = strings.TrimSpace(*input.OptionalInstructions)
-		if len(group.OptionalInstructions) > 16*1024 {
-			return nil, infraerrors.Newf(http.StatusBadRequest, "OPTIONAL_INSTRUCTIONS_TOO_LONG", "optional instructions must not exceed 16384 bytes")
+		if err := validateOptionalInstructions(group.OptionalInstructions); err != nil {
+			return nil, err
 		}
 	}
 	if input.RequireOAuthOnly != nil {
@@ -1051,6 +1061,7 @@ func (s *adminServiceImpl) AdminUpdateAPIKeyGroupID(ctx context.Context, keyID i
 		// 0 表示解绑分组（不修改 user_allowed_groups，避免影响用户其他 Key）
 		apiKey.GroupID = nil
 		apiKey.Group = nil
+		apiKey.OptionalInstructionsEnabled = false
 	} else {
 		// 验证目标分组存在且状态为 active
 		group, err := s.groupRepo.GetByID(ctx, *groupID)
@@ -1076,6 +1087,9 @@ func (s *adminServiceImpl) AdminUpdateAPIKeyGroupID(ctx context.Context, keyID i
 		gid := *groupID
 		apiKey.GroupID = &gid
 		apiKey.Group = group
+		if !GroupOffersOptionalInstructions(group) {
+			apiKey.OptionalInstructionsEnabled = false
+		}
 
 		// 专属标准分组：使用事务保证「添加分组权限」与「更新 API Key」的原子性
 		if group.IsExclusive && !group.IsSubscriptionType() {

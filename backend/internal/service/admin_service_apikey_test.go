@@ -312,7 +312,7 @@ func TestAdminService_AdminUpdateAPIKeyGroupID_NilGroupID_NoOp(t *testing.T) {
 }
 
 func TestAdminService_AdminUpdateAPIKeyGroupID_Unbind(t *testing.T) {
-	existing := &APIKey{ID: 1, Key: "sk-test", GroupID: int64Ptr(5), Group: &Group{ID: 5, Name: "Old"}}
+	existing := &APIKey{ID: 1, Key: "sk-test", GroupID: int64Ptr(5), Group: &Group{ID: 5, Name: "Old"}, OptionalInstructionsEnabled: true}
 	repo := &apiKeyRepoStubForGroupUpdate{key: existing}
 	cache := &authCacheInvalidatorStub{}
 	svc := &adminServiceImpl{apiKeyRepo: repo, authCacheInvalidator: cache}
@@ -323,11 +323,13 @@ func TestAdminService_AdminUpdateAPIKeyGroupID_Unbind(t *testing.T) {
 	require.Nil(t, got.APIKey.Group, "group object should be nil after unbind")
 	require.NotNil(t, repo.updated, "Update should have been called")
 	require.Nil(t, repo.updated.GroupID)
+	require.False(t, got.APIKey.OptionalInstructionsEnabled)
+	require.False(t, repo.updated.OptionalInstructionsEnabled)
 	require.Equal(t, []string{"sk-test"}, cache.keys, "cache should be invalidated")
 }
 
 func TestAdminService_AdminUpdateAPIKeyGroupID_BindActiveGroup(t *testing.T) {
-	existing := &APIKey{ID: 1, Key: "sk-test", GroupID: nil}
+	existing := &APIKey{ID: 1, Key: "sk-test", GroupID: nil, OptionalInstructionsEnabled: true}
 	apiKeyRepo := &apiKeyRepoStubForGroupUpdate{key: existing}
 	groupRepo := &groupRepoStubForGroupUpdate{group: &Group{ID: 10, Name: "Pro", Status: StatusActive}}
 	cache := &authCacheInvalidatorStub{}
@@ -344,6 +346,8 @@ func TestAdminService_AdminUpdateAPIKeyGroupID_BindActiveGroup(t *testing.T) {
 	// C1 fix: verify Group object is populated
 	require.NotNil(t, got.APIKey.Group)
 	require.Equal(t, "Pro", got.APIKey.Group.Name)
+	require.False(t, got.APIKey.OptionalInstructionsEnabled)
+	require.False(t, apiKeyRepo.updated.OptionalInstructionsEnabled)
 }
 
 func TestAdminService_AdminUpdateAPIKeyGroupID_SameGroup_Idempotent(t *testing.T) {
@@ -438,7 +442,7 @@ func TestAdminService_AdminUpdateAPIKeyGroupID_NilCacheInvalidator(t *testing.T)
 // ---------------------------------------------------------------------------
 
 func TestAdminService_AdminUpdateAPIKeyGroupID_ExclusiveGroup_AddsAllowedGroup(t *testing.T) {
-	existing := &APIKey{ID: 1, UserID: 42, Key: "sk-test", GroupID: nil}
+	existing := &APIKey{ID: 1, UserID: 42, Key: "sk-test", GroupID: nil, OptionalInstructionsEnabled: true}
 	apiKeyRepo := &apiKeyRepoStubForGroupUpdate{key: existing}
 	groupRepo := &groupRepoStubForGroupUpdate{group: &Group{ID: 10, Name: "Exclusive", Status: StatusActive, IsExclusive: true, SubscriptionType: SubscriptionTypeStandard}}
 	userRepo := &userRepoStubForGroupUpdate{}
@@ -458,6 +462,8 @@ func TestAdminService_AdminUpdateAPIKeyGroupID_ExclusiveGroup_AddsAllowedGroup(t
 	require.NotNil(t, got.GrantedGroupID)
 	require.Equal(t, int64(10), *got.GrantedGroupID)
 	require.Equal(t, "Exclusive", got.GrantedGroupName)
+	require.False(t, got.APIKey.OptionalInstructionsEnabled)
+	require.False(t, apiKeyRepo.updated.OptionalInstructionsEnabled)
 }
 
 func TestAdminService_AdminUpdateAPIKeyGroupID_NonExclusiveGroup_NoAllowedGroupUpdate(t *testing.T) {
@@ -508,9 +514,18 @@ func TestAdminService_AdminUpdateAPIKeyGroupID_SubscriptionGroup_RequiresRepo(t 
 }
 
 func TestAdminService_AdminUpdateAPIKeyGroupID_SubscriptionGroup_AllowsActiveSubscription(t *testing.T) {
-	existing := &APIKey{ID: 1, UserID: 42, Key: "sk-test", GroupID: nil}
+	existing := &APIKey{ID: 1, UserID: 42, Key: "sk-test", GroupID: nil, OptionalInstructionsEnabled: true}
 	apiKeyRepo := &apiKeyRepoStubForGroupUpdate{key: existing}
-	groupRepo := &groupRepoStubForGroupUpdate{group: &Group{ID: 10, Name: "Sub", Status: StatusActive, IsExclusive: true, SubscriptionType: SubscriptionTypeSubscription}}
+	groupRepo := &groupRepoStubForGroupUpdate{group: &Group{
+		ID:                          10,
+		Name:                        "Sub",
+		Status:                      StatusActive,
+		Platform:                    PlatformOpenAI,
+		IsExclusive:                 true,
+		SubscriptionType:            SubscriptionTypeSubscription,
+		OptionalInstructionsEnabled: true,
+		OptionalInstructions:        "admin",
+	}}
 	userRepo := &userRepoStubForGroupUpdate{}
 	userSubRepo := &userSubRepoStubForGroupUpdate{
 		getActiveSub: &UserSubscription{ID: 99, UserID: 42, GroupID: 10},
@@ -522,6 +537,8 @@ func TestAdminService_AdminUpdateAPIKeyGroupID_SubscriptionGroup_AllowsActiveSub
 	require.True(t, userSubRepo.called)
 	require.NotNil(t, got.APIKey.GroupID)
 	require.Equal(t, int64(10), *got.APIKey.GroupID)
+	require.True(t, got.APIKey.OptionalInstructionsEnabled)
+	require.True(t, apiKeyRepo.updated.OptionalInstructionsEnabled)
 	require.False(t, userRepo.addGroupCalled)
 }
 

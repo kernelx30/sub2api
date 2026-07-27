@@ -129,6 +129,12 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(false, false)))
 
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+	if injectedBody, _, injectErr := injectOptionalAnthropicSystem(body, apiKey, reqModel, preferredMappedModel, channelMapping.MappedModel); injectErr != nil {
+		h.anthropicErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to inject optional instructions")
+		return
+	} else {
+		body = injectedBody
+	}
 	mappedBodyForMessages := newOpenAIModelMappedBodyCache(body, h.gatewayService.ReplaceModelInBody)
 
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
@@ -188,6 +194,20 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 		defer selection.ReleaseFunc()
 	}
 	forwardBody := mappedBodyForMessages(channelMapping.Mapped, channelMapping.MappedModel)
+	accountMappedModel := optionalInstructionsAccountMappedModel(account, reqModel, channelMapping.MappedModel)
+	if injectedBody, _, injectErr := injectOptionalAnthropicSystem(
+		forwardBody,
+		apiKey,
+		reqModel,
+		preferredMappedModel,
+		channelMapping.MappedModel,
+		accountMappedModel,
+	); injectErr != nil {
+		h.anthropicErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to inject optional instructions")
+		return
+	} else {
+		forwardBody = injectedBody
+	}
 	defaultMappedModel := preferredMappedModel
 
 	if err := h.gatewayService.ForwardCountTokensAsAnthropic(c.Request.Context(), c, account, forwardBody, defaultMappedModel); err != nil {

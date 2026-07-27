@@ -1,21 +1,115 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"strings"
+	"unicode"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
 const optionalInstructionsOpenTag = "<group_optional_instructions>"
 const optionalInstructionsCloseTag = "</group_optional_instructions>"
+const optionalInstructionsModelScopePrefix = "[MODEL_SCOPE:"
 
-func optionalInstructionsForAPIKey(apiKey *service.APIKey) string {
-	if apiKey == nil || !apiKey.OptionalInstructionsEnabled || apiKey.Group == nil ||
-		apiKey.Group.Platform != service.PlatformOpenAI || !apiKey.Group.OptionalInstructionsEnabled {
+func optionalInstructionsForAPIKey(apiKey *service.APIKey, candidateModels ...string) string {
+	if apiKey == nil || !apiKey.OptionalInstructionsEnabled || !service.GroupOffersOptionalInstructions(apiKey.Group) {
 		return ""
 	}
-	return strings.TrimSpace(apiKey.Group.OptionalInstructions)
+
+	instructions, modelPatterns, scoped := parseOptionalInstructionsModelScope(apiKey.Group.OptionalInstructions)
+	if instructions == "" {
+		return ""
+	}
+	if scoped {
+		for _, model := range candidateModels {
+			if optionalInstructionsModelMatches(model, modelPatterns) {
+				return instructions
+			}
+		}
+		return ""
+	}
+	return instructions
+}
+
+// parseOptionalInstructionsModelScope recognizes an optional first-line directive:
+// [MODEL_SCOPE: gpt-5.5*, gpt-5.6*]. The directive controls injection and is not sent upstream.
+func parseOptionalInstructionsModelScope(raw string) (instructions string, modelPatterns []string, scoped bool) {
+	instructions = strings.TrimSpace(raw)
+	instructions = strings.TrimSpace(strings.TrimPrefix(instructions, "\ufeff"))
+	if instructions == "" {
+		return "", nil, false
+	}
+
+	firstLine := instructions
+	remainder := ""
+	if newline := strings.IndexByte(instructions, '\n'); newline >= 0 {
+		firstLine = instructions[:newline]
+		remainder = instructions[newline+1:]
+	}
+	firstLine = strings.TrimSpace(strings.TrimSuffix(firstLine, "\r"))
+	upperFirstLine := strings.ToUpper(firstLine)
+	if !strings.HasPrefix(upperFirstLine, "[MODEL_SCOPE") {
+		return instructions, nil, false
+	}
+	// A malformed scope-like directive must not fall back to all-model injection.
+	if !strings.HasPrefix(upperFirstLine, optionalInstructionsModelScopePrefix) || !strings.HasSuffix(firstLine, "]") {
+		return strings.TrimSpace(remainder), nil, true
+	}
+
+	rawPatterns := firstLine[len(optionalInstructionsModelScopePrefix) : len(firstLine)-1]
+	modelPatterns = strings.FieldsFunc(rawPatterns, func(r rune) bool {
+		return r == ',' || r == ';' || r == '；' || unicode.IsSpace(r)
+	})
+	for i := range modelPatterns {
+		modelPatterns[i] = strings.TrimSpace(modelPatterns[i])
+	}
+	return strings.TrimSpace(remainder), modelPatterns, true
+}
+
+func optionalInstructionsModelMatches(requestedModel string, modelPatterns []string) bool {
+	model := strings.ToLower(strings.TrimSpace(requestedModel))
+	if model == "" || len(modelPatterns) == 0 {
+		return false
+	}
+
+	candidates := []string{model}
+	if unprefixed := strings.TrimPrefix(model, "models/"); unprefixed != model {
+		candidates = append(candidates, unprefixed)
+	}
+	if slash := strings.LastIndexByte(model, '/'); slash >= 0 && slash+1 < len(model) {
+		candidates = append(candidates, model[slash+1:])
+	}
+
+	for _, rawPattern := range modelPatterns {
+		pattern := strings.ToLower(strings.TrimSpace(rawPattern))
+		if pattern == "" {
+			continue
+		}
+		for _, candidate := range candidates {
+			if pattern == "*" || candidate == pattern ||
+				(strings.HasSuffix(pattern, "*") && strings.HasPrefix(candidate, strings.TrimSuffix(pattern, "*"))) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// optionalInstructionsAccountMappedModel mirrors the final account-level
+// mapping input: channel mapping is applied first, then account mapping.
+func optionalInstructionsAccountMappedModel(account *service.Account, requestedModel, channelMappedModel string) string {
+	if account == nil {
+		return ""
+	}
+	effectiveModel := strings.TrimSpace(channelMappedModel)
+	if effectiveModel == "" {
+		effectiveModel = strings.TrimSpace(requestedModel)
+	}
+	return strings.TrimSpace(account.GetMappedModel(effectiveModel))
 }
 
 func formatOptionalInstructions(instructions string) string {
@@ -37,43 +131,49 @@ func prependOptionalInstructions(existing, instructions string) string {
 // while leaving every client-provided message, tool rule, and ordering intact.
 // It is client-neutral within OpenAI groups so SDKs, desktop clients, and
 // compatibility bridges all receive the same group instructions.
-func injectOptionalChatCompletionsMessages(body []byte, apiKey *service.APIKey) ([]byte, bool, error) {
-	instructions := optionalInstructionsForAPIKey(apiKey)
+func injectOptionalChatCompletionsMessages(body []byte, apiKey *service.APIKey, candidateModels ...string) ([]byte, bool, error) {
+	instructions := optionalInstructionsForAPIKey(apiKey, candidateModels...)
 	if instructions == "" {
 		return body, false, nil
 	}
-	var root map[string]any
-	if err := json.Unmarshal(body, &root); err != nil {
+	root, err := decodeOptionalInstructionsObject(body)
+	if err != nil {
 		return nil, false, err
 	}
-	messages, ok := root["messages"].([]any)
+	rawMessages, hasMessages := root["messages"]
+	if !hasMessages {
+		// Cursor and a few compatible clients send a Responses-shaped payload to
+		// /v1/chat/completions. The service forwards that shape as Responses, so
+		// inject into its native instructions field instead of silently skipping.
+		if _, hasInput := root["input"]; hasInput {
+			return injectOptionalResponsesInstructions(body, apiKey, candidateModels...)
+		}
+		return body, false, nil
+	}
+	messages, ok := rawMessages.([]any)
 	if !ok {
 		return body, false, nil
 	}
-	// A developer message has higher priority on current GPT models. Prefer it
-	// when present, then fall back to the older system role for compatibility.
-	for _, targetRole := range []string{"developer", "system"} {
-		for _, raw := range messages {
-			message, ok := raw.(map[string]any)
-			if !ok || !strings.EqualFold(strings.TrimSpace(stringValue(message["role"])), targetRole) {
-				continue
-			}
-			changed, handled := prependOptionalInstructionsToChatMessage(message, instructions)
-			if !handled || !changed {
-				if handled {
-					return body, false, nil
-				}
-				continue
-			}
-			updated, err := json.Marshal(root)
-			return updated, err == nil, err
+	// Current GPT models prioritize developer messages over the legacy system
+	// role. Keep client system messages untouched and inject only into an
+	// existing developer message or a new leading developer message.
+	for _, raw := range messages {
+		message, ok := raw.(map[string]any)
+		if !ok || !strings.EqualFold(strings.TrimSpace(stringValue(message["role"])), "developer") {
+			continue
 		}
+		changed, handled := prependOptionalInstructionsToChatMessage(message, instructions)
+		if !handled {
+			continue
+		}
+		if !changed {
+			return body, false, nil
+		}
+		updated, err := json.Marshal(root)
+		return updated, err == nil, err
 	}
-	// Current GPT models give developer messages higher priority than legacy
-	// system messages on the Chat Completions compatibility path. When the
-	// client did not supply either role, create a developer message so the
-	// group instruction has the same effective priority as Responses
-	// `instructions`. Existing client messages remain in their original order.
+	// The new message is prepended without changing the order or contents of
+	// any client-provided messages.
 	root["messages"] = append([]any{map[string]any{
 		"role":    "developer",
 		"content": formatOptionalInstructions(instructions),
@@ -92,7 +192,7 @@ func prependOptionalInstructionsToChatMessage(message map[string]any, instructio
 		message["content"] = merged
 		return true, true
 	case []any:
-		if contentBlocksContainOptionalInstructions(content) {
+		if contentBlocksStartWithOptionalInstructions(content, instructions) {
 			return false, true
 		}
 		message["content"] = append([]any{map[string]any{
@@ -108,47 +208,50 @@ func prependOptionalInstructionsToChatMessage(message map[string]any, instructio
 	}
 }
 
-func contentBlocksContainOptionalInstructions(blocks []any) bool {
-	for _, raw := range blocks {
-		if block, ok := raw.(map[string]any); ok {
-			if strings.Contains(stringValue(block["text"]), optionalInstructionsOpenTag) {
-				return true
-			}
-		}
+func contentBlocksStartWithOptionalInstructions(blocks []any, instructions string) bool {
+	if len(blocks) == 0 {
+		return false
 	}
-	return false
+	block, ok := blocks[0].(map[string]any)
+	if !ok || !strings.EqualFold(strings.TrimSpace(stringValue(block["type"])), "text") {
+		return false
+	}
+	return strings.TrimSpace(stringValue(block["text"])) == formatOptionalInstructions(instructions)
 }
 
-func injectOptionalResponsesInstructions(body []byte, apiKey *service.APIKey) ([]byte, bool, error) {
-	instructions := optionalInstructionsForAPIKey(apiKey)
+func injectOptionalResponsesInstructions(body []byte, apiKey *service.APIKey, candidateModels ...string) ([]byte, bool, error) {
+	instructions := optionalInstructionsForAPIKey(apiKey, candidateModels...)
 	if instructions == "" {
 		return body, false, nil
 	}
-	var root map[string]any
-	if err := json.Unmarshal(body, &root); err != nil {
+	root, err := decodeOptionalInstructionsObject(body)
+	if err != nil {
 		return nil, false, err
 	}
-	target := root
-	if response, ok := root["response"].(map[string]any); ok && strings.EqualFold(strings.TrimSpace(stringValue(root["type"])), "response.create") {
-		target = response
+	var existing string
+	if raw, exists := root["instructions"]; exists && raw != nil {
+		var ok bool
+		existing, ok = raw.(string)
+		if !ok {
+			return nil, false, errors.New("instructions must be a string or null")
+		}
 	}
-	existing, _ := target["instructions"].(string)
 	merged := prependOptionalInstructions(existing, instructions)
 	if merged == existing {
 		return body, false, nil
 	}
-	target["instructions"] = merged
+	root["instructions"] = merged
 	updated, err := json.Marshal(root)
 	return updated, err == nil, err
 }
 
-func injectOptionalAnthropicSystem(body []byte, apiKey *service.APIKey) ([]byte, bool, error) {
-	instructions := optionalInstructionsForAPIKey(apiKey)
+func injectOptionalAnthropicSystem(body []byte, apiKey *service.APIKey, candidateModels ...string) ([]byte, bool, error) {
+	instructions := optionalInstructionsForAPIKey(apiKey, candidateModels...)
 	if instructions == "" {
 		return body, false, nil
 	}
-	var root map[string]any
-	if err := json.Unmarshal(body, &root); err != nil {
+	root, err := decodeOptionalInstructionsObject(body)
+	if err != nil {
 		return nil, false, err
 	}
 	prefixBlock := map[string]any{"type": "text", "text": formatOptionalInstructions(instructions)}
@@ -156,12 +259,14 @@ func injectOptionalAnthropicSystem(body []byte, apiKey *service.APIKey) ([]byte,
 	case string:
 		root["system"] = prependOptionalInstructions(system, instructions)
 	case []any:
-		if contentBlocksContainOptionalInstructions(system) {
+		if contentBlocksStartWithOptionalInstructions(system, instructions) {
 			return body, false, nil
 		}
 		root["system"] = append([]any{prefixBlock}, system...)
-	default:
+	case nil:
 		root["system"] = []any{prefixBlock}
+	default:
+		return nil, false, errors.New("system must be a string, array, or null")
 	}
 	updated, err := json.Marshal(root)
 	return updated, err == nil, err
@@ -170,4 +275,26 @@ func injectOptionalAnthropicSystem(body []byte, apiKey *service.APIKey) ([]byte,
 func stringValue(value any) string {
 	text, _ := value.(string)
 	return text
+}
+
+func decodeOptionalInstructionsObject(body []byte) (map[string]any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+
+	var root map[string]any
+	if err := decoder.Decode(&root); err != nil {
+		return nil, err
+	}
+	if root == nil {
+		return nil, errors.New("request body must be a JSON object")
+	}
+
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("request body must contain a single JSON object")
+		}
+		return nil, err
+	}
+	return root, nil
 }

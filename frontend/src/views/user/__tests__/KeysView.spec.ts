@@ -11,6 +11,8 @@ const {
   getDashboardApiKeysUsage,
   getAvailableGroups,
   getUserGroupRates,
+  createKey,
+  updateKey,
   showError,
   showSuccess,
   copyToClipboard,
@@ -22,6 +24,8 @@ const {
   getDashboardApiKeysUsage: vi.fn(),
   getAvailableGroups: vi.fn(),
   getUserGroupRates: vi.fn(),
+  createKey: vi.fn(),
+  updateKey: vi.fn(),
   showError: vi.fn(),
   showSuccess: vi.fn(),
   copyToClipboard: vi.fn(),
@@ -58,8 +62,8 @@ const messages: Record<string, string> = {
 vi.mock('@/api', () => ({
   keysAPI: {
     list: listKeys,
-    create: vi.fn(),
-    update: vi.fn(),
+    create: createKey,
+    update: updateKey,
     delete: vi.fn(),
     toggleStatus: vi.fn(),
   },
@@ -111,6 +115,7 @@ const createApiKey = (): ApiKey => ({
   key: 'sk-test-key',
   name: 'test-key',
   group_id: null,
+  optional_instructions_enabled: false,
   status: 'active',
   ip_whitelist: [],
   ip_blacklist: [],
@@ -138,6 +143,11 @@ const createApiKey = (): ApiKey => ({
 
 const AppLayoutStub = {
   template: '<div><slot /></div>',
+}
+
+const BaseDialogStub = {
+  props: ['show'],
+  template: '<div v-if="show" data-test="base-dialog"><slot /><slot name="footer" /></div>',
 }
 
 const TablePageLayoutStub = {
@@ -172,6 +182,9 @@ const DataTableStub = {
         <slot name="cell-name" :value="row.name" :row="row" />
         <div data-test="current-concurrency">
           <slot name="cell-current_concurrency" :value="row.current_concurrency" :row="row" />
+        </div>
+        <div data-test="actions">
+          <slot name="cell-actions" :row="row" />
         </div>
         <div
           v-if="columns.some((col) => col.key === 'last_used_ip')"
@@ -223,7 +236,7 @@ const mountView = async () => {
         TablePageLayout: TablePageLayoutStub,
         DataTable: DataTableStub,
         Pagination: PaginationStub,
-        BaseDialog: true,
+        BaseDialog: BaseDialogStub,
         ConfirmDialog: true,
         EmptyState: true,
         Select: SelectStub,
@@ -265,6 +278,8 @@ describe('user KeysView column settings', () => {
     getDashboardApiKeysUsage.mockReset()
     getAvailableGroups.mockReset()
     getUserGroupRates.mockReset()
+    createKey.mockReset()
+    updateKey.mockReset()
     showError.mockReset()
     showSuccess.mockReset()
     copyToClipboard.mockReset()
@@ -282,6 +297,8 @@ describe('user KeysView column settings', () => {
     getDashboardApiKeysUsage.mockResolvedValue({ stats: {} })
     getAvailableGroups.mockResolvedValue([])
     getUserGroupRates.mockResolvedValue({})
+    createKey.mockResolvedValue(createApiKey())
+    updateKey.mockResolvedValue(createApiKey())
     isCurrentStep.mockReturnValue(false)
   })
 
@@ -436,6 +453,80 @@ describe('user KeysView column settings', () => {
         sort_order: 'asc',
       },
       expect.objectContaining({ signal: expect.any(AbortSignal) })
+    )
+  })
+
+  it('submits the optional-instructions opt-in for an offering group', async () => {
+    getAvailableGroups.mockResolvedValue([
+      { id: 42, name: 'OpenAI', optional_instructions_available: true },
+    ])
+    const wrapper = await mountView()
+
+    await getButtonByText(wrapper, 'Create API Key').trigger('click')
+    await wrapper.get('[data-tour="key-form-name"]').setValue('enhanced-key')
+    const formGroupSelect = wrapper.findAllComponents({ name: 'Select' }).at(-1)
+    await formGroupSelect!.vm.$emit('update:modelValue', 42)
+    await nextTick()
+
+    const toggle = wrapper.get('[data-test="optional-instructions-toggle"]')
+    expect(toggle.attributes('disabled')).toBeUndefined()
+    await toggle.trigger('click')
+    expect(toggle.attributes('aria-pressed')).toBe('true')
+
+    await wrapper.get('#key-form').trigger('submit')
+    await flushPromises()
+
+    expect(createKey).toHaveBeenCalledTimes(1)
+    expect(createKey.mock.calls[0]?.at(-1)).toBe(true)
+  })
+
+  it('clears the opt-in when the selected group does not offer instructions', async () => {
+    getAvailableGroups.mockResolvedValue([
+      { id: 42, name: 'Offering', optional_instructions_available: true },
+      { id: 43, name: 'Unavailable', optional_instructions_available: false },
+    ])
+    const wrapper = await mountView()
+
+    await getButtonByText(wrapper, 'Create API Key').trigger('click')
+    await wrapper.get('[data-tour="key-form-name"]').setValue('plain-key')
+    const formGroupSelect = wrapper.findAllComponents({ name: 'Select' }).at(-1)
+    await formGroupSelect!.vm.$emit('update:modelValue', 42)
+    await nextTick()
+    await wrapper.get('[data-test="optional-instructions-toggle"]').trigger('click')
+    await formGroupSelect!.vm.$emit('update:modelValue', 43)
+    await nextTick()
+
+    const toggle = wrapper.get('[data-test="optional-instructions-toggle"]')
+    expect(toggle.attributes('disabled')).toBeDefined()
+    expect(toggle.attributes('aria-pressed')).toBe('false')
+
+    await wrapper.get('#key-form').trigger('submit')
+    await flushPromises()
+    expect(createKey.mock.calls[0]?.at(-1)).toBe(false)
+  })
+
+  it('restores and submits an existing key opt-in in edit mode', async () => {
+    getAvailableGroups.mockResolvedValue([
+      { id: 42, name: 'OpenAI', optional_instructions_available: true },
+    ])
+    listKeys.mockResolvedValue({
+      items: [{ ...createApiKey(), group_id: 42, optional_instructions_enabled: true }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+    const wrapper = await mountView()
+
+    await getButtonByText(wrapper, 'common.edit').trigger('click')
+    await nextTick()
+    expect(wrapper.get('[data-test="optional-instructions-toggle"]').attributes('aria-pressed')).toBe('true')
+
+    await wrapper.get('#key-form').trigger('submit')
+    await flushPromises()
+    expect(updateKey).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ optional_instructions_enabled: true })
     )
   })
 })

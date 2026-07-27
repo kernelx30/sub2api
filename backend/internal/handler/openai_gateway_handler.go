@@ -353,8 +353,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.openAISecurityAuditError(c, decision)
 		return
 	}
+	// Include the group-level alias in model-scope matching. The directive is
+	// about the effective GPT target, not only the client-facing model name.
+	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
 	if !isOpenAIRemoteCompactPath(c) {
-		if injectedBody, _, injectErr := injectOptionalResponsesInstructions(body, apiKey); injectErr != nil {
+		if injectedBody, _, injectErr := injectOptionalResponsesInstructions(body, apiKey, reqModel, channelMapping.MappedModel); injectErr != nil {
 			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to inject optional instructions")
 			return
 		} else {
@@ -382,8 +385,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 	}
 
-	// 解析渠道级模型映射
-	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
 	forwardBody := openAIModelMappedBody(body, channelMapping.Mapped, channelMapping.MappedModel, h.gatewayService.ReplaceModelInBody)
 	seedOpenAIForwardImageIntentHint(c, channelMapping.Mapped, imageIntent)
 
@@ -538,7 +539,26 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// 跨 passthrough 边界的 failover：从 Kiro 等透传账号切到 Bedrock 等非透传账号前，
 		// 从不可变的 canonical forwardBody 派生本次尝试 body 并整块剔除上游私有的加密
 		// reasoning item（含耦合的 id/summary），避免非透传上游 400 拒绝 Kiro reasoning 形态。
-		attemptBody := h.deriveOpenAIForwardAttemptBody(reqLog, forwardBody, account, &passthroughFailoverState)
+		attemptBaseBody := forwardBody
+		if !requireCompact {
+			accountMappedModel := optionalInstructionsAccountMappedModel(account, reqModel, channelMapping.MappedModel)
+			injectedBody, _, injectErr := injectOptionalResponsesInstructions(
+				attemptBaseBody,
+				apiKey,
+				reqModel,
+				channelMapping.MappedModel,
+				accountMappedModel,
+			)
+			if injectErr != nil {
+				if accountReleaseFunc != nil {
+					accountReleaseFunc()
+				}
+				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to inject optional instructions")
+				return
+			}
+			attemptBaseBody = injectedBody
+		}
+		attemptBody := h.deriveOpenAIForwardAttemptBody(reqLog, attemptBaseBody, account, &passthroughFailoverState)
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer func() {
 				if accountReleaseFunc != nil {
@@ -953,15 +973,16 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		h.anthropicSecurityAuditError(c, decision)
 		return
 	}
-	if injectedBody, _, injectErr := injectOptionalAnthropicSystem(body, apiKey); injectErr != nil {
+	// Messages clients commonly send a Claude alias that is mapped to a GPT
+	// model. Match all known names so GPT-scoped instructions survive the bridge.
+	channelMappingMsg, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+	if injectedBody, _, injectErr := injectOptionalAnthropicSystem(body, apiKey, reqModel, preferredMappedModel, channelMappingMsg.MappedModel); injectErr != nil {
 		h.anthropicErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to inject optional instructions")
 		return
 	} else {
 		body = injectedBody
 	}
 
-	// 解析渠道级模型映射
-	channelMappingMsg, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
 	mappedBodyForMessages := newOpenAIModelMappedBodyCache(body, h.gatewayService.ReplaceModelInBody)
 
 	// 绑定错误透传服务，允许 service 层在非 failover 错误场景复用规则。
@@ -1083,6 +1104,23 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		defaultMappedModel := strings.TrimSpace(effectiveMappedModel)
 		// 应用渠道模型映射到请求体
 		forwardBody := mappedBodyForMessages(channelMappingMsg.Mapped, channelMappingMsg.MappedModel)
+		accountMappedModel := optionalInstructionsAccountMappedModel(account, reqModel, channelMappingMsg.MappedModel)
+		if injectedBody, _, injectErr := injectOptionalAnthropicSystem(
+			forwardBody,
+			apiKey,
+			reqModel,
+			preferredMappedModel,
+			channelMappingMsg.MappedModel,
+			accountMappedModel,
+		); injectErr != nil {
+			if accountReleaseFunc != nil {
+				accountReleaseFunc()
+			}
+			h.anthropicErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to inject optional instructions")
+			return
+		} else {
+			forwardBody = injectedBody
+		}
 		writerSizeBeforeForward := c.Writer.Size()
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer func() {
@@ -1594,7 +1632,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		closeOpenAIClientWS(wsConn, securityAuditWSCloseStatus(decision), securityAuditWSCloseReason(decision))
 		return
 	}
-	if injectedMessage, _, injectErr := injectOptionalResponsesInstructions(firstMessage, apiKey); injectErr != nil {
+	channelMappingWS, _ := h.gatewayService.ResolveChannelMappingAndRestrict(ctx, apiKey.GroupID, reqModel)
+	if injectedMessage, _, injectErr := injectOptionalResponsesInstructions(firstMessage, apiKey, reqModel, channelMappingWS.MappedModel); injectErr != nil {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "failed to inject optional instructions")
 		return
 	} else {
@@ -1617,9 +1656,6 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 	cyberBlockedThisConn := false
-
-	// 解析渠道级模型映射
-	channelMappingWS, _ := h.gatewayService.ResolveChannelMappingAndRestrict(ctx, apiKey.GroupID, reqModel)
 
 	var currentUserRelease func()
 	var currentAccountRelease func()
@@ -1868,8 +1904,14 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				}
 				return nil
 			},
-			TransformRequest: func(_ int, payload []byte, _ string) ([]byte, error) {
-				updated, _, err := injectOptionalResponsesInstructions(payload, apiKey)
+			TransformRequest: func(_ int, payload []byte, originalModel string) ([]byte, error) {
+				model := strings.TrimSpace(originalModel)
+				if model == "" {
+					model = reqModel
+				}
+				mapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(ctx, apiKey.GroupID, model)
+				accountMappedModel := optionalInstructionsAccountMappedModel(account, model, mapping.MappedModel)
+				updated, _, err := injectOptionalResponsesInstructions(payload, apiKey, model, mapping.MappedModel, accountMappedModel)
 				return updated, err
 			},
 			MapRequestModel: func(turn int, originalModel string) (string, error) {
@@ -2020,7 +2062,18 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			},
 		}
 
-		wsFirstMessage := firstMessage
+		accountMappedModel := optionalInstructionsAccountMappedModel(account, reqModel, channelMappingWS.MappedModel)
+		wsFirstMessage, _, injectErr := injectOptionalResponsesInstructions(
+			firstMessage,
+			apiKey,
+			reqModel,
+			channelMappingWS.MappedModel,
+			accountMappedModel,
+		)
+		if injectErr != nil {
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "failed to inject optional instructions")
+			return
+		}
 		// 切组/会话失配防护：previous_response_id 未在当前分组命中粘连账号（StickyPreviousHit=false），
 		// 说明该会话链不属于本次调度到的账号，原样转发会触发上游会话链鉴权失败（“鉴权失败，请检查 API Key”）。
 		// 故剥离首包里的 previous_response_id，改用首包内 input 重建上下文；带 function_call_output 的
