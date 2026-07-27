@@ -89,10 +89,14 @@ workspace. The credential is intentionally not recorded here.
   game case to an unrelated substitute project, including when wrapped exactly like
   the group instruction injector. The same request followed the requested route when
   the enhanced instructions were placed in `system`.
-- GPT-5.5 showed the inverse role preference on the short broad-game dispatch: its
-  `system` request routed away from the required question, while `developer` returned
-  the exact expected question in about 10 seconds. The injector and regression runner
-  therefore select `developer` for GPT-5.5 and `system` for GPT-5.6.
+- GPT-5.5 direct Chat Completions did not reliably follow the scoped game route with
+  `system`, `developer`, both roles, or a combined user message. A short broad-game
+  request did occasionally match under `developer`, which was not sufficient for a
+  stable deployment route.
+- For this upstream, configure the OpenAI APIKey account's Responses support mode as
+  `force_responses`. Sub2API then converts inbound Chat Completions to Responses and
+  converts the result back; the enhanced block remains a system-role instruction on
+  that path. The injector and explicit regression runner therefore use `system`.
 - Short dispatch/evidence responses returned in roughly 7-26 seconds. Code-heavy
   400-500 token Responses requests commonly took 110-145 seconds; one request timed
   out and one retry had the remote connection close before a response.

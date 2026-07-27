@@ -140,12 +140,6 @@ def canonical_prompt(bank: dict[str, Any]) -> str:
     )
 
 
-def chat_instruction_role(model: str) -> str:
-    normalized = model.strip().lower().removeprefix("models/")
-    normalized = normalized.rsplit("/", 1)[-1]
-    return "system" if normalized.startswith("gpt-5.6") else "developer"
-
-
 def request_payload(
     endpoint: str,
     model: str,
@@ -165,7 +159,7 @@ def request_payload(
         return payload
     messages: list[dict[str, str]] = []
     if instructions:
-        messages.append({"role": chat_instruction_role(model), "content": instructions})
+        messages.append({"role": "system", "content": instructions})
     messages.append({"role": "user", "content": prompt})
     payload = {
         "model": model,

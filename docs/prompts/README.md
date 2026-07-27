@@ -53,3 +53,9 @@ python tools/run_gpt55_56_prompt_bank.py --model gpt-5.6-sol --endpoint chat_com
 Run the same bank across the deployed GPT-5.5 and GPT-5.6 IDs. Model isolation is
 covered by backend tests: both families match; GPT-5.4, Claude model IDs, and
 missing model IDs do not.
+
+For the tested OpenAI-compatible GPT-5.5/GPT-5.6 upstream, set the OpenAI APIKey
+account's **Responses API support** field to **Force Responses**. Sub2API will bridge
+Chat Completions clients through the upstream Responses endpoint and convert the
+result back. Direct GPT-5.5 Chat Completions did not reliably follow scoped routes;
+the Responses path did.

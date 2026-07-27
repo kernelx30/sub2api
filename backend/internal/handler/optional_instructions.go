@@ -99,15 +99,6 @@ func optionalInstructionsModelMatches(requestedModel string, modelPatterns []str
 	return false
 }
 
-func optionalInstructionsChatRole(candidateModels ...string) string {
-	for _, model := range candidateModels {
-		if optionalInstructionsModelMatches(model, []string{"gpt-5.6*"}) {
-			return "system"
-		}
-	}
-	return "developer"
-}
-
 // optionalInstructionsAccountMappedModel mirrors the final account-level
 // mapping input: channel mapping is applied first, then account mapping.
 func optionalInstructionsAccountMappedModel(account *service.Account, requestedModel, channelMappedModel string) string {
@@ -163,11 +154,10 @@ func injectOptionalChatCompletionsMessages(body []byte, apiKey *service.APIKey, 
 	if !ok {
 		return body, false, nil
 	}
-	instructionRole := optionalInstructionsChatRole(candidateModels...)
-	// Live gateway validation shows a model-family split on this compatibility
-	// path: GPT-5.5 follows developer messages, while GPT-5.6 is more reliable when
-	// system messages are promoted into upstream instructions. Append to the last
-	// matching message so the group layer remains the final same-role instruction.
+	instructionRole := "system"
+	// The tested GPT-5.5/GPT-5.6 routes follow system messages more reliably than
+	// developer messages. Append to the last system message so the group layer
+	// remains the final same-role behavior instruction.
 	for i := len(messages) - 1; i >= 0; i-- {
 		raw := messages[i]
 		message, ok := raw.(map[string]any)
