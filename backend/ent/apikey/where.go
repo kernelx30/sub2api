@@ -95,6 +95,11 @@ func Status(v string) predicate.APIKey {
 	return predicate.APIKey(sql.FieldEQ(FieldStatus, v))
 }
 
+// OptionalInstructionsEnabled applies equality check predicate on the "optional_instructions_enabled" field. It's identical to OptionalInstructionsEnabledEQ.
+func OptionalInstructionsEnabled(v bool) predicate.APIKey {
+	return predicate.APIKey(sql.FieldEQ(FieldOptionalInstructionsEnabled, v))
+}
+
 // LastUsedAt applies equality check predicate on the "last_used_at" field. It's identical to LastUsedAtEQ.
 func LastUsedAt(v time.Time) predicate.APIKey {
 	return predicate.APIKey(sql.FieldEQ(FieldLastUsedAt, v))
@@ -533,6 +538,16 @@ func StatusEqualFold(v string) predicate.APIKey {
 // StatusContainsFold applies the ContainsFold predicate on the "status" field.
 func StatusContainsFold(v string) predicate.APIKey {
 	return predicate.APIKey(sql.FieldContainsFold(FieldStatus, v))
+}
+
+// OptionalInstructionsEnabledEQ applies the EQ predicate on the "optional_instructions_enabled" field.
+func OptionalInstructionsEnabledEQ(v bool) predicate.APIKey {
+	return predicate.APIKey(sql.FieldEQ(FieldOptionalInstructionsEnabled, v))
+}
+
+// OptionalInstructionsEnabledNEQ applies the NEQ predicate on the "optional_instructions_enabled" field.
+func OptionalInstructionsEnabledNEQ(v bool) predicate.APIKey {
+	return predicate.APIKey(sql.FieldNEQ(FieldOptionalInstructionsEnabled, v))
 }
 
 // LastUsedAtEQ applies the EQ predicate on the "last_used_at" field.

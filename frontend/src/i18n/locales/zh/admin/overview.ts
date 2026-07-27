@@ -1102,6 +1102,12 @@ export default {
         unsupportedMessage: '当前 Sub2API 服务端无法生成 Live 所需的设备证明，即使开启也不能使用。是否仍然开启？',
         enableAnyway: '仍然开启'
       },
+		optionalInstructions: {
+			title: '增强指令',
+			allow: '向用户提供可选增强指令',
+			placeholder: '输入需要前置注入的 instructions/system 内容',
+			hint: '仅在分组和用户 API Key 两边都开启时生效；客户端原有指令会保留。'
+		},
       invalidRequestFallback: {
         title: '无效请求兜底分组',
         hint: '仅当上游明确返回 prompt too long 时才会触发，留空表示不兜底',

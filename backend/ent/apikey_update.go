@@ -134,6 +134,20 @@ func (_u *APIKeyUpdate) SetNillableStatus(v *string) *APIKeyUpdate {
 	return _u
 }
 
+// SetOptionalInstructionsEnabled sets the "optional_instructions_enabled" field.
+func (_u *APIKeyUpdate) SetOptionalInstructionsEnabled(v bool) *APIKeyUpdate {
+	_u.mutation.SetOptionalInstructionsEnabled(v)
+	return _u
+}
+
+// SetNillableOptionalInstructionsEnabled sets the "optional_instructions_enabled" field if the given value is not nil.
+func (_u *APIKeyUpdate) SetNillableOptionalInstructionsEnabled(v *bool) *APIKeyUpdate {
+	if v != nil {
+		_u.SetOptionalInstructionsEnabled(*v)
+	}
+	return _u
+}
+
 // SetLastUsedAt sets the "last_used_at" field.
 func (_u *APIKeyUpdate) SetLastUsedAt(v time.Time) *APIKeyUpdate {
 	_u.mutation.SetLastUsedAt(v)
@@ -596,6 +610,9 @@ func (_u *APIKeyUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(apikey.FieldStatus, field.TypeString, value)
 	}
+	if value, ok := _u.mutation.OptionalInstructionsEnabled(); ok {
+		_spec.SetField(apikey.FieldOptionalInstructionsEnabled, field.TypeBool, value)
+	}
 	if value, ok := _u.mutation.LastUsedAt(); ok {
 		_spec.SetField(apikey.FieldLastUsedAt, field.TypeTime, value)
 	}
@@ -917,6 +934,20 @@ func (_u *APIKeyUpdateOne) SetStatus(v string) *APIKeyUpdateOne {
 func (_u *APIKeyUpdateOne) SetNillableStatus(v *string) *APIKeyUpdateOne {
 	if v != nil {
 		_u.SetStatus(*v)
+	}
+	return _u
+}
+
+// SetOptionalInstructionsEnabled sets the "optional_instructions_enabled" field.
+func (_u *APIKeyUpdateOne) SetOptionalInstructionsEnabled(v bool) *APIKeyUpdateOne {
+	_u.mutation.SetOptionalInstructionsEnabled(v)
+	return _u
+}
+
+// SetNillableOptionalInstructionsEnabled sets the "optional_instructions_enabled" field if the given value is not nil.
+func (_u *APIKeyUpdateOne) SetNillableOptionalInstructionsEnabled(v *bool) *APIKeyUpdateOne {
+	if v != nil {
+		_u.SetOptionalInstructionsEnabled(*v)
 	}
 	return _u
 }
@@ -1412,6 +1443,9 @@ func (_u *APIKeyUpdateOne) sqlSave(ctx context.Context) (_node *APIKey, err erro
 	}
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(apikey.FieldStatus, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.OptionalInstructionsEnabled(); ok {
+		_spec.SetField(apikey.FieldOptionalInstructionsEnabled, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.LastUsedAt(); ok {
 		_spec.SetField(apikey.FieldLastUsedAt, field.TypeTime, value)

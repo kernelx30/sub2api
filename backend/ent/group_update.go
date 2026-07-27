@@ -836,6 +836,34 @@ func (_u *GroupUpdate) SetNillableAllowLive(v *bool) *GroupUpdate {
 	return _u
 }
 
+// SetOptionalInstructionsEnabled sets the "optional_instructions_enabled" field.
+func (_u *GroupUpdate) SetOptionalInstructionsEnabled(v bool) *GroupUpdate {
+	_u.mutation.SetOptionalInstructionsEnabled(v)
+	return _u
+}
+
+// SetNillableOptionalInstructionsEnabled sets the "optional_instructions_enabled" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableOptionalInstructionsEnabled(v *bool) *GroupUpdate {
+	if v != nil {
+		_u.SetOptionalInstructionsEnabled(*v)
+	}
+	return _u
+}
+
+// SetOptionalInstructions sets the "optional_instructions" field.
+func (_u *GroupUpdate) SetOptionalInstructions(v string) *GroupUpdate {
+	_u.mutation.SetOptionalInstructions(v)
+	return _u
+}
+
+// SetNillableOptionalInstructions sets the "optional_instructions" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableOptionalInstructions(v *string) *GroupUpdate {
+	if v != nil {
+		_u.SetOptionalInstructions(*v)
+	}
+	return _u
+}
+
 // SetRequireOauthOnly sets the "require_oauth_only" field.
 func (_u *GroupUpdate) SetRequireOauthOnly(v bool) *GroupUpdate {
 	_u.mutation.SetRequireOauthOnly(v)
@@ -1248,6 +1276,11 @@ func (_u *GroupUpdate) check() error {
 			return &ValidationError{Name: "subscription_type", err: fmt.Errorf(`ent: validator failed for field "Group.subscription_type": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.OptionalInstructions(); ok {
+		if err := group.OptionalInstructionsValidator(v); err != nil {
+			return &ValidationError{Name: "optional_instructions", err: fmt.Errorf(`ent: validator failed for field "Group.optional_instructions": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.DefaultMappedModel(); ok {
 		if err := group.DefaultMappedModelValidator(v); err != nil {
 			return &ValidationError{Name: "default_mapped_model", err: fmt.Errorf(`ent: validator failed for field "Group.default_mapped_model": %w`, err)}
@@ -1511,6 +1544,12 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.AllowLive(); ok {
 		_spec.SetField(group.FieldAllowLive, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.OptionalInstructionsEnabled(); ok {
+		_spec.SetField(group.FieldOptionalInstructionsEnabled, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.OptionalInstructions(); ok {
+		_spec.SetField(group.FieldOptionalInstructions, field.TypeString, value)
 	}
 	if value, ok := _u.mutation.RequireOauthOnly(); ok {
 		_spec.SetField(group.FieldRequireOauthOnly, field.TypeBool, value)
@@ -2658,6 +2697,34 @@ func (_u *GroupUpdateOne) SetNillableAllowLive(v *bool) *GroupUpdateOne {
 	return _u
 }
 
+// SetOptionalInstructionsEnabled sets the "optional_instructions_enabled" field.
+func (_u *GroupUpdateOne) SetOptionalInstructionsEnabled(v bool) *GroupUpdateOne {
+	_u.mutation.SetOptionalInstructionsEnabled(v)
+	return _u
+}
+
+// SetNillableOptionalInstructionsEnabled sets the "optional_instructions_enabled" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableOptionalInstructionsEnabled(v *bool) *GroupUpdateOne {
+	if v != nil {
+		_u.SetOptionalInstructionsEnabled(*v)
+	}
+	return _u
+}
+
+// SetOptionalInstructions sets the "optional_instructions" field.
+func (_u *GroupUpdateOne) SetOptionalInstructions(v string) *GroupUpdateOne {
+	_u.mutation.SetOptionalInstructions(v)
+	return _u
+}
+
+// SetNillableOptionalInstructions sets the "optional_instructions" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableOptionalInstructions(v *string) *GroupUpdateOne {
+	if v != nil {
+		_u.SetOptionalInstructions(*v)
+	}
+	return _u
+}
+
 // SetRequireOauthOnly sets the "require_oauth_only" field.
 func (_u *GroupUpdateOne) SetRequireOauthOnly(v bool) *GroupUpdateOne {
 	_u.mutation.SetRequireOauthOnly(v)
@@ -3083,6 +3150,11 @@ func (_u *GroupUpdateOne) check() error {
 			return &ValidationError{Name: "subscription_type", err: fmt.Errorf(`ent: validator failed for field "Group.subscription_type": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.OptionalInstructions(); ok {
+		if err := group.OptionalInstructionsValidator(v); err != nil {
+			return &ValidationError{Name: "optional_instructions", err: fmt.Errorf(`ent: validator failed for field "Group.optional_instructions": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.DefaultMappedModel(); ok {
 		if err := group.DefaultMappedModelValidator(v); err != nil {
 			return &ValidationError{Name: "default_mapped_model", err: fmt.Errorf(`ent: validator failed for field "Group.default_mapped_model": %w`, err)}
@@ -3363,6 +3435,12 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if value, ok := _u.mutation.AllowLive(); ok {
 		_spec.SetField(group.FieldAllowLive, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.OptionalInstructionsEnabled(); ok {
+		_spec.SetField(group.FieldOptionalInstructionsEnabled, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.OptionalInstructions(); ok {
+		_spec.SetField(group.FieldOptionalInstructions, field.TypeString, value)
 	}
 	if value, ok := _u.mutation.RequireOauthOnly(); ok {
 		_spec.SetField(group.FieldRequireOauthOnly, field.TypeBool, value)

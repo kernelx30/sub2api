@@ -471,6 +471,8 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		SupportedModelScopes:            input.SupportedModelScopes,
 		AllowMessagesDispatch:           input.AllowMessagesDispatch,
 		AllowLive:                       input.AllowLive,
+		OptionalInstructionsEnabled:     input.OptionalInstructionsEnabled,
+		OptionalInstructions:            strings.TrimSpace(input.OptionalInstructions),
 		RequireOAuthOnly:                input.RequireOAuthOnly,
 		RequirePrivacySet:               input.RequirePrivacySet,
 		DefaultMappedModel:              input.DefaultMappedModel,
@@ -483,6 +485,11 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	sanitizeGroupMessagesDispatchFields(group)
 	if group.Platform != PlatformOpenAI {
 		group.AllowLive = false
+		group.OptionalInstructionsEnabled = false
+		group.OptionalInstructions = ""
+	}
+	if len(group.OptionalInstructions) > 16*1024 {
+		return nil, infraerrors.Newf(http.StatusBadRequest, "OPTIONAL_INSTRUCTIONS_TOO_LONG", "optional instructions must not exceed 16384 bytes")
 	}
 	sanitizeGroupReasoningEffortPolicy(group)
 	if err := s.groupRepo.Create(ctx, group); err != nil {
@@ -784,6 +791,15 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.AllowLive != nil {
 		group.AllowLive = *input.AllowLive
 	}
+	if input.OptionalInstructionsEnabled != nil {
+		group.OptionalInstructionsEnabled = *input.OptionalInstructionsEnabled
+	}
+	if input.OptionalInstructions != nil {
+		group.OptionalInstructions = strings.TrimSpace(*input.OptionalInstructions)
+		if len(group.OptionalInstructions) > 16*1024 {
+			return nil, infraerrors.Newf(http.StatusBadRequest, "OPTIONAL_INSTRUCTIONS_TOO_LONG", "optional instructions must not exceed 16384 bytes")
+		}
+	}
 	if input.RequireOAuthOnly != nil {
 		group.RequireOAuthOnly = *input.RequireOAuthOnly
 	}
@@ -819,6 +835,8 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	sanitizeGroupMessagesDispatchFields(group)
 	if group.Platform != PlatformOpenAI {
 		group.AllowLive = false
+		group.OptionalInstructionsEnabled = false
+		group.OptionalInstructions = ""
 	}
 	sanitizeGroupReasoningEffortPolicy(group)
 

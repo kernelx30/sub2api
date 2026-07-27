@@ -104,6 +104,10 @@ const (
 	FieldAllowMessagesDispatch = "allow_messages_dispatch"
 	// FieldAllowLive holds the string denoting the allow_live field in the database.
 	FieldAllowLive = "allow_live"
+	// FieldOptionalInstructionsEnabled holds the string denoting the optional_instructions_enabled field in the database.
+	FieldOptionalInstructionsEnabled = "optional_instructions_enabled"
+	// FieldOptionalInstructions holds the string denoting the optional_instructions field in the database.
+	FieldOptionalInstructions = "optional_instructions"
 	// FieldRequireOauthOnly holds the string denoting the require_oauth_only field in the database.
 	FieldRequireOauthOnly = "require_oauth_only"
 	// FieldRequirePrivacySet holds the string denoting the require_privacy_set field in the database.
@@ -239,6 +243,8 @@ var Columns = []string{
 	FieldSortOrder,
 	FieldAllowMessagesDispatch,
 	FieldAllowLive,
+	FieldOptionalInstructionsEnabled,
+	FieldOptionalInstructions,
 	FieldRequireOauthOnly,
 	FieldRequirePrivacySet,
 	FieldDefaultMappedModel,
@@ -346,6 +352,12 @@ var (
 	DefaultAllowMessagesDispatch bool
 	// DefaultAllowLive holds the default value on creation for the "allow_live" field.
 	DefaultAllowLive bool
+	// DefaultOptionalInstructionsEnabled holds the default value on creation for the "optional_instructions_enabled" field.
+	DefaultOptionalInstructionsEnabled bool
+	// DefaultOptionalInstructions holds the default value on creation for the "optional_instructions" field.
+	DefaultOptionalInstructions string
+	// OptionalInstructionsValidator is a validator for the "optional_instructions" field. It is called by the builders before save.
+	OptionalInstructionsValidator func(string) error
 	// DefaultRequireOauthOnly holds the default value on creation for the "require_oauth_only" field.
 	DefaultRequireOauthOnly bool
 	// DefaultRequirePrivacySet holds the default value on creation for the "require_privacy_set" field.
@@ -584,6 +596,16 @@ func ByAllowMessagesDispatch(opts ...sql.OrderTermOption) OrderOption {
 // ByAllowLive orders the results by the allow_live field.
 func ByAllowLive(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldAllowLive, opts...).ToFunc()
+}
+
+// ByOptionalInstructionsEnabled orders the results by the optional_instructions_enabled field.
+func ByOptionalInstructionsEnabled(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldOptionalInstructionsEnabled, opts...).ToFunc()
+}
+
+// ByOptionalInstructions orders the results by the optional_instructions field.
+func ByOptionalInstructions(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldOptionalInstructions, opts...).ToFunc()
 }
 
 // ByRequireOauthOnly orders the results by the require_oauth_only field.

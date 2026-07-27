@@ -1,0 +1,13 @@
+# Build and run the forked source while reusing the production services,
+# volumes, ports, and environment from docker-compose.yml.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.custom.yml up -d --build
+services:
+  sub2api:
+    image: ${SUB2API_CUSTOM_IMAGE:-kernelx30/sub2api:optional-instructions}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-https://registry.npmmirror.com}

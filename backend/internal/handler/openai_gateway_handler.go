@@ -353,6 +353,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.openAISecurityAuditError(c, decision)
 		return
 	}
+	if !isOpenAIRemoteCompactPath(c) {
+		if injectedBody, _, injectErr := injectOptionalResponsesInstructions(body, apiKey); injectErr != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to inject optional instructions")
+			return
+		} else {
+			body = injectedBody
+		}
+	}
 
 	// 使用 IsExplicitImageGenerationIntent 排除被动 image_gen namespace 声明。
 	// Codex 在所有请求中被动声明 image_gen namespace，宽泛检测会导致禁了生图的
@@ -944,6 +952,12 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolAnthropicMessages, reqModel, body); decision != nil && !decision.AllowNextStage {
 		h.anthropicSecurityAuditError(c, decision)
 		return
+	}
+	if injectedBody, _, injectErr := injectOptionalAnthropicSystem(body, apiKey); injectErr != nil {
+		h.anthropicErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to inject optional instructions")
+		return
+	} else {
+		body = injectedBody
 	}
 
 	// 解析渠道级模型映射
@@ -1580,6 +1594,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		closeOpenAIClientWS(wsConn, securityAuditWSCloseStatus(decision), securityAuditWSCloseReason(decision))
 		return
 	}
+	if injectedMessage, _, injectErr := injectOptionalResponsesInstructions(firstMessage, apiKey); injectErr != nil {
+		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "failed to inject optional instructions")
+		return
+	} else {
+		firstMessage = injectedMessage
+	}
 
 	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, firstMessage)
 	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
@@ -1847,6 +1867,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					return service.NewOpenAIWSClientCloseError(securityAuditWSCloseStatus(decision), securityAuditWSCloseReason(decision), nil)
 				}
 				return nil
+			},
+			TransformRequest: func(_ int, payload []byte, _ string) ([]byte, error) {
+				updated, _, err := injectOptionalResponsesInstructions(payload, apiKey)
+				return updated, err
 			},
 			MapRequestModel: func(turn int, originalModel string) (string, error) {
 				model := strings.TrimSpace(originalModel)

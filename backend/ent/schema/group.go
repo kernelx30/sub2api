@@ -201,6 +201,14 @@ func (Group) Fields() []ent.Field {
 		field.Bool("allow_live").
 			Default(false).
 			Comment("是否允许此 OpenAI 分组访问 Live 接口"),
+		field.Bool("optional_instructions_enabled").
+			Default(false).
+			Comment("Whether this OpenAI group offers optional server-side instructions"),
+		field.String("optional_instructions").
+			Default("").
+			MaxLen(16384).
+			SchemaType(map[string]string{dialect.Postgres: "text"}).
+			Comment("Optional server-side instructions offered by this OpenAI group"),
 		field.Bool("require_oauth_only").
 			Default(false).
 			Comment("仅允许非 apikey 类型账号关联到此分组"),

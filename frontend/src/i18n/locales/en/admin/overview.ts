@@ -1104,6 +1104,12 @@ export default {
         unsupportedMessage: 'This Sub2API server cannot generate the required Live attestation. Live will not work even if enabled. Continue anyway?',
         enableAnyway: 'Enable anyway'
       },
+		optionalInstructions: {
+			title: 'Enhanced Instructions',
+			allow: 'Offer optional enhanced instructions to users',
+			placeholder: 'Enter instructions/system content to prepend',
+			hint: 'Applied only when both the group and API key enable it. Client instructions are preserved.'
+		},
       invalidRequestFallback: {
         title: 'Invalid Request Fallback Group',
         hint: 'Triggered only when upstream explicitly returns prompt too long. Leave empty to disable fallback.',

@@ -113,6 +113,20 @@ func (_c *APIKeyCreate) SetNillableStatus(v *string) *APIKeyCreate {
 	return _c
 }
 
+// SetOptionalInstructionsEnabled sets the "optional_instructions_enabled" field.
+func (_c *APIKeyCreate) SetOptionalInstructionsEnabled(v bool) *APIKeyCreate {
+	_c.mutation.SetOptionalInstructionsEnabled(v)
+	return _c
+}
+
+// SetNillableOptionalInstructionsEnabled sets the "optional_instructions_enabled" field if the given value is not nil.
+func (_c *APIKeyCreate) SetNillableOptionalInstructionsEnabled(v *bool) *APIKeyCreate {
+	if v != nil {
+		_c.SetOptionalInstructionsEnabled(*v)
+	}
+	return _c
+}
+
 // SetLastUsedAt sets the "last_used_at" field.
 func (_c *APIKeyCreate) SetLastUsedAt(v time.Time) *APIKeyCreate {
 	_c.mutation.SetLastUsedAt(v)
@@ -387,6 +401,10 @@ func (_c *APIKeyCreate) defaults() error {
 		v := apikey.DefaultStatus
 		_c.mutation.SetStatus(v)
 	}
+	if _, ok := _c.mutation.OptionalInstructionsEnabled(); !ok {
+		v := apikey.DefaultOptionalInstructionsEnabled
+		_c.mutation.SetOptionalInstructionsEnabled(v)
+	}
 	if _, ok := _c.mutation.Quota(); !ok {
 		v := apikey.DefaultQuota
 		_c.mutation.SetQuota(v)
@@ -456,6 +474,9 @@ func (_c *APIKeyCreate) check() error {
 		if err := apikey.StatusValidator(v); err != nil {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "APIKey.status": %w`, err)}
 		}
+	}
+	if _, ok := _c.mutation.OptionalInstructionsEnabled(); !ok {
+		return &ValidationError{Name: "optional_instructions_enabled", err: errors.New(`ent: missing required field "APIKey.optional_instructions_enabled"`)}
 	}
 	if _, ok := _c.mutation.Quota(); !ok {
 		return &ValidationError{Name: "quota", err: errors.New(`ent: missing required field "APIKey.quota"`)}
@@ -534,6 +555,10 @@ func (_c *APIKeyCreate) createSpec() (*APIKey, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.Status(); ok {
 		_spec.SetField(apikey.FieldStatus, field.TypeString, value)
 		_node.Status = value
+	}
+	if value, ok := _c.mutation.OptionalInstructionsEnabled(); ok {
+		_spec.SetField(apikey.FieldOptionalInstructionsEnabled, field.TypeBool, value)
+		_node.OptionalInstructionsEnabled = value
 	}
 	if value, ok := _c.mutation.LastUsedAt(); ok {
 		_spec.SetField(apikey.FieldLastUsedAt, field.TypeTime, value)
@@ -790,6 +815,18 @@ func (u *APIKeyUpsert) SetStatus(v string) *APIKeyUpsert {
 // UpdateStatus sets the "status" field to the value that was provided on create.
 func (u *APIKeyUpsert) UpdateStatus() *APIKeyUpsert {
 	u.SetExcluded(apikey.FieldStatus)
+	return u
+}
+
+// SetOptionalInstructionsEnabled sets the "optional_instructions_enabled" field.
+func (u *APIKeyUpsert) SetOptionalInstructionsEnabled(v bool) *APIKeyUpsert {
+	u.Set(apikey.FieldOptionalInstructionsEnabled, v)
+	return u
+}
+
+// UpdateOptionalInstructionsEnabled sets the "optional_instructions_enabled" field to the value that was provided on create.
+func (u *APIKeyUpsert) UpdateOptionalInstructionsEnabled() *APIKeyUpsert {
+	u.SetExcluded(apikey.FieldOptionalInstructionsEnabled)
 	return u
 }
 
@@ -1217,6 +1254,20 @@ func (u *APIKeyUpsertOne) SetStatus(v string) *APIKeyUpsertOne {
 func (u *APIKeyUpsertOne) UpdateStatus() *APIKeyUpsertOne {
 	return u.Update(func(s *APIKeyUpsert) {
 		s.UpdateStatus()
+	})
+}
+
+// SetOptionalInstructionsEnabled sets the "optional_instructions_enabled" field.
+func (u *APIKeyUpsertOne) SetOptionalInstructionsEnabled(v bool) *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetOptionalInstructionsEnabled(v)
+	})
+}
+
+// UpdateOptionalInstructionsEnabled sets the "optional_instructions_enabled" field to the value that was provided on create.
+func (u *APIKeyUpsertOne) UpdateOptionalInstructionsEnabled() *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateOptionalInstructionsEnabled()
 	})
 }
 
@@ -1855,6 +1906,20 @@ func (u *APIKeyUpsertBulk) SetStatus(v string) *APIKeyUpsertBulk {
 func (u *APIKeyUpsertBulk) UpdateStatus() *APIKeyUpsertBulk {
 	return u.Update(func(s *APIKeyUpsert) {
 		s.UpdateStatus()
+	})
+}
+
+// SetOptionalInstructionsEnabled sets the "optional_instructions_enabled" field.
+func (u *APIKeyUpsertBulk) SetOptionalInstructionsEnabled(v bool) *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetOptionalInstructionsEnabled(v)
+	})
+}
+
+// UpdateOptionalInstructionsEnabled sets the "optional_instructions_enabled" field to the value that was provided on create.
+func (u *APIKeyUpsertBulk) UpdateOptionalInstructionsEnabled() *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateOptionalInstructionsEnabled()
 	})
 }
 

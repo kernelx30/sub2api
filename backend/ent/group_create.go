@@ -621,6 +621,34 @@ func (_c *GroupCreate) SetNillableAllowLive(v *bool) *GroupCreate {
 	return _c
 }
 
+// SetOptionalInstructionsEnabled sets the "optional_instructions_enabled" field.
+func (_c *GroupCreate) SetOptionalInstructionsEnabled(v bool) *GroupCreate {
+	_c.mutation.SetOptionalInstructionsEnabled(v)
+	return _c
+}
+
+// SetNillableOptionalInstructionsEnabled sets the "optional_instructions_enabled" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableOptionalInstructionsEnabled(v *bool) *GroupCreate {
+	if v != nil {
+		_c.SetOptionalInstructionsEnabled(*v)
+	}
+	return _c
+}
+
+// SetOptionalInstructions sets the "optional_instructions" field.
+func (_c *GroupCreate) SetOptionalInstructions(v string) *GroupCreate {
+	_c.mutation.SetOptionalInstructions(v)
+	return _c
+}
+
+// SetNillableOptionalInstructions sets the "optional_instructions" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableOptionalInstructions(v *string) *GroupCreate {
+	if v != nil {
+		_c.SetOptionalInstructions(*v)
+	}
+	return _c
+}
+
 // SetRequireOauthOnly sets the "require_oauth_only" field.
 func (_c *GroupCreate) SetRequireOauthOnly(v bool) *GroupCreate {
 	_c.mutation.SetRequireOauthOnly(v)
@@ -966,6 +994,14 @@ func (_c *GroupCreate) defaults() error {
 		v := group.DefaultAllowLive
 		_c.mutation.SetAllowLive(v)
 	}
+	if _, ok := _c.mutation.OptionalInstructionsEnabled(); !ok {
+		v := group.DefaultOptionalInstructionsEnabled
+		_c.mutation.SetOptionalInstructionsEnabled(v)
+	}
+	if _, ok := _c.mutation.OptionalInstructions(); !ok {
+		v := group.DefaultOptionalInstructions
+		_c.mutation.SetOptionalInstructions(v)
+	}
 	if _, ok := _c.mutation.RequireOauthOnly(); !ok {
 		v := group.DefaultRequireOauthOnly
 		_c.mutation.SetRequireOauthOnly(v)
@@ -1121,6 +1157,17 @@ func (_c *GroupCreate) check() error {
 	}
 	if _, ok := _c.mutation.AllowLive(); !ok {
 		return &ValidationError{Name: "allow_live", err: errors.New(`ent: missing required field "Group.allow_live"`)}
+	}
+	if _, ok := _c.mutation.OptionalInstructionsEnabled(); !ok {
+		return &ValidationError{Name: "optional_instructions_enabled", err: errors.New(`ent: missing required field "Group.optional_instructions_enabled"`)}
+	}
+	if _, ok := _c.mutation.OptionalInstructions(); !ok {
+		return &ValidationError{Name: "optional_instructions", err: errors.New(`ent: missing required field "Group.optional_instructions"`)}
+	}
+	if v, ok := _c.mutation.OptionalInstructions(); ok {
+		if err := group.OptionalInstructionsValidator(v); err != nil {
+			return &ValidationError{Name: "optional_instructions", err: fmt.Errorf(`ent: validator failed for field "Group.optional_instructions": %w`, err)}
+		}
 	}
 	if _, ok := _c.mutation.RequireOauthOnly(); !ok {
 		return &ValidationError{Name: "require_oauth_only", err: errors.New(`ent: missing required field "Group.require_oauth_only"`)}
@@ -1358,6 +1405,14 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.AllowLive(); ok {
 		_spec.SetField(group.FieldAllowLive, field.TypeBool, value)
 		_node.AllowLive = value
+	}
+	if value, ok := _c.mutation.OptionalInstructionsEnabled(); ok {
+		_spec.SetField(group.FieldOptionalInstructionsEnabled, field.TypeBool, value)
+		_node.OptionalInstructionsEnabled = value
+	}
+	if value, ok := _c.mutation.OptionalInstructions(); ok {
+		_spec.SetField(group.FieldOptionalInstructions, field.TypeString, value)
+		_node.OptionalInstructions = value
 	}
 	if value, ok := _c.mutation.RequireOauthOnly(); ok {
 		_spec.SetField(group.FieldRequireOauthOnly, field.TypeBool, value)
@@ -2258,6 +2313,30 @@ func (u *GroupUpsert) SetAllowLive(v bool) *GroupUpsert {
 // UpdateAllowLive sets the "allow_live" field to the value that was provided on create.
 func (u *GroupUpsert) UpdateAllowLive() *GroupUpsert {
 	u.SetExcluded(group.FieldAllowLive)
+	return u
+}
+
+// SetOptionalInstructionsEnabled sets the "optional_instructions_enabled" field.
+func (u *GroupUpsert) SetOptionalInstructionsEnabled(v bool) *GroupUpsert {
+	u.Set(group.FieldOptionalInstructionsEnabled, v)
+	return u
+}
+
+// UpdateOptionalInstructionsEnabled sets the "optional_instructions_enabled" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateOptionalInstructionsEnabled() *GroupUpsert {
+	u.SetExcluded(group.FieldOptionalInstructionsEnabled)
+	return u
+}
+
+// SetOptionalInstructions sets the "optional_instructions" field.
+func (u *GroupUpsert) SetOptionalInstructions(v string) *GroupUpsert {
+	u.Set(group.FieldOptionalInstructions, v)
+	return u
+}
+
+// UpdateOptionalInstructions sets the "optional_instructions" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateOptionalInstructions() *GroupUpsert {
+	u.SetExcluded(group.FieldOptionalInstructions)
 	return u
 }
 
@@ -3241,6 +3320,34 @@ func (u *GroupUpsertOne) SetAllowLive(v bool) *GroupUpsertOne {
 func (u *GroupUpsertOne) UpdateAllowLive() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateAllowLive()
+	})
+}
+
+// SetOptionalInstructionsEnabled sets the "optional_instructions_enabled" field.
+func (u *GroupUpsertOne) SetOptionalInstructionsEnabled(v bool) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetOptionalInstructionsEnabled(v)
+	})
+}
+
+// UpdateOptionalInstructionsEnabled sets the "optional_instructions_enabled" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateOptionalInstructionsEnabled() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateOptionalInstructionsEnabled()
+	})
+}
+
+// SetOptionalInstructions sets the "optional_instructions" field.
+func (u *GroupUpsertOne) SetOptionalInstructions(v string) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetOptionalInstructions(v)
+	})
+}
+
+// UpdateOptionalInstructions sets the "optional_instructions" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateOptionalInstructions() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateOptionalInstructions()
 	})
 }
 
@@ -4407,6 +4514,34 @@ func (u *GroupUpsertBulk) SetAllowLive(v bool) *GroupUpsertBulk {
 func (u *GroupUpsertBulk) UpdateAllowLive() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateAllowLive()
+	})
+}
+
+// SetOptionalInstructionsEnabled sets the "optional_instructions_enabled" field.
+func (u *GroupUpsertBulk) SetOptionalInstructionsEnabled(v bool) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetOptionalInstructionsEnabled(v)
+	})
+}
+
+// UpdateOptionalInstructionsEnabled sets the "optional_instructions_enabled" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateOptionalInstructionsEnabled() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateOptionalInstructionsEnabled()
+	})
+}
+
+// SetOptionalInstructions sets the "optional_instructions" field.
+func (u *GroupUpsertBulk) SetOptionalInstructions(v string) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetOptionalInstructions(v)
+	})
+}
+
+// UpdateOptionalInstructions sets the "optional_instructions" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateOptionalInstructions() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateOptionalInstructions()
 	})
 }
 

@@ -265,6 +265,16 @@ func AllowLive(v bool) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldAllowLive, v))
 }
 
+// OptionalInstructionsEnabled applies equality check predicate on the "optional_instructions_enabled" field. It's identical to OptionalInstructionsEnabledEQ.
+func OptionalInstructionsEnabled(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldOptionalInstructionsEnabled, v))
+}
+
+// OptionalInstructions applies equality check predicate on the "optional_instructions" field. It's identical to OptionalInstructionsEQ.
+func OptionalInstructions(v string) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldOptionalInstructions, v))
+}
+
 // RequireOauthOnly applies equality check predicate on the "require_oauth_only" field. It's identical to RequireOauthOnlyEQ.
 func RequireOauthOnly(v bool) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldRequireOauthOnly, v))
@@ -1998,6 +2008,81 @@ func AllowLiveEQ(v bool) predicate.Group {
 // AllowLiveNEQ applies the NEQ predicate on the "allow_live" field.
 func AllowLiveNEQ(v bool) predicate.Group {
 	return predicate.Group(sql.FieldNEQ(FieldAllowLive, v))
+}
+
+// OptionalInstructionsEnabledEQ applies the EQ predicate on the "optional_instructions_enabled" field.
+func OptionalInstructionsEnabledEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldOptionalInstructionsEnabled, v))
+}
+
+// OptionalInstructionsEnabledNEQ applies the NEQ predicate on the "optional_instructions_enabled" field.
+func OptionalInstructionsEnabledNEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldOptionalInstructionsEnabled, v))
+}
+
+// OptionalInstructionsEQ applies the EQ predicate on the "optional_instructions" field.
+func OptionalInstructionsEQ(v string) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldOptionalInstructions, v))
+}
+
+// OptionalInstructionsNEQ applies the NEQ predicate on the "optional_instructions" field.
+func OptionalInstructionsNEQ(v string) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldOptionalInstructions, v))
+}
+
+// OptionalInstructionsIn applies the In predicate on the "optional_instructions" field.
+func OptionalInstructionsIn(vs ...string) predicate.Group {
+	return predicate.Group(sql.FieldIn(FieldOptionalInstructions, vs...))
+}
+
+// OptionalInstructionsNotIn applies the NotIn predicate on the "optional_instructions" field.
+func OptionalInstructionsNotIn(vs ...string) predicate.Group {
+	return predicate.Group(sql.FieldNotIn(FieldOptionalInstructions, vs...))
+}
+
+// OptionalInstructionsGT applies the GT predicate on the "optional_instructions" field.
+func OptionalInstructionsGT(v string) predicate.Group {
+	return predicate.Group(sql.FieldGT(FieldOptionalInstructions, v))
+}
+
+// OptionalInstructionsGTE applies the GTE predicate on the "optional_instructions" field.
+func OptionalInstructionsGTE(v string) predicate.Group {
+	return predicate.Group(sql.FieldGTE(FieldOptionalInstructions, v))
+}
+
+// OptionalInstructionsLT applies the LT predicate on the "optional_instructions" field.
+func OptionalInstructionsLT(v string) predicate.Group {
+	return predicate.Group(sql.FieldLT(FieldOptionalInstructions, v))
+}
+
+// OptionalInstructionsLTE applies the LTE predicate on the "optional_instructions" field.
+func OptionalInstructionsLTE(v string) predicate.Group {
+	return predicate.Group(sql.FieldLTE(FieldOptionalInstructions, v))
+}
+
+// OptionalInstructionsContains applies the Contains predicate on the "optional_instructions" field.
+func OptionalInstructionsContains(v string) predicate.Group {
+	return predicate.Group(sql.FieldContains(FieldOptionalInstructions, v))
+}
+
+// OptionalInstructionsHasPrefix applies the HasPrefix predicate on the "optional_instructions" field.
+func OptionalInstructionsHasPrefix(v string) predicate.Group {
+	return predicate.Group(sql.FieldHasPrefix(FieldOptionalInstructions, v))
+}
+
+// OptionalInstructionsHasSuffix applies the HasSuffix predicate on the "optional_instructions" field.
+func OptionalInstructionsHasSuffix(v string) predicate.Group {
+	return predicate.Group(sql.FieldHasSuffix(FieldOptionalInstructions, v))
+}
+
+// OptionalInstructionsEqualFold applies the EqualFold predicate on the "optional_instructions" field.
+func OptionalInstructionsEqualFold(v string) predicate.Group {
+	return predicate.Group(sql.FieldEqualFold(FieldOptionalInstructions, v))
+}
+
+// OptionalInstructionsContainsFold applies the ContainsFold predicate on the "optional_instructions" field.
+func OptionalInstructionsContainsFold(v string) predicate.Group {
+	return predicate.Group(sql.FieldContainsFold(FieldOptionalInstructions, v))
 }
 
 // RequireOauthOnlyEQ applies the EQ predicate on the "require_oauth_only" field.

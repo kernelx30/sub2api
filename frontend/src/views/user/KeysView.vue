@@ -507,6 +507,30 @@
           </Select>
         </div>
 
+		<div class="flex items-center justify-between rounded border border-gray-200 p-3 dark:border-dark-600">
+			<div>
+				<div class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('keys.optionalInstructions') }}</div>
+				<div class="text-xs text-gray-500 dark:text-gray-400">
+					{{ selectedFormGroupOffersOptionalInstructions ? t('keys.optionalInstructionsHint') : t('keys.optionalInstructionsUnavailable') }}
+				</div>
+			</div>
+			<button
+				type="button"
+				:disabled="!selectedFormGroupOffersOptionalInstructions"
+				@click="formData.optional_instructions_enabled = !formData.optional_instructions_enabled"
+				:class="[
+					'relative inline-flex h-6 w-12 flex-shrink-0 rounded-full border-2 border-transparent transition-colors focus:outline-none',
+					selectedFormGroupOffersOptionalInstructions ? 'cursor-pointer' : 'cursor-not-allowed opacity-50',
+					formData.optional_instructions_enabled && selectedFormGroupOffersOptionalInstructions ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+				]"
+			>
+				<span
+					class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition"
+					:class="formData.optional_instructions_enabled && selectedFormGroupOffersOptionalInstructions ? 'translate-x-6' : 'translate-x-1'"
+				/>
+			</button>
+		</div>
+
         <!-- Custom Key Section (only for create) -->
         <div v-if="!showEditModal" class="space-y-3">
           <div class="flex items-center justify-between">
@@ -1330,6 +1354,7 @@ const setGroupButtonRef = (keyId: number, el: Element | ComponentPublicInstance 
 const formData = ref({
   name: '',
   group_id: null as number | null,
+	optional_instructions_enabled: false,
   status: 'active' as 'active' | 'inactive',
   use_custom_key: false,
   custom_key: '',
@@ -1423,6 +1448,11 @@ const groupOptions = computed(() =>
     platform: group.platform
   }))
 )
+
+const selectedFormGroupOffersOptionalInstructions = computed(() => {
+	const group = groups.value.find((item) => item.id === formData.value.group_id)
+	return group?.optional_instructions_available === true
+})
 
 // Group dropdown search
 const groupSearchQuery = ref('')
@@ -1564,6 +1594,7 @@ const editKey = (key: ApiKey) => {
   formData.value = {
     name: key.name,
     group_id: key.group_id,
+	optional_instructions_enabled: key.optional_instructions_enabled,
     status: key.status === 'quota_exhausted' || key.status === 'expired' ? 'inactive' : key.status,
     use_custom_key: false,
     custom_key: '',
@@ -1721,6 +1752,7 @@ const handleSubmit = async () => {
       const updates: UpdateApiKeyRequest = {
         name: formData.value.name,
         group_id: formData.value.group_id,
+		optional_instructions_enabled: formData.value.optional_instructions_enabled && selectedFormGroupOffersOptionalInstructions.value,
         ip_whitelist: ipWhitelist,
         ip_blacklist: ipBlacklist,
         quota: quota,
@@ -1744,7 +1776,8 @@ const handleSubmit = async () => {
         ipBlacklist,
         quota,
         expiresInDays,
-        rateLimitData
+        rateLimitData,
+		formData.value.optional_instructions_enabled && selectedFormGroupOffersOptionalInstructions.value
       )
       appStore.showSuccess(t('keys.keyCreatedSuccess'))
       // Only advance tour if active, on submit step, and creation succeeded
@@ -1790,6 +1823,7 @@ const closeModals = () => {
   formData.value = {
     name: '',
     group_id: null,
+	optional_instructions_enabled: false,
     status: 'active',
     use_custom_key: false,
     custom_key: '',

@@ -108,51 +108,52 @@ const (
 // APIKeyMutation represents an operation that mutates the APIKey nodes in the graph.
 type APIKeyMutation struct {
 	config
-	op                 Op
-	typ                string
-	id                 *int64
-	created_at         *time.Time
-	updated_at         *time.Time
-	deleted_at         *time.Time
-	key                *string
-	name               *string
-	status             *string
-	last_used_at       *time.Time
-	ip_whitelist       *[]string
-	appendip_whitelist []string
-	ip_blacklist       *[]string
-	appendip_blacklist []string
-	quota              *float64
-	addquota           *float64
-	quota_used         *float64
-	addquota_used      *float64
-	expires_at         *time.Time
-	rate_limit_5h      *float64
-	addrate_limit_5h   *float64
-	rate_limit_1d      *float64
-	addrate_limit_1d   *float64
-	rate_limit_7d      *float64
-	addrate_limit_7d   *float64
-	usage_5h           *float64
-	addusage_5h        *float64
-	usage_1d           *float64
-	addusage_1d        *float64
-	usage_7d           *float64
-	addusage_7d        *float64
-	window_5h_start    *time.Time
-	window_1d_start    *time.Time
-	window_7d_start    *time.Time
-	clearedFields      map[string]struct{}
-	user               *int64
-	cleareduser        bool
-	group              *int64
-	clearedgroup       bool
-	usage_logs         map[int64]struct{}
-	removedusage_logs  map[int64]struct{}
-	clearedusage_logs  bool
-	done               bool
-	oldValue           func(context.Context) (*APIKey, error)
-	predicates         []predicate.APIKey
+	op                            Op
+	typ                           string
+	id                            *int64
+	created_at                    *time.Time
+	updated_at                    *time.Time
+	deleted_at                    *time.Time
+	key                           *string
+	name                          *string
+	status                        *string
+	optional_instructions_enabled *bool
+	last_used_at                  *time.Time
+	ip_whitelist                  *[]string
+	appendip_whitelist            []string
+	ip_blacklist                  *[]string
+	appendip_blacklist            []string
+	quota                         *float64
+	addquota                      *float64
+	quota_used                    *float64
+	addquota_used                 *float64
+	expires_at                    *time.Time
+	rate_limit_5h                 *float64
+	addrate_limit_5h              *float64
+	rate_limit_1d                 *float64
+	addrate_limit_1d              *float64
+	rate_limit_7d                 *float64
+	addrate_limit_7d              *float64
+	usage_5h                      *float64
+	addusage_5h                   *float64
+	usage_1d                      *float64
+	addusage_1d                   *float64
+	usage_7d                      *float64
+	addusage_7d                   *float64
+	window_5h_start               *time.Time
+	window_1d_start               *time.Time
+	window_7d_start               *time.Time
+	clearedFields                 map[string]struct{}
+	user                          *int64
+	cleareduser                   bool
+	group                         *int64
+	clearedgroup                  bool
+	usage_logs                    map[int64]struct{}
+	removedusage_logs             map[int64]struct{}
+	clearedusage_logs             bool
+	done                          bool
+	oldValue                      func(context.Context) (*APIKey, error)
+	predicates                    []predicate.APIKey
 }
 
 var _ ent.Mutation = (*APIKeyMutation)(nil)
@@ -565,6 +566,42 @@ func (m *APIKeyMutation) OldStatus(ctx context.Context) (v string, err error) {
 // ResetStatus resets all changes to the "status" field.
 func (m *APIKeyMutation) ResetStatus() {
 	m.status = nil
+}
+
+// SetOptionalInstructionsEnabled sets the "optional_instructions_enabled" field.
+func (m *APIKeyMutation) SetOptionalInstructionsEnabled(b bool) {
+	m.optional_instructions_enabled = &b
+}
+
+// OptionalInstructionsEnabled returns the value of the "optional_instructions_enabled" field in the mutation.
+func (m *APIKeyMutation) OptionalInstructionsEnabled() (r bool, exists bool) {
+	v := m.optional_instructions_enabled
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldOptionalInstructionsEnabled returns the old "optional_instructions_enabled" field's value of the APIKey entity.
+// If the APIKey object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *APIKeyMutation) OldOptionalInstructionsEnabled(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldOptionalInstructionsEnabled is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldOptionalInstructionsEnabled requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldOptionalInstructionsEnabled: %w", err)
+	}
+	return oldValue.OptionalInstructionsEnabled, nil
+}
+
+// ResetOptionalInstructionsEnabled resets all changes to the "optional_instructions_enabled" field.
+func (m *APIKeyMutation) ResetOptionalInstructionsEnabled() {
+	m.optional_instructions_enabled = nil
 }
 
 // SetLastUsedAt sets the "last_used_at" field.
@@ -1532,7 +1569,7 @@ func (m *APIKeyMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *APIKeyMutation) Fields() []string {
-	fields := make([]string, 0, 23)
+	fields := make([]string, 0, 24)
 	if m.created_at != nil {
 		fields = append(fields, apikey.FieldCreatedAt)
 	}
@@ -1556,6 +1593,9 @@ func (m *APIKeyMutation) Fields() []string {
 	}
 	if m.status != nil {
 		fields = append(fields, apikey.FieldStatus)
+	}
+	if m.optional_instructions_enabled != nil {
+		fields = append(fields, apikey.FieldOptionalInstructionsEnabled)
 	}
 	if m.last_used_at != nil {
 		fields = append(fields, apikey.FieldLastUsedAt)
@@ -1626,6 +1666,8 @@ func (m *APIKeyMutation) Field(name string) (ent.Value, bool) {
 		return m.GroupID()
 	case apikey.FieldStatus:
 		return m.Status()
+	case apikey.FieldOptionalInstructionsEnabled:
+		return m.OptionalInstructionsEnabled()
 	case apikey.FieldLastUsedAt:
 		return m.LastUsedAt()
 	case apikey.FieldIPWhitelist:
@@ -1681,6 +1723,8 @@ func (m *APIKeyMutation) OldField(ctx context.Context, name string) (ent.Value, 
 		return m.OldGroupID(ctx)
 	case apikey.FieldStatus:
 		return m.OldStatus(ctx)
+	case apikey.FieldOptionalInstructionsEnabled:
+		return m.OldOptionalInstructionsEnabled(ctx)
 	case apikey.FieldLastUsedAt:
 		return m.OldLastUsedAt(ctx)
 	case apikey.FieldIPWhitelist:
@@ -1775,6 +1819,13 @@ func (m *APIKeyMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetStatus(v)
+		return nil
+	case apikey.FieldOptionalInstructionsEnabled:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetOptionalInstructionsEnabled(v)
 		return nil
 	case apikey.FieldLastUsedAt:
 		v, ok := value.(time.Time)
@@ -2109,6 +2160,9 @@ func (m *APIKeyMutation) ResetField(name string) error {
 		return nil
 	case apikey.FieldStatus:
 		m.ResetStatus()
+		return nil
+	case apikey.FieldOptionalInstructionsEnabled:
+		m.ResetOptionalInstructionsEnabled()
 		return nil
 	case apikey.FieldLastUsedAt:
 		m.ResetLastUsedAt()
@@ -21912,6 +21966,8 @@ type GroupMutation struct {
 	addsort_order                           *int
 	allow_messages_dispatch                 *bool
 	allow_live                              *bool
+	optional_instructions_enabled           *bool
+	optional_instructions                   *string
 	require_oauth_only                      *bool
 	require_privacy_set                     *bool
 	default_mapped_model                    *string
@@ -24263,6 +24319,78 @@ func (m *GroupMutation) ResetAllowLive() {
 	m.allow_live = nil
 }
 
+// SetOptionalInstructionsEnabled sets the "optional_instructions_enabled" field.
+func (m *GroupMutation) SetOptionalInstructionsEnabled(b bool) {
+	m.optional_instructions_enabled = &b
+}
+
+// OptionalInstructionsEnabled returns the value of the "optional_instructions_enabled" field in the mutation.
+func (m *GroupMutation) OptionalInstructionsEnabled() (r bool, exists bool) {
+	v := m.optional_instructions_enabled
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldOptionalInstructionsEnabled returns the old "optional_instructions_enabled" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldOptionalInstructionsEnabled(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldOptionalInstructionsEnabled is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldOptionalInstructionsEnabled requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldOptionalInstructionsEnabled: %w", err)
+	}
+	return oldValue.OptionalInstructionsEnabled, nil
+}
+
+// ResetOptionalInstructionsEnabled resets all changes to the "optional_instructions_enabled" field.
+func (m *GroupMutation) ResetOptionalInstructionsEnabled() {
+	m.optional_instructions_enabled = nil
+}
+
+// SetOptionalInstructions sets the "optional_instructions" field.
+func (m *GroupMutation) SetOptionalInstructions(s string) {
+	m.optional_instructions = &s
+}
+
+// OptionalInstructions returns the value of the "optional_instructions" field in the mutation.
+func (m *GroupMutation) OptionalInstructions() (r string, exists bool) {
+	v := m.optional_instructions
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldOptionalInstructions returns the old "optional_instructions" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldOptionalInstructions(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldOptionalInstructions is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldOptionalInstructions requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldOptionalInstructions: %w", err)
+	}
+	return oldValue.OptionalInstructions, nil
+}
+
+// ResetOptionalInstructions resets all changes to the "optional_instructions" field.
+func (m *GroupMutation) ResetOptionalInstructions() {
+	m.optional_instructions = nil
+}
+
 // SetRequireOauthOnly sets the "require_oauth_only" field.
 func (m *GroupMutation) SetRequireOauthOnly(b bool) {
 	m.require_oauth_only = &b
@@ -24944,7 +25072,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 52)
+	fields := make([]string, 0, 54)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -25077,6 +25205,12 @@ func (m *GroupMutation) Fields() []string {
 	if m.allow_live != nil {
 		fields = append(fields, group.FieldAllowLive)
 	}
+	if m.optional_instructions_enabled != nil {
+		fields = append(fields, group.FieldOptionalInstructionsEnabled)
+	}
+	if m.optional_instructions != nil {
+		fields = append(fields, group.FieldOptionalInstructions)
+	}
 	if m.require_oauth_only != nil {
 		fields = append(fields, group.FieldRequireOauthOnly)
 	}
@@ -25197,6 +25331,10 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.AllowMessagesDispatch()
 	case group.FieldAllowLive:
 		return m.AllowLive()
+	case group.FieldOptionalInstructionsEnabled:
+		return m.OptionalInstructionsEnabled()
+	case group.FieldOptionalInstructions:
+		return m.OptionalInstructions()
 	case group.FieldRequireOauthOnly:
 		return m.RequireOauthOnly()
 	case group.FieldRequirePrivacySet:
@@ -25310,6 +25448,10 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldAllowMessagesDispatch(ctx)
 	case group.FieldAllowLive:
 		return m.OldAllowLive(ctx)
+	case group.FieldOptionalInstructionsEnabled:
+		return m.OldOptionalInstructionsEnabled(ctx)
+	case group.FieldOptionalInstructions:
+		return m.OldOptionalInstructions(ctx)
 	case group.FieldRequireOauthOnly:
 		return m.OldRequireOauthOnly(ctx)
 	case group.FieldRequirePrivacySet:
@@ -25642,6 +25784,20 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetAllowLive(v)
+		return nil
+	case group.FieldOptionalInstructionsEnabled:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetOptionalInstructionsEnabled(v)
+		return nil
+	case group.FieldOptionalInstructions:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetOptionalInstructions(v)
 		return nil
 	case group.FieldRequireOauthOnly:
 		v, ok := value.(bool)
@@ -26233,6 +26389,12 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldAllowLive:
 		m.ResetAllowLive()
+		return nil
+	case group.FieldOptionalInstructionsEnabled:
+		m.ResetOptionalInstructionsEnabled()
+		return nil
+	case group.FieldOptionalInstructions:
+		m.ResetOptionalInstructions()
 		return nil
 	case group.FieldRequireOauthOnly:
 		m.ResetRequireOauthOnly()

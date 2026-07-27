@@ -51,21 +51,22 @@ type AdminUser struct {
 }
 
 type APIKey struct {
-	ID          int64      `json:"id"`
-	UserID      int64      `json:"user_id"`
-	Key         string     `json:"key"`
-	Name        string     `json:"name"`
-	GroupID     *int64     `json:"group_id"`
-	Status      string     `json:"status"`
-	IPWhitelist []string   `json:"ip_whitelist"`
-	IPBlacklist []string   `json:"ip_blacklist"`
-	LastUsedAt  *time.Time `json:"last_used_at"`
-	LastUsedIP  *string    `json:"last_used_ip"`
-	Quota       float64    `json:"quota"`      // Quota limit in USD (0 = unlimited)
-	QuotaUsed   float64    `json:"quota_used"` // Used quota amount in USD
-	ExpiresAt   *time.Time `json:"expires_at"` // Expiration time (nil = never expires)
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID                          int64      `json:"id"`
+	UserID                      int64      `json:"user_id"`
+	Key                         string     `json:"key"`
+	Name                        string     `json:"name"`
+	GroupID                     *int64     `json:"group_id"`
+	OptionalInstructionsEnabled bool       `json:"optional_instructions_enabled"`
+	Status                      string     `json:"status"`
+	IPWhitelist                 []string   `json:"ip_whitelist"`
+	IPBlacklist                 []string   `json:"ip_blacklist"`
+	LastUsedAt                  *time.Time `json:"last_used_at"`
+	LastUsedIP                  *string    `json:"last_used_ip"`
+	Quota                       float64    `json:"quota"`      // Quota limit in USD (0 = unlimited)
+	QuotaUsed                   float64    `json:"quota_used"` // Used quota amount in USD
+	ExpiresAt                   *time.Time `json:"expires_at"` // Expiration time (nil = never expires)
+	CreatedAt                   time.Time  `json:"created_at"`
+	UpdatedAt                   time.Time  `json:"updated_at"`
 	// CurrentConcurrency is the real-time active request count for this API key.
 	CurrentConcurrency int `json:"current_concurrency"`
 
@@ -133,7 +134,8 @@ type Group struct {
 	// OpenAI Messages 调度开关（用户侧需要此字段判断是否展示 Claude Code 教程）
 	AllowMessagesDispatch bool `json:"allow_messages_dispatch"`
 	// OpenAI Live 接口开关
-	AllowLive bool `json:"allow_live"`
+	AllowLive                     bool `json:"allow_live"`
+	OptionalInstructionsAvailable bool `json:"optional_instructions_available"`
 
 	// 账号过滤控制（仅 OpenAI/Antigravity 平台有效）
 	RequireOAuthOnly  bool `json:"require_oauth_only"`
@@ -154,6 +156,8 @@ type Group struct {
 // 注意：普通用户接口不得返回 model_routing/account_count/account_groups 等内部信息。
 type AdminGroup struct {
 	Group
+	OptionalInstructionsEnabled bool   `json:"optional_instructions_enabled"`
+	OptionalInstructions        string `json:"optional_instructions"`
 
 	// 模型路由配置（仅 anthropic 平台使用）
 	ModelRouting        map[string][]int64 `json:"model_routing"`

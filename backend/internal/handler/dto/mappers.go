@@ -3,6 +3,7 @@ package dto
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -80,33 +81,34 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		return nil
 	}
 	out := &APIKey{
-		ID:                 k.ID,
-		UserID:             k.UserID,
-		Key:                k.Key,
-		Name:               k.Name,
-		GroupID:            k.GroupID,
-		Status:             k.Status,
-		IPWhitelist:        k.IPWhitelist,
-		IPBlacklist:        k.IPBlacklist,
-		LastUsedAt:         k.LastUsedAt,
-		LastUsedIP:         k.LastUsedIP,
-		Quota:              k.Quota,
-		QuotaUsed:          k.QuotaUsed,
-		ExpiresAt:          k.ExpiresAt,
-		CreatedAt:          k.CreatedAt,
-		UpdatedAt:          k.UpdatedAt,
-		CurrentConcurrency: k.CurrentConcurrency,
-		RateLimit5h:        k.RateLimit5h,
-		RateLimit1d:        k.RateLimit1d,
-		RateLimit7d:        k.RateLimit7d,
-		Usage5h:            k.EffectiveUsage5h(),
-		Usage1d:            k.EffectiveUsage1d(),
-		Usage7d:            k.EffectiveUsage7d(),
-		Window5hStart:      k.Window5hStart,
-		Window1dStart:      k.Window1dStart,
-		Window7dStart:      k.Window7dStart,
-		User:               UserFromServiceShallow(k.User),
-		Group:              GroupFromServiceShallow(k.Group),
+		ID:                          k.ID,
+		UserID:                      k.UserID,
+		Key:                         k.Key,
+		Name:                        k.Name,
+		GroupID:                     k.GroupID,
+		OptionalInstructionsEnabled: k.OptionalInstructionsEnabled,
+		Status:                      k.Status,
+		IPWhitelist:                 k.IPWhitelist,
+		IPBlacklist:                 k.IPBlacklist,
+		LastUsedAt:                  k.LastUsedAt,
+		LastUsedIP:                  k.LastUsedIP,
+		Quota:                       k.Quota,
+		QuotaUsed:                   k.QuotaUsed,
+		ExpiresAt:                   k.ExpiresAt,
+		CreatedAt:                   k.CreatedAt,
+		UpdatedAt:                   k.UpdatedAt,
+		CurrentConcurrency:          k.CurrentConcurrency,
+		RateLimit5h:                 k.RateLimit5h,
+		RateLimit1d:                 k.RateLimit1d,
+		RateLimit7d:                 k.RateLimit7d,
+		Usage5h:                     k.EffectiveUsage5h(),
+		Usage1d:                     k.EffectiveUsage1d(),
+		Usage7d:                     k.EffectiveUsage7d(),
+		Window5hStart:               k.Window5hStart,
+		Window1dStart:               k.Window1dStart,
+		Window7dStart:               k.Window7dStart,
+		User:                        UserFromServiceShallow(k.User),
+		Group:                       GroupFromServiceShallow(k.Group),
 	}
 	if k.Window5hStart != nil && !service.IsWindowExpired(k.Window5hStart, service.RateLimitWindow5h) {
 		t := k.Window5hStart.Add(service.RateLimitWindow5h)
@@ -146,6 +148,8 @@ func GroupFromServiceAdmin(g *service.Group) *AdminGroup {
 	}
 	out := &AdminGroup{
 		Group:                       groupFromServiceBase(g),
+		OptionalInstructionsEnabled: g.OptionalInstructionsEnabled,
+		OptionalInstructions:        g.OptionalInstructions,
 		ModelRouting:                g.ModelRouting,
 		ModelRoutingEnabled:         g.ModelRoutingEnabled,
 		MCPXMLInject:                g.MCPXMLInject,
@@ -205,6 +209,7 @@ func groupFromServiceBase(g *service.Group) Group {
 		FallbackGroupIDOnInvalidRequest: g.FallbackGroupIDOnInvalidRequest,
 		AllowMessagesDispatch:           g.AllowMessagesDispatch,
 		AllowLive:                       g.AllowLive,
+		OptionalInstructionsAvailable:   g.OptionalInstructionsEnabled && strings.TrimSpace(g.OptionalInstructions) != "",
 		RequireOAuthOnly:                g.RequireOAuthOnly,
 		RequirePrivacySet:               g.RequirePrivacySet,
 		RPMLimit:                        g.RPMLimit,
