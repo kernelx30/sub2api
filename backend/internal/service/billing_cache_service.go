@@ -795,10 +795,6 @@ func (s *BillingCacheService) checkBillingEligibility(ctx context.Context, user 
 //
 // 与旧版"级联互斥"设计不同，新版确保 user.rpm_limit 作为全局天花板不会被 group 或 override 覆盖。
 // Redis 故障一律 fail-open（打 warning，不阻塞业务）。
-func (s *BillingCacheService) checkRPM(ctx context.Context, user *User, group *Group) error {
-	return s.checkRPMWithUserLimit(ctx, user, group, true)
-}
-
 func (s *BillingCacheService) checkRPMWithUserLimit(ctx context.Context, user *User, group *Group, includeUserLimit bool) error {
 	if s == nil || s.userRPMCache == nil || user == nil {
 		return nil

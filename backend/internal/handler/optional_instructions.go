@@ -356,11 +356,11 @@ func sanitizeOwnerFixtureGameText(text string) string {
 	var result strings.Builder
 	last := 0
 	for _, match := range matches {
-		result.WriteString(sanitizeOwnerFixtureGameTextOutsideEnglishExclusions(text[last:match[0]]))
-		result.WriteString(text[match[0]:match[1]])
+		_, _ = result.WriteString(sanitizeOwnerFixtureGameTextOutsideEnglishExclusions(text[last:match[0]]))
+		_, _ = result.WriteString(text[match[0]:match[1]])
 		last = match[1]
 	}
-	result.WriteString(sanitizeOwnerFixtureGameTextOutsideEnglishExclusions(text[last:]))
+	_, _ = result.WriteString(sanitizeOwnerFixtureGameTextOutsideEnglishExclusions(text[last:]))
 	return result.String()
 }
 
@@ -370,11 +370,11 @@ func sanitizeOwnerFixtureGameTextOutsideEnglishExclusions(text string) string {
 	for remaining != "" {
 		index, protected := nextOwnerFixtureProtectedChinese(remaining)
 		if index < 0 {
-			result.WriteString(sanitizeOwnerFixtureGameUnprotectedText(remaining))
+			_, _ = result.WriteString(sanitizeOwnerFixtureGameUnprotectedText(remaining))
 			break
 		}
-		result.WriteString(sanitizeOwnerFixtureGameUnprotectedText(remaining[:index]))
-		result.WriteString(protected)
+		_, _ = result.WriteString(sanitizeOwnerFixtureGameUnprotectedText(remaining[:index]))
+		_, _ = result.WriteString(protected)
 		remaining = remaining[index+len(protected):]
 	}
 	return result.String()

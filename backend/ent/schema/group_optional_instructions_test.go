@@ -14,7 +14,9 @@ func TestGroupOptionalInstructionsValidatorCountsUnicodeCharacters(t *testing.T)
 		descriptor := schemaField.Descriptor()
 		if descriptor.Name == "optional_instructions" {
 			require.Len(t, descriptor.Validators, 1)
-			validator = descriptor.Validators[0].(func(string) error)
+			var ok bool
+			validator, ok = descriptor.Validators[0].(func(string) error)
+			require.True(t, ok)
 			break
 		}
 	}

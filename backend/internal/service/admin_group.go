@@ -20,8 +20,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
 
-const optionalInstructionsMaxCharacters = domain.OptionalInstructionsMaxCharacters
-
 func validateOptionalInstructions(instructions string) error {
 	if err := domain.ValidateOptionalInstructions(instructions); err != nil {
 		return infraerrors.Newf(http.StatusBadRequest, "OPTIONAL_INSTRUCTIONS_TOO_LONG", "%v", err)
