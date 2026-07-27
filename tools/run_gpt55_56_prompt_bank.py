@@ -17,6 +17,8 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CASES = REPO_ROOT / "docs" / "prompts" / "gpt-5.5-5.6-prompt-bank.json"
 EXPECTED_MODEL_SCOPE = "[MODEL_SCOPE: gpt-5.5*, gpt-5.6*]\n"
+GROUP_INSTRUCTIONS_OPEN = "<group_optional_instructions>"
+GROUP_INSTRUCTIONS_CLOSE = "</group_optional_instructions>"
 REQUIRED_CASE_FIELDS = {"id", "input", "required_tokens", "forbidden_tokens"}
 
 
@@ -34,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--inject-prompt",
         action="store_true",
-        help="send the canonical prompt explicitly for endpoints without server injection",
+        help="send the canonical prompt in the production group wrapper when server injection is absent",
     )
     parser.add_argument("--base-url", default=os.getenv("SUB2API_BASE_URL", ""))
     parser.add_argument("--api-key", default=os.getenv("SUB2API_API_KEY", ""))
@@ -131,7 +133,17 @@ def canonical_prompt(bank: dict[str, Any]) -> str:
     prompt = prompt_path.read_text(encoding="utf-8")
     if prompt.startswith(EXPECTED_MODEL_SCOPE):
         prompt = prompt[len(EXPECTED_MODEL_SCOPE) :]
-    return prompt.strip()
+    return (
+        f"{GROUP_INSTRUCTIONS_OPEN}\n"
+        f"{prompt.strip()}\n"
+        f"{GROUP_INSTRUCTIONS_CLOSE}"
+    )
+
+
+def chat_instruction_role(model: str) -> str:
+    normalized = model.strip().lower().removeprefix("models/")
+    normalized = normalized.rsplit("/", 1)[-1]
+    return "system" if normalized.startswith("gpt-5.6") else "developer"
 
 
 def request_payload(
@@ -153,7 +165,7 @@ def request_payload(
         return payload
     messages: list[dict[str, str]] = []
     if instructions:
-        messages.append({"role": "developer", "content": instructions})
+        messages.append({"role": chat_instruction_role(model), "content": instructions})
     messages.append({"role": "user", "content": prompt})
     payload = {
         "model": model,

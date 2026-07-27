@@ -44,7 +44,7 @@ func TestInjectOptionalResponsesInstructionsRequiresBothSwitches(t *testing.T) {
 	}
 }
 
-func TestInjectOptionalResponsesInstructionsPrependsAndPreservesClient(t *testing.T) {
+func TestInjectOptionalResponsesInstructionsAppendsAfterClient(t *testing.T) {
 	got, changed, err := injectOptionalResponsesInstructions(
 		[]byte(`{"model":"gpt-5","instructions":"client"}`),
 		optionalInstructionsTestKey(true, true, "admin"),
@@ -52,7 +52,7 @@ func TestInjectOptionalResponsesInstructionsPrependsAndPreservesClient(t *testin
 	)
 	require.NoError(t, err)
 	require.True(t, changed)
-	require.Equal(t, "<group_optional_instructions>\nadmin\n</group_optional_instructions>\n\nclient", gjson.GetBytes(got, "instructions").String())
+	require.Equal(t, "client\n\n<group_optional_instructions>\nadmin\n</group_optional_instructions>", gjson.GetBytes(got, "instructions").String())
 }
 
 func TestInjectOptionalResponsesInstructionsSupportsFlatWebSocketResponse(t *testing.T) {
@@ -75,56 +75,68 @@ func TestInjectOptionalAnthropicSystemPreservesBlocks(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.True(t, changed)
-	require.Equal(t, "<group_optional_instructions>\nadmin\n</group_optional_instructions>", gjson.GetBytes(got, "system.0.text").String())
-	require.Equal(t, "client", gjson.GetBytes(got, "system.1.text").String())
+	require.Equal(t, "client", gjson.GetBytes(got, "system.0.text").String())
+	require.Equal(t, "<group_optional_instructions>\nadmin\n</group_optional_instructions>", gjson.GetBytes(got, "system.1.text").String())
 }
 
-func TestInjectOptionalChatCompletionsAddsDeveloperAndPreservesExistingSystem(t *testing.T) {
+func TestInjectOptionalChatCompletionsAppendsToExistingSystem(t *testing.T) {
 	got, changed, err := injectOptionalChatCompletionsMessages(
 		[]byte(`{"model":"gpt","messages":[{"role":"system","content":"client"},{"role":"user","content":"hello"}]}`),
 		optionalInstructionsTestKey(true, true, "admin"),
-		"gpt",
+		"gpt-5.6",
 	)
 	require.NoError(t, err)
 	require.True(t, changed)
-	require.Equal(t, "developer", gjson.GetBytes(got, "messages.0.role").String())
-	require.Equal(t, "<group_optional_instructions>\nadmin\n</group_optional_instructions>", gjson.GetBytes(got, "messages.0.content").String())
-	require.Equal(t, "system", gjson.GetBytes(got, "messages.1.role").String())
-	require.Equal(t, "client", gjson.GetBytes(got, "messages.1.content").String())
-	require.Equal(t, "hello", gjson.GetBytes(got, "messages.2.content").String())
+	require.Equal(t, "system", gjson.GetBytes(got, "messages.0.role").String())
+	require.Equal(t, "client\n\n"+formatOptionalInstructions("admin"), gjson.GetBytes(got, "messages.0.content").String())
+	require.Equal(t, "hello", gjson.GetBytes(got, "messages.1.content").String())
 }
 
-func TestInjectOptionalChatCompletionsPrefersDeveloperAndPreservesContentBlocks(t *testing.T) {
+func TestInjectOptionalChatCompletionsAppendsToSystemContentBlocks(t *testing.T) {
 	key := optionalInstructionsTestKey(true, true, "admin")
 	got, changed, err := injectOptionalChatCompletionsMessages(
-		[]byte(`{"model":"gpt","messages":[{"role":"system","content":"client system"},{"role":"developer","content":[{"type":"text","text":"client developer"}]},{"role":"user","content":"hello"}]}`),
+		[]byte(`{"model":"gpt","messages":[{"role":"system","content":[{"type":"text","text":"client system"}]},{"role":"developer","content":"client developer"},{"role":"user","content":"hello"}]}`),
 		key,
-		"gpt",
+		"gpt-5.6",
 	)
 	require.NoError(t, err)
 	require.True(t, changed)
-	require.Equal(t, "client system", gjson.GetBytes(got, "messages.0.content").String())
+	require.Equal(t, "client system", gjson.GetBytes(got, "messages.0.content.0.text").String())
+	require.Equal(t, formatOptionalInstructions("admin"), gjson.GetBytes(got, "messages.0.content.1.text").String())
 	require.Equal(t, "developer", gjson.GetBytes(got, "messages.1.role").String())
-	require.Equal(t, "<group_optional_instructions>\nadmin\n</group_optional_instructions>", gjson.GetBytes(got, "messages.1.content.0.text").String())
-	require.Equal(t, "client developer", gjson.GetBytes(got, "messages.1.content.1.text").String())
+	require.Equal(t, "client developer", gjson.GetBytes(got, "messages.1.content").String())
 
-	second, changed, err := injectOptionalChatCompletionsMessages(got, key, "gpt")
+	second, changed, err := injectOptionalChatCompletionsMessages(got, key, "gpt-5.6")
 	require.NoError(t, err)
 	require.False(t, changed)
 	require.JSONEq(t, string(got), string(second))
 }
 
-func TestInjectOptionalChatCompletionsAddsDeveloperWithoutReorderingClientMessages(t *testing.T) {
+func TestInjectOptionalChatCompletionsAddsSystemWithoutReorderingConversation(t *testing.T) {
 	got, changed, err := injectOptionalChatCompletionsMessages(
 		[]byte(`{"model":"gpt","messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"}]}`),
 		optionalInstructionsTestKey(true, true, "admin"),
-		"gpt",
+		"gpt-5.6",
+	)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "system", gjson.GetBytes(got, "messages.0.role").String())
+	require.Equal(t, "user", gjson.GetBytes(got, "messages.1.role").String())
+	require.Equal(t, "assistant", gjson.GetBytes(got, "messages.2.role").String())
+}
+
+func TestInjectOptionalChatCompletionsUsesDeveloperForGPT55(t *testing.T) {
+	got, changed, err := injectOptionalChatCompletionsMessages(
+		[]byte(`{"model":"gpt-5.5","messages":[{"role":"system","content":"client system"},{"role":"user","content":"hello"}]}`),
+		optionalInstructionsTestKey(true, true, "admin"),
+		"gpt-5.5",
 	)
 	require.NoError(t, err)
 	require.True(t, changed)
 	require.Equal(t, "developer", gjson.GetBytes(got, "messages.0.role").String())
-	require.Equal(t, "user", gjson.GetBytes(got, "messages.1.role").String())
-	require.Equal(t, "assistant", gjson.GetBytes(got, "messages.2.role").String())
+	require.Equal(t, formatOptionalInstructions("admin"), gjson.GetBytes(got, "messages.0.content").String())
+	require.Equal(t, "system", gjson.GetBytes(got, "messages.1.role").String())
+	require.Equal(t, "client system", gjson.GetBytes(got, "messages.1.content").String())
 }
 
 func TestInjectOptionalChatCompletionsHandlesResponsesShapedPayload(t *testing.T) {
@@ -173,8 +185,10 @@ func TestOptionalInstructionsOpenTagAloneDoesNotSuppressInjection(t *testing.T) 
 	)
 	require.NoError(t, err)
 	require.True(t, changed)
-	require.Equal(t, formatOptionalInstructions("admin"), gjson.GetBytes(chat, "messages.0.content.0.text").String())
-	require.Equal(t, optionalInstructionsOpenTag, gjson.GetBytes(chat, "messages.0.content.1.text").String())
+	require.Equal(t, "system", gjson.GetBytes(chat, "messages.0.role").String())
+	require.Equal(t, formatOptionalInstructions("admin"), gjson.GetBytes(chat, "messages.0.content").String())
+	require.Equal(t, "developer", gjson.GetBytes(chat, "messages.1.role").String())
+	require.Equal(t, optionalInstructionsOpenTag, gjson.GetBytes(chat, "messages.1.content.0.text").String())
 
 	anthropic, changed, err := injectOptionalAnthropicSystem(
 		[]byte(`{"system":[{"type":"text","text":"<group_optional_instructions>"}],"messages":[]}`),
@@ -183,8 +197,20 @@ func TestOptionalInstructionsOpenTagAloneDoesNotSuppressInjection(t *testing.T) 
 	)
 	require.NoError(t, err)
 	require.True(t, changed)
-	require.Equal(t, formatOptionalInstructions("admin"), gjson.GetBytes(anthropic, "system.0.text").String())
-	require.Equal(t, optionalInstructionsOpenTag, gjson.GetBytes(anthropic, "system.1.text").String())
+	require.Equal(t, optionalInstructionsOpenTag, gjson.GetBytes(anthropic, "system.0.text").String())
+	require.Equal(t, formatOptionalInstructions("admin"), gjson.GetBytes(anthropic, "system.1.text").String())
+}
+
+func TestInjectOptionalChatCompletionsAppendsToLastSystemMessage(t *testing.T) {
+	got, changed, err := injectOptionalChatCompletionsMessages(
+		[]byte(`{"messages":[{"role":"system","content":"first"},{"role":"system","content":"last"},{"role":"user","content":"hello"}]}`),
+		optionalInstructionsTestKey(true, true, "admin"),
+		"gpt-5.6",
+	)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "first", gjson.GetBytes(got, "messages.0.content").String())
+	require.Equal(t, "last\n\n"+formatOptionalInstructions("admin"), gjson.GetBytes(got, "messages.1.content").String())
 }
 
 func TestOptionalInstructionsInjectorsPreserveLargeJSONIntegers(t *testing.T) {
@@ -257,7 +283,7 @@ func TestOptionalInstructionsModelScopeMatchesAnyEffectiveModelCandidate(t *test
 	)
 	require.NoError(t, err)
 	require.True(t, changed)
-	require.Equal(t, formatOptionalInstructions("admin")+"\n\nclient", gjson.GetBytes(got, "system").String())
+	require.Equal(t, "client\n\n"+formatOptionalInstructions("admin"), gjson.GetBytes(got, "system").String())
 
 	got, changed, err = injectOptionalAnthropicSystem(
 		body,
@@ -267,7 +293,7 @@ func TestOptionalInstructionsModelScopeMatchesAnyEffectiveModelCandidate(t *test
 	)
 	require.NoError(t, err)
 	require.True(t, changed)
-	require.Equal(t, formatOptionalInstructions("admin")+"\n\nclient", gjson.GetBytes(got, "system").String())
+	require.Equal(t, "client\n\n"+formatOptionalInstructions("admin"), gjson.GetBytes(got, "system").String())
 
 	got, changed, err = injectOptionalAnthropicSystem(
 		body,
@@ -375,7 +401,7 @@ func TestOptionalInstructionsModelScopeAppliesAcrossRequestProtocols(t *testing.
 	)
 	require.NoError(t, err)
 	require.True(t, changed)
-	require.Equal(t, formatOptionalInstructions("admin")+"\n\nclient", gjson.GetBytes(anthropic, "system").String())
+	require.Equal(t, "client\n\n"+formatOptionalInstructions("admin"), gjson.GetBytes(anthropic, "system").String())
 
 	anthropic, changed, err = injectOptionalAnthropicSystem(
 		[]byte(`{"system":"client","messages":[]}`),

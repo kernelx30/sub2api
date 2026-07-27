@@ -1107,7 +1107,7 @@ export default {
 		optionalInstructions: {
 			title: 'Enhanced Instructions',
 			allow: 'Offer optional enhanced instructions to users',
-			placeholder: 'Enter instructions/system content to prepend',
+			placeholder: 'Enter instructions/system content to append last',
 			hint: 'Applied only when both the group and API key enable it. Client instructions are preserved. Use [MODEL_SCOPE: gpt-5.6*] on the first line to limit models; comma lists and a trailing * are supported, and the line is not sent upstream.'
 		},
       invalidRequestFallback: {

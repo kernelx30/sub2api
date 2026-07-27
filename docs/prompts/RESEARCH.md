@@ -77,6 +77,27 @@ expectations, while the injected instruction contains only behavior, semantic
 routing, defaults, evidence discipline, and required first-line contracts. This
 avoids spending group-instruction context on material the model already knows.
 
+## Live gateway validation
+
+Validated on 2026-07-27 against the OpenAI-compatible gateway supplied for this
+workspace. The credential is intentionally not recorded here.
+
+- Responses `instructions` passed representative GPT-5.5 and GPT-5.6-sol cases for
+  a single broad-request question, immediate Android game follow-up execution,
+  direct KPM source output, semantic game project routing, and evidence placeholders.
+- GPT-5.6-sol Chat Completions with a leading `developer` message routed the semantic
+  game case to an unrelated substitute project, including when wrapped exactly like
+  the group instruction injector. The same request followed the requested route when
+  the enhanced instructions were placed in `system`.
+- GPT-5.5 showed the inverse role preference on the short broad-game dispatch: its
+  `system` request routed away from the required question, while `developer` returned
+  the exact expected question in about 10 seconds. The injector and regression runner
+  therefore select `developer` for GPT-5.5 and `system` for GPT-5.6.
+- Short dispatch/evidence responses returned in roughly 7-26 seconds. Code-heavy
+  400-500 token Responses requests commonly took 110-145 seconds; one request timed
+  out and one retry had the remote connection close before a response.
+- These were targeted representative cases, not a complete 47-case live matrix.
+
 ## Update checklist
 
 1. Fetch upstream `main` and tags; diff the prompt, cases, and runner from the pinned

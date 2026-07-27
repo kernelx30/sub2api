@@ -481,6 +481,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					return err
 				}
 			}
+			if turn > 1 && hooks != nil && hooks.TransformRequest != nil {
+				updatedPayload, transformErr := hooks.TransformRequest(turn, currentBridgePayload.payloadRaw, currentBridgePayload.originalModel)
+				if transformErr != nil {
+					return transformErr
+				}
+				currentBridgePayload.payloadRaw = updatedPayload
+				currentBridgePayload.payloadBytes = len(updatedPayload)
+			}
 			if hooks != nil && hooks.BeforeTurn != nil {
 				if err := hooks.BeforeTurn(turn); err != nil {
 					return err

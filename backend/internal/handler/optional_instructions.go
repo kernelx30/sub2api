@@ -99,6 +99,15 @@ func optionalInstructionsModelMatches(requestedModel string, modelPatterns []str
 	return false
 }
 
+func optionalInstructionsChatRole(candidateModels ...string) string {
+	for _, model := range candidateModels {
+		if optionalInstructionsModelMatches(model, []string{"gpt-5.6*"}) {
+			return "system"
+		}
+	}
+	return "developer"
+}
+
 // optionalInstructionsAccountMappedModel mirrors the final account-level
 // mapping input: channel mapping is applied first, then account mapping.
 func optionalInstructionsAccountMappedModel(account *service.Account, requestedModel, channelMappedModel string) string {
@@ -116,15 +125,15 @@ func formatOptionalInstructions(instructions string) string {
 	return optionalInstructionsOpenTag + "\n" + strings.TrimSpace(instructions) + "\n" + optionalInstructionsCloseTag
 }
 
-func prependOptionalInstructions(existing, instructions string) string {
-	prefix := formatOptionalInstructions(instructions)
+func appendOptionalInstructions(existing, instructions string) string {
+	suffix := formatOptionalInstructions(instructions)
 	if strings.TrimSpace(existing) == "" {
-		return prefix
+		return suffix
 	}
-	if strings.HasPrefix(strings.TrimSpace(existing), prefix) {
+	if strings.HasSuffix(strings.TrimSpace(existing), suffix) {
 		return existing
 	}
-	return prefix + "\n\n" + existing
+	return existing + "\n\n" + suffix
 }
 
 // injectOptionalChatCompletionsMessages adds a protocol-native instruction
@@ -154,15 +163,18 @@ func injectOptionalChatCompletionsMessages(body []byte, apiKey *service.APIKey, 
 	if !ok {
 		return body, false, nil
 	}
-	// Current GPT models prioritize developer messages over the legacy system
-	// role. Keep client system messages untouched and inject only into an
-	// existing developer message or a new leading developer message.
-	for _, raw := range messages {
+	instructionRole := optionalInstructionsChatRole(candidateModels...)
+	// Live gateway validation shows a model-family split on this compatibility
+	// path: GPT-5.5 follows developer messages, while GPT-5.6 is more reliable when
+	// system messages are promoted into upstream instructions. Append to the last
+	// matching message so the group layer remains the final same-role instruction.
+	for i := len(messages) - 1; i >= 0; i-- {
+		raw := messages[i]
 		message, ok := raw.(map[string]any)
-		if !ok || !strings.EqualFold(strings.TrimSpace(stringValue(message["role"])), "developer") {
+		if !ok || !strings.EqualFold(strings.TrimSpace(stringValue(message["role"])), instructionRole) {
 			continue
 		}
-		changed, handled := prependOptionalInstructionsToChatMessage(message, instructions)
+		changed, handled := appendOptionalInstructionsToChatMessage(message, instructions)
 		if !handled {
 			continue
 		}
@@ -172,33 +184,33 @@ func injectOptionalChatCompletionsMessages(body []byte, apiKey *service.APIKey, 
 		updated, err := json.Marshal(root)
 		return updated, err == nil, err
 	}
-	// The new message is prepended without changing the order or contents of
-	// any client-provided messages.
+	// No matching client instruction message exists, so add a leading one without
+	// changing the order or contents of any client-provided messages.
 	root["messages"] = append([]any{map[string]any{
-		"role":    "developer",
+		"role":    instructionRole,
 		"content": formatOptionalInstructions(instructions),
 	}}, messages...)
 	updated, err := json.Marshal(root)
 	return updated, err == nil, err
 }
 
-func prependOptionalInstructionsToChatMessage(message map[string]any, instructions string) (changed, handled bool) {
+func appendOptionalInstructionsToChatMessage(message map[string]any, instructions string) (changed, handled bool) {
 	switch content := message["content"].(type) {
 	case string:
-		merged := prependOptionalInstructions(content, instructions)
+		merged := appendOptionalInstructions(content, instructions)
 		if merged == content {
 			return false, true
 		}
 		message["content"] = merged
 		return true, true
 	case []any:
-		if contentBlocksStartWithOptionalInstructions(content, instructions) {
+		if contentBlocksEndWithOptionalInstructions(content, instructions) {
 			return false, true
 		}
-		message["content"] = append([]any{map[string]any{
+		message["content"] = append(content, map[string]any{
 			"type": "text",
 			"text": formatOptionalInstructions(instructions),
-		}}, content...)
+		})
 		return true, true
 	case nil:
 		message["content"] = formatOptionalInstructions(instructions)
@@ -208,11 +220,11 @@ func prependOptionalInstructionsToChatMessage(message map[string]any, instructio
 	}
 }
 
-func contentBlocksStartWithOptionalInstructions(blocks []any, instructions string) bool {
+func contentBlocksEndWithOptionalInstructions(blocks []any, instructions string) bool {
 	if len(blocks) == 0 {
 		return false
 	}
-	block, ok := blocks[0].(map[string]any)
+	block, ok := blocks[len(blocks)-1].(map[string]any)
 	if !ok || !strings.EqualFold(strings.TrimSpace(stringValue(block["type"])), "text") {
 		return false
 	}
@@ -236,7 +248,7 @@ func injectOptionalResponsesInstructions(body []byte, apiKey *service.APIKey, ca
 			return nil, false, errors.New("instructions must be a string or null")
 		}
 	}
-	merged := prependOptionalInstructions(existing, instructions)
+	merged := appendOptionalInstructions(existing, instructions)
 	if merged == existing {
 		return body, false, nil
 	}
@@ -254,17 +266,17 @@ func injectOptionalAnthropicSystem(body []byte, apiKey *service.APIKey, candidat
 	if err != nil {
 		return nil, false, err
 	}
-	prefixBlock := map[string]any{"type": "text", "text": formatOptionalInstructions(instructions)}
+	suffixBlock := map[string]any{"type": "text", "text": formatOptionalInstructions(instructions)}
 	switch system := root["system"].(type) {
 	case string:
-		root["system"] = prependOptionalInstructions(system, instructions)
+		root["system"] = appendOptionalInstructions(system, instructions)
 	case []any:
-		if contentBlocksStartWithOptionalInstructions(system, instructions) {
+		if contentBlocksEndWithOptionalInstructions(system, instructions) {
 			return body, false, nil
 		}
-		root["system"] = append([]any{prefixBlock}, system...)
+		root["system"] = append(system, suffixBlock)
 	case nil:
-		root["system"] = []any{prefixBlock}
+		root["system"] = []any{suffixBlock}
 	default:
 		return nil, false, errors.New("system must be a string, array, or null")
 	}
