@@ -30,6 +30,12 @@ export default {
           enabled: '启用可用渠道',
           enabledHint: '关闭后用户端侧边栏入口隐藏，接口返回空数组。',
         },
+        mySubscriptions: {
+          title: '我的订阅',
+          description: '控制用户端“我的订阅”页面、侧边栏入口和顶部订阅进度入口。',
+          enabled: '显示“我的订阅”',
+          enabledHint: '关闭后用户无法访问该页面；订阅计费、现有订阅和管理员订阅管理不受影响。',
+        },
         riskControl: {
           title: '风控中心',
           description: '启用内容审计菜单和全端点请求审核入口。默认关闭。',

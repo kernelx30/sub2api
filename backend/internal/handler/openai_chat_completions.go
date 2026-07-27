@@ -104,6 +104,12 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		h.openAISecurityAuditError(c, decision)
 		return
 	}
+	if injectedBody, _, injectErr := injectOptionalChatCompletionsMessages(body, apiKey); injectErr != nil {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to inject optional instructions")
+		return
+	} else {
+		body = injectedBody
+	}
 	if h.rejectIfCyberSessionBlocked(c, apiKey, body, reqModel, cyberBlockFormatChat) {
 		return
 	}

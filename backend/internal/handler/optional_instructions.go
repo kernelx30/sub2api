@@ -11,7 +11,8 @@ const optionalInstructionsOpenTag = "<group_optional_instructions>"
 const optionalInstructionsCloseTag = "</group_optional_instructions>"
 
 func optionalInstructionsForAPIKey(apiKey *service.APIKey) string {
-	if apiKey == nil || !apiKey.OptionalInstructionsEnabled || apiKey.Group == nil || !apiKey.Group.OptionalInstructionsEnabled {
+	if apiKey == nil || !apiKey.OptionalInstructionsEnabled || apiKey.Group == nil ||
+		apiKey.Group.Platform != service.PlatformOpenAI || !apiKey.Group.OptionalInstructionsEnabled {
 		return ""
 	}
 	return strings.TrimSpace(apiKey.Group.OptionalInstructions)
@@ -30,6 +31,87 @@ func prependOptionalInstructions(existing, instructions string) string {
 		return existing
 	}
 	return prefix + "\n\n" + existing
+}
+
+// injectOptionalChatCompletionsMessages adds a protocol-native instruction
+// while leaving every client-provided message, tool rule, and ordering intact.
+// It is client-neutral within OpenAI groups so SDKs, desktop clients, and
+// compatibility bridges all receive the same group instructions.
+func injectOptionalChatCompletionsMessages(body []byte, apiKey *service.APIKey) ([]byte, bool, error) {
+	instructions := optionalInstructionsForAPIKey(apiKey)
+	if instructions == "" {
+		return body, false, nil
+	}
+	var root map[string]any
+	if err := json.Unmarshal(body, &root); err != nil {
+		return nil, false, err
+	}
+	messages, ok := root["messages"].([]any)
+	if !ok {
+		return body, false, nil
+	}
+	// A developer message has higher priority on current GPT models. Prefer it
+	// when present, then fall back to the older system role for compatibility.
+	for _, targetRole := range []string{"developer", "system"} {
+		for _, raw := range messages {
+			message, ok := raw.(map[string]any)
+			if !ok || !strings.EqualFold(strings.TrimSpace(stringValue(message["role"])), targetRole) {
+				continue
+			}
+			changed, handled := prependOptionalInstructionsToChatMessage(message, instructions)
+			if !handled || !changed {
+				if handled {
+					return body, false, nil
+				}
+				continue
+			}
+			updated, err := json.Marshal(root)
+			return updated, err == nil, err
+		}
+	}
+	root["messages"] = append([]any{map[string]any{
+		"role":    "system",
+		"content": formatOptionalInstructions(instructions),
+	}}, messages...)
+	updated, err := json.Marshal(root)
+	return updated, err == nil, err
+}
+
+func prependOptionalInstructionsToChatMessage(message map[string]any, instructions string) (changed, handled bool) {
+	switch content := message["content"].(type) {
+	case string:
+		merged := prependOptionalInstructions(content, instructions)
+		if merged == content {
+			return false, true
+		}
+		message["content"] = merged
+		return true, true
+	case []any:
+		if contentBlocksContainOptionalInstructions(content) {
+			return false, true
+		}
+		message["content"] = append([]any{map[string]any{
+			"type": "text",
+			"text": formatOptionalInstructions(instructions),
+		}}, content...)
+		return true, true
+	case nil:
+		message["content"] = formatOptionalInstructions(instructions)
+		return true, true
+	default:
+		return false, false
+	}
+}
+
+func contentBlocksContainOptionalInstructions(blocks []any) bool {
+	for _, raw := range blocks {
+		if block, ok := raw.(map[string]any); ok {
+			if strings.Contains(stringValue(block["text"]), optionalInstructionsOpenTag) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func injectOptionalResponsesInstructions(body []byte, apiKey *service.APIKey) ([]byte, bool, error) {
@@ -69,6 +151,9 @@ func injectOptionalAnthropicSystem(body []byte, apiKey *service.APIKey) ([]byte,
 	case string:
 		root["system"] = prependOptionalInstructions(system, instructions)
 	case []any:
+		if contentBlocksContainOptionalInstructions(system) {
+			return body, false, nil
+		}
 		root["system"] = append([]any{prefixBlock}, system...)
 	default:
 		root["system"] = []any{prefixBlock}

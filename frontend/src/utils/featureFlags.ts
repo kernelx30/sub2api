@@ -104,6 +104,11 @@ export const FeatureFlags = {
     mode: 'opt-in',
     label: 'Available Channels',
   }),
+  mySubscriptions: defineFlag({
+    key: 'my_subscriptions_enabled',
+    mode: 'opt-out',
+    label: 'My Subscriptions',
+  }),
   payment: defineFlag({
     key: 'payment_enabled',
     mode: 'opt-out',

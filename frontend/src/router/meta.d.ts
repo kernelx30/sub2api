@@ -50,6 +50,12 @@ declare module 'vue-router' {
     requiresPayment?: boolean
 
     /**
+     * Whether the user-facing My Subscriptions page is enabled
+     * @default false
+     */
+    requiresMySubscriptions?: boolean
+
+    /**
      * 是否要求风控中心功能开关已启用
      * @default false
      */

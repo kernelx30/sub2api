@@ -384,6 +384,10 @@ const (
 	// sidebar entry is hidden. Defaults to false (opt-in feature).
 	SettingKeyAvailableChannelsEnabled = "available_channels_enabled"
 
+	// SettingKeyMySubscriptionsEnabled controls the user-facing "My Subscriptions" page.
+	// Subscription billing and admin management remain active when this page is hidden.
+	SettingKeyMySubscriptionsEnabled = "my_subscriptions_enabled"
+
 	// SettingKeyUpstreamBillingProbeSettings stores the global enable switch and interval
 	// for probing remote Sub2API API-key billing metadata.
 	SettingKeyUpstreamBillingProbeSettings = "upstream_billing_probe_settings"
