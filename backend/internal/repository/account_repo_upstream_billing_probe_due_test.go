@@ -31,6 +31,8 @@ func TestAccountRepositoryListDueUpstreamBillingProbeAccountsBoundsQuery(t *test
 	require.Contains(t, normalized, "platform = 'openai'")
 	require.Contains(t, normalized, "type = 'apikey'")
 	require.Contains(t, normalized, `extra @> '{"upstream_billing_probe_enabled": true}'::jsonb`)
+	require.Contains(t, normalized, `NOT (extra ? 'upstream_billing_probe_enabled')`)
+	require.Contains(t, normalized, `COALESCE(credentials ->> 'pool_mode', 'false') = 'true'`)
 	require.Contains(t, normalized, "jsonb_path_query_first_tz")
 	require.Contains(t, normalized, `'(\.[0-9]{6})[0-9]+(Z|[+-][0-9]{2}:[0-9]{2})$'`)
 	require.Contains(t, normalized, "parsed AS MATERIALIZED")
