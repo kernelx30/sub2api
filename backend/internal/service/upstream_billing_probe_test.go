@@ -325,9 +325,9 @@ func TestUpstreamBillingProbeSuccessPersistsSanitizedSnapshot(t *testing.T) {
 	require.NotNil(t, snapshot.ReceivedAt)
 	require.Equal(t, fixedNow, *snapshot.ReceivedAt)
 	require.NotNil(t, snapshot.FreshUntil)
-	require.Equal(t, fixedNow.Add(time.Hour), *snapshot.FreshUntil)
-	require.False(t, snapshot.NextProbeAt.Before(fixedNow.Add(24*time.Minute)))
-	require.False(t, snapshot.NextProbeAt.After(fixedNow.Add(36*time.Minute)))
+	require.Equal(t, fixedNow.Add(10*time.Minute), *snapshot.FreshUntil)
+	require.False(t, snapshot.NextProbeAt.Before(fixedNow.Add(4*time.Minute)))
+	require.False(t, snapshot.NextProbeAt.After(fixedNow.Add(6*time.Minute)))
 	require.Equal(t, "https://upstream.example/v1/sub2api/billing", upstream.lastReq.URL.String())
 	require.Equal(t, http.MethodGet, upstream.lastReq.Method)
 	require.Equal(t, "Bearer sk-sensitive", upstream.lastReq.Header.Get("Authorization"))
@@ -508,7 +508,7 @@ func TestUpstreamBillingProbeFailurePreservesLastSuccessAndRetryAfter(t *testing
 	require.Equal(t, previous.Data, snapshot.Data)
 	require.Equal(t, previous.ReceivedAt, snapshot.ReceivedAt)
 	require.NotNil(t, snapshot.FreshUntil)
-	require.Equal(t, receivedAt.Add(time.Hour), *snapshot.FreshUntil)
+	require.Equal(t, receivedAt.Add(10*time.Minute), *snapshot.FreshUntil)
 	require.Equal(t, 2, snapshot.FailureCount)
 	require.Equal(t, "http_error", snapshot.LastError)
 	require.False(t, snapshot.NextProbeAt.Before(fixedNow.Add(4*time.Hour)))
@@ -538,14 +538,12 @@ func TestUpstreamBillingProbeEmptyResponseIsPersistedAsFailure(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, UpstreamBillingProbeStatusFailed, snapshot.Status)
 	require.Equal(t, "empty_response", snapshot.LastError)
-	require.False(t, snapshot.NextProbeAt.Before(fixedNow.Add(24*time.Minute)))
-	require.False(t, snapshot.NextProbeAt.After(fixedNow.Add(36*time.Minute)))
+	require.Equal(t, fixedNow.Add(time.Minute), snapshot.NextProbeAt)
 
 	snapshot, err = svc.ProbeAccount(context.Background(), account.ID)
 	require.NoError(t, err)
 	require.Equal(t, 2, snapshot.FailureCount)
-	require.False(t, snapshot.NextProbeAt.Before(fixedNow.Add(24*time.Minute)))
-	require.False(t, snapshot.NextProbeAt.After(fixedNow.Add(36*time.Minute)))
+	require.Equal(t, fixedNow.Add(2*time.Minute), snapshot.NextProbeAt)
 }
 
 func TestUpstreamBillingProbeUnsupportedAndAccountToggle(t *testing.T) {
@@ -573,14 +571,12 @@ func TestUpstreamBillingProbeUnsupportedAndAccountToggle(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, UpstreamBillingProbeStatusUnsupported, snapshot.Status)
 	require.Equal(t, "unsupported", snapshot.LastError)
-	require.False(t, snapshot.NextProbeAt.Before(fixedNow.Add(24*time.Minute)))
-	require.False(t, snapshot.NextProbeAt.After(fixedNow.Add(36*time.Minute)))
+	require.Equal(t, fixedNow.Add(time.Minute), snapshot.NextProbeAt)
 
 	snapshot, err = svc.ProbeAccount(context.Background(), account.ID)
 	require.NoError(t, err)
 	require.Equal(t, 2, snapshot.FailureCount)
-	require.False(t, snapshot.NextProbeAt.Before(fixedNow.Add(24*time.Minute)))
-	require.False(t, snapshot.NextProbeAt.After(fixedNow.Add(36*time.Minute)))
+	require.Equal(t, fixedNow.Add(2*time.Minute), snapshot.NextProbeAt)
 
 	invalid := &Account{ID: 20, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 	repo.accounts[invalid.ID] = invalid
