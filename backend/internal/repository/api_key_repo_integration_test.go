@@ -357,7 +357,7 @@ func (s *APIKeyRepoSuite) TestClearGroupIDByGroupID() {
 	s.Require().Zero(count)
 }
 
-func (s *APIKeyRepoSuite) TestUpdateGroupIDByUserAndGroupClearsUnavailableOptionalInstructions(t *testing.T) {
+func (s *APIKeyRepoSuite) TestUpdateGroupIDByUserAndGroupClearsUnavailableOptionalInstructions() {
 	user := s.mustCreateUser("movegrp@test.com")
 	source := s.mustCreateGroup("g-move-source")
 	target := s.mustCreateGroup("g-move-target")
@@ -365,17 +365,17 @@ func (s *APIKeyRepoSuite) TestUpdateGroupIDByUserAndGroupClearsUnavailableOption
 	_, err := s.client.APIKey.UpdateOneID(key.ID).
 		SetOptionalInstructionsEnabled(true).
 		Save(s.ctx)
-	require.NoError(t, err)
+	s.Require().NoError(err)
 
 	affected, err := s.repo.UpdateGroupIDByUserAndGroup(s.ctx, user.ID, source.ID, target.ID)
-	require.NoError(t, err)
-	require.Equal(t, int64(1), affected)
+	s.Require().NoError(err)
+	s.Require().Equal(int64(1), affected)
 
 	got, err := s.repo.GetByID(s.ctx, key.ID)
-	require.NoError(t, err)
-	require.NotNil(t, got.GroupID)
-	require.Equal(t, target.ID, *got.GroupID)
-	require.False(t, got.OptionalInstructionsEnabled)
+	s.Require().NoError(err)
+	s.Require().NotNil(got.GroupID)
+	s.Require().Equal(target.ID, *got.GroupID)
+	s.Require().False(got.OptionalInstructionsEnabled)
 }
 
 // --- Combined CRUD/Search/ClearGroupID (original test preserved as integration) ---
