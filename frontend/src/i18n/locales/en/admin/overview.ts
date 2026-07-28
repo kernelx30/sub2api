@@ -1105,10 +1105,10 @@ export default {
         enableAnyway: 'Enable anyway'
       },
 		optionalInstructions: {
-			title: 'Enhanced Instructions',
-			allow: 'Offer optional enhanced instructions to users',
-			placeholder: 'Enter instructions/system content to append last',
-			hint: 'Applied only when both the group and API key enable it. Client instructions are preserved. Use [MODEL_SCOPE: gpt-5.6*] on the first line to limit models; comma lists and a trailing * are supported, and the line is not sent upstream.'
+			title: 'Restriction-bypass prompt',
+			allow: 'Offer an optional restriction-bypass prompt to users',
+			placeholder: 'Enter the restriction-bypass prompt to append to instructions/system',
+			hint: 'Injected only when both the group and API key enable it. Client instructions are preserved. Use [MODEL_SCOPE: gpt-5.6*] on the first line to limit models; comma lists and a trailing * are supported, and the line is not sent upstream.'
 		},
       invalidRequestFallback: {
         title: 'Invalid Request Fallback Group',

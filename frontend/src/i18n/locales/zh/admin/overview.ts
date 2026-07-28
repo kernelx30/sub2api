@@ -1103,10 +1103,10 @@ export default {
         enableAnyway: '仍然开启'
       },
 		optionalInstructions: {
-			title: '增强指令',
-			allow: '向用户提供可选增强指令',
-			placeholder: '输入需要追加到末尾的 instructions/system 内容',
-			hint: '仅在分组和用户 API Key 两边都开启时生效；客户端原有指令会保留。首行可用 [MODEL_SCOPE: gpt-5.6*] 限定模型，支持逗号分隔和尾部 *，该行不会发给上游。'
+			title: '破限提示词',
+			allow: '向用户提供可选破限提示词',
+			placeholder: '输入要追加到 instructions/system 的破限提示词',
+			hint: '仅在分组和用户 API Key 两边都开启时注入；客户端原有指令会保留。首行可用 [MODEL_SCOPE: gpt-5.6*] 限定模型，支持逗号分隔和尾部 *，该行不会发给上游。'
 		},
       invalidRequestFallback: {
         title: '无效请求兜底分组',
