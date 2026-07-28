@@ -273,6 +273,7 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 			freshUntil = now.Add(-time.Minute)
 		}
 		return map[string]any{
+			UpstreamBillingProbeEnabledExtraKey: true,
 			UpstreamBillingProbeExtraKey: map[string]any{
 				"status":          status,
 				"latency_ms":      latencyMS,
@@ -328,6 +329,7 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 					ID:       1,
 					Priority: 1,
 					Extra: map[string]any{
+						UpstreamBillingProbeEnabledExtraKey: true,
 						UpstreamBillingProbeExtraKey: map[string]any{
 							"status":                  UpstreamBillingProbeStatusOK,
 							"latency_ms":              int64(350),
@@ -347,6 +349,7 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 					ID:       2,
 					Priority: 9,
 					Extra: map[string]any{
+						UpstreamBillingProbeEnabledExtraKey: true,
 						UpstreamBillingProbeExtraKey: map[string]any{
 							"status":                  UpstreamBillingProbeStatusOK,
 							"latency_ms":              int64(1800),
@@ -376,6 +379,7 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 					ID:       1,
 					Priority: 1,
 					Extra: map[string]any{
+						UpstreamBillingProbeEnabledExtraKey: true,
 						UpstreamBillingProbeExtraKey: map[string]any{
 							"status":                 UpstreamBillingProbeStatusOK,
 							"latency_ms":             int64(300),
@@ -393,6 +397,7 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 					ID:       2,
 					Priority: 9,
 					Extra: map[string]any{
+						UpstreamBillingProbeEnabledExtraKey: true,
 						UpstreamBillingProbeExtraKey: map[string]any{
 							"status":                 UpstreamBillingProbeStatusOK,
 							"latency_ms":             int64(1800),

@@ -981,12 +981,18 @@ func TestUpstreamBillingProbeLeaderLockCoversStaggeredInstancesInCadenceWindow(t
 
 func TestUpstreamBillingProbeEnabledDefaultsToPoolMode(t *testing.T) {
 	t.Run("pool mode defaults enabled", func(t *testing.T) {
-		account := &Account{Credentials: map[string]any{"pool_mode": true}}
+		account := &Account{
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: map[string]any{"pool_mode": true},
+		}
 		require.True(t, upstreamBillingProbeEnabled(account))
 	})
 
 	t.Run("explicit false overrides pool mode", func(t *testing.T) {
 		account := &Account{
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
 			Credentials: map[string]any{"pool_mode": true},
 			Extra:       map[string]any{UpstreamBillingProbeEnabledExtraKey: false},
 		}
@@ -994,12 +1000,18 @@ func TestUpstreamBillingProbeEnabledDefaultsToPoolMode(t *testing.T) {
 	})
 
 	t.Run("non pool account remains disabled by default", func(t *testing.T) {
-		account := &Account{Credentials: map[string]any{"pool_mode": false}}
+		account := &Account{
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: map[string]any{"pool_mode": false},
+		}
 		require.False(t, upstreamBillingProbeEnabled(account))
 	})
 
 	t.Run("explicit true enables non pool account", func(t *testing.T) {
 		account := &Account{
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
 			Credentials: map[string]any{"pool_mode": false},
 			Extra:       map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
 		}
