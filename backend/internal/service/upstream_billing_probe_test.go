@@ -168,7 +168,7 @@ func (u *upstreamBillingProbeHTTPStub) Do(req *http.Request, proxyURL string, ac
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body: io.NopCloser(strings.NewReader("{\"id\":\"resp_probe\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"name\":\"probe_ping\",\"arguments\":\"{\\\"ok\\\":true}\"}]}")),
+			Body:       io.NopCloser(strings.NewReader("{\"id\":\"resp_probe\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"name\":\"probe_ping\",\"arguments\":\"{\\\"ok\\\":true}\"}]}")),
 		}, nil
 	}
 	u.calls.Add(1)

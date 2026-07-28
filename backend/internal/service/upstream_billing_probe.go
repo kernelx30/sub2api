@@ -74,22 +74,22 @@ type UpstreamBillingProbeSettings struct {
 // UpstreamBillingProbeSnapshot is persisted in accounts.extra. Data is kept as
 // a sanitized map so future response fields do not require a database change.
 type UpstreamBillingProbeSnapshot struct {
-	Status        string         `json:"status"`
-	Data          map[string]any `json:"data,omitempty"`
-	ReceivedAt    *time.Time     `json:"received_at,omitempty"`
-	FreshUntil    *time.Time     `json:"fresh_until,omitempty"`
-	LastAttemptAt time.Time      `json:"last_attempt_at"`
-	NextProbeAt   time.Time      `json:"next_probe_at"`
-	FailureCount          int    `json:"failure_count,omitempty"`
-	HTTPStatus            int    `json:"http_status,omitempty"`
-	LatencyMS             int64  `json:"latency_ms,omitempty"`
-	ModelProbeStatus      string `json:"model_probe_status,omitempty"`
-	ModelProbeModel       string `json:"model_probe_model,omitempty"`
-	ModelProbeEndpoint    string `json:"model_probe_endpoint,omitempty"`
-	ModelProbeLatencyMS   int64  `json:"model_probe_latency_ms,omitempty"`
-	ModelProbeHTTPStatus  int    `json:"model_probe_http_status,omitempty"`
-	ModelProbeLastError   string `json:"model_probe_last_error,omitempty"`
-	LastError             string `json:"last_error,omitempty"`
+	Status               string         `json:"status"`
+	Data                 map[string]any `json:"data,omitempty"`
+	ReceivedAt           *time.Time     `json:"received_at,omitempty"`
+	FreshUntil           *time.Time     `json:"fresh_until,omitempty"`
+	LastAttemptAt        time.Time      `json:"last_attempt_at"`
+	NextProbeAt          time.Time      `json:"next_probe_at"`
+	FailureCount         int            `json:"failure_count,omitempty"`
+	HTTPStatus           int            `json:"http_status,omitempty"`
+	LatencyMS            int64          `json:"latency_ms,omitempty"`
+	ModelProbeStatus     string         `json:"model_probe_status,omitempty"`
+	ModelProbeModel      string         `json:"model_probe_model,omitempty"`
+	ModelProbeEndpoint   string         `json:"model_probe_endpoint,omitempty"`
+	ModelProbeLatencyMS  int64          `json:"model_probe_latency_ms,omitempty"`
+	ModelProbeHTTPStatus int            `json:"model_probe_http_status,omitempty"`
+	ModelProbeLastError  string         `json:"model_probe_last_error,omitempty"`
+	LastError            string         `json:"last_error,omitempty"`
 }
 
 // UpstreamBillingProbeResult is returned by manual probe endpoints.

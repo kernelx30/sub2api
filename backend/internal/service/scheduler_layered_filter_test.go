@@ -320,7 +320,6 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 		require.Equal(t, int64(2), result[0].account.ID)
 	})
 
-
 	t.Run("model failure beats fast billing metadata", func(t *testing.T) {
 		freshUntil := now.Add(10 * time.Minute)
 		accounts := []accountWithLoad{
