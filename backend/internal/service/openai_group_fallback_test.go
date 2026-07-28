@@ -38,15 +38,16 @@ func TestResolveOpenAIAvailabilityFallback_ClonesActualGroupContext(t *testing.T
 	primaryID := int64(5)
 	fallbackID := int64(9)
 	override := 5
-	primary := &Group{ID: primaryID, Platform: PlatformOpenAI, Status: StatusActive, FallbackGroupID: &fallbackID}
+	primary := &Group{ID: primaryID, Platform: PlatformOpenAI, Status: StatusActive}
 	fallback := &Group{ID: fallbackID, Platform: PlatformOpenAI, Status: StatusActive, RateMultiplier: 0.09}
 	repo := &openAIAvailabilityFallbackGroupRepoStub{groups: map[int64]*Group{fallbackID: fallback}}
 	svc := &OpenAIGatewayService{schedulerSnapshot: &SchedulerSnapshotService{groupRepo: repo}}
 	apiKey := &APIKey{
-		ID:      100,
-		GroupID: &primaryID,
-		Group:   primary,
-		User:    &User{ID: 200, UserGroupRPMOverride: &override},
+		ID:                                100,
+		GroupID:                           &primaryID,
+		OpenAIAvailabilityFallbackGroupID: &fallbackID,
+		Group:                             primary,
+		User:                              &User{ID: 200, UserGroupRPMOverride: &override},
 	}
 
 	resolved, err := svc.ResolveOpenAIAvailabilityFallback(context.Background(), apiKey)
@@ -63,7 +64,7 @@ func TestResolveOpenAIAvailabilityFallback_ClonesActualGroupContext(t *testing.T
 func TestResolveOpenAIAvailabilityFallback_LoadsTargetSubscription(t *testing.T) {
 	primaryID := int64(5)
 	fallbackID := int64(9)
-	primary := &Group{ID: primaryID, Platform: PlatformOpenAI, Status: StatusActive, FallbackGroupID: &fallbackID}
+	primary := &Group{ID: primaryID, Platform: PlatformOpenAI, Status: StatusActive}
 	fallback := &Group{ID: fallbackID, Platform: PlatformOpenAI, Status: StatusActive, SubscriptionType: SubscriptionTypeSubscription}
 	subscription := &UserSubscription{ID: 300, UserID: 200, GroupID: fallbackID}
 	repo := &openAIAvailabilityFallbackGroupRepoStub{groups: map[int64]*Group{fallbackID: fallback}}
@@ -73,9 +74,10 @@ func TestResolveOpenAIAvailabilityFallback_LoadsTargetSubscription(t *testing.T)
 	}
 
 	resolved, err := svc.ResolveOpenAIAvailabilityFallback(context.Background(), &APIKey{
-		GroupID: &primaryID,
-		Group:   primary,
-		User:    &User{ID: 200},
+		GroupID:                           &primaryID,
+		OpenAIAvailabilityFallbackGroupID: &fallbackID,
+		Group:                             primary,
+		User:                              &User{ID: 200},
 	})
 
 	require.NoError(t, err)
@@ -85,7 +87,7 @@ func TestResolveOpenAIAvailabilityFallback_LoadsTargetSubscription(t *testing.T)
 func TestResolveOpenAIAvailabilityFallback_RejectsInvalidTarget(t *testing.T) {
 	primaryID := int64(5)
 	fallbackID := int64(9)
-	primary := &Group{ID: primaryID, Platform: PlatformOpenAI, Status: StatusActive, FallbackGroupID: &fallbackID}
+	primary := &Group{ID: primaryID, Platform: PlatformOpenAI, Status: StatusActive}
 
 	tests := []struct {
 		name     string
@@ -100,13 +102,35 @@ func TestResolveOpenAIAvailabilityFallback_RejectsInvalidTarget(t *testing.T) {
 			svc := &OpenAIGatewayService{schedulerSnapshot: &SchedulerSnapshotService{groupRepo: repo}}
 
 			resolved, err := svc.ResolveOpenAIAvailabilityFallback(context.Background(), &APIKey{
-				GroupID: &primaryID,
-				Group:   primary,
-				User:    &User{ID: 200},
+				GroupID:                           &primaryID,
+				OpenAIAvailabilityFallbackGroupID: &fallbackID,
+				Group:                             primary,
+				User:                              &User{ID: 200},
 			})
 
 			require.Nil(t, resolved)
 			require.ErrorIs(t, err, ErrOpenAIAvailabilityFallbackInvalid)
 		})
 	}
+}
+
+func TestResolveOpenAIAvailabilityFallback_DoesNotUseGroupConfiguredTarget(t *testing.T) {
+	primaryID := int64(5)
+	configuredFallbackID := int64(9)
+	primary := &Group{
+		ID:              primaryID,
+		Platform:        PlatformOpenAI,
+		Status:          StatusActive,
+		FallbackGroupID: &configuredFallbackID,
+	}
+	svc := &OpenAIGatewayService{}
+
+	resolved, err := svc.ResolveOpenAIAvailabilityFallback(context.Background(), &APIKey{
+		GroupID: &primaryID,
+		Group:   primary,
+		User:    &User{ID: 200},
+	})
+
+	require.NoError(t, err)
+	require.Nil(t, resolved)
 }

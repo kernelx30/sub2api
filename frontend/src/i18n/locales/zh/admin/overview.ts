@@ -1072,11 +1072,6 @@ export default {
         fallbackHint: '非 Claude Code 请求将使用此分组，留空则直接拒绝',
         noFallback: '不降级（直接拒绝）'
       },
-      openaiAvailabilityFallback: {
-        title: 'GPT 自动故障转移',
-        hint: '优先使用当前分组；无可用账号或可重试上游故障耗尽后，自动切到所选分组。实际请求按备用分组计费、限流并记录用量。',
-        disabled: '关闭自动故障转移'
-      },
       openaiMessages: {
         title: 'OpenAI Messages 调度配置',
         allowDispatch: '允许 /v1/messages 调度',

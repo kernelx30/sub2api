@@ -13,16 +13,16 @@ type OpenAIAvailabilityFallback struct {
 	Subscription *UserSubscription
 }
 
-// ResolveOpenAIAvailabilityFallback resolves the single target used when an
-// OpenAI group's schedulable accounts are unavailable. Chaining is handled by
-// configuration validation; a request activates at most one fallback group.
+// ResolveOpenAIAvailabilityFallback resolves the user-selected second OpenAI
+// group when the key's primary group has no usable account. A request activates
+// at most one fallback group.
 func (s *OpenAIGatewayService) ResolveOpenAIAvailabilityFallback(ctx context.Context, apiKey *APIKey) (*OpenAIAvailabilityFallback, error) {
 	if s == nil || apiKey == nil || apiKey.Group == nil || apiKey.Group.Platform != PlatformOpenAI ||
-		apiKey.Group.FallbackGroupID == nil || *apiKey.Group.FallbackGroupID <= 0 {
+		apiKey.OpenAIAvailabilityFallbackGroupID == nil || *apiKey.OpenAIAvailabilityFallbackGroupID <= 0 {
 		return nil, nil
 	}
 
-	fallbackID := *apiKey.Group.FallbackGroupID
+	fallbackID := *apiKey.OpenAIAvailabilityFallbackGroupID
 	if apiKey.GroupID != nil && *apiKey.GroupID == fallbackID {
 		return nil, fmt.Errorf("%w: group %d points to itself", ErrOpenAIAvailabilityFallbackInvalid, fallbackID)
 	}

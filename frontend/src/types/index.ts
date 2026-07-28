@@ -658,6 +658,7 @@ export interface ApiKey {
   key: string
   name: string
   group_id: number | null
+	openai_availability_fallback_group_id: number | null
 	optional_instructions_enabled: boolean
   status: 'active' | 'inactive' | 'quota_exhausted' | 'expired'
   ip_whitelist: string[]
@@ -688,6 +689,7 @@ export interface ApiKey {
 export interface CreateApiKeyRequest {
   name: string
   group_id?: number | null
+	openai_availability_fallback_group_id?: number | null
 	optional_instructions_enabled?: boolean
   custom_key?: string // Optional custom API Key
   ip_whitelist?: string[]
@@ -702,6 +704,7 @@ export interface CreateApiKeyRequest {
 export interface UpdateApiKeyRequest {
   name?: string
   group_id?: number | null
+	openai_availability_fallback_group_id?: number | null
 	optional_instructions_enabled?: boolean
   status?: 'active' | 'inactive'
   ip_whitelist?: string[]

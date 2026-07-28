@@ -1071,6 +1071,7 @@ func (s *adminServiceImpl) AdminUpdateAPIKeyGroupID(ctx context.Context, keyID i
 		// 0 表示解绑分组（不修改 user_allowed_groups，避免影响用户其他 Key）
 		apiKey.GroupID = nil
 		apiKey.Group = nil
+		apiKey.OpenAIAvailabilityFallbackGroupID = nil
 		apiKey.OptionalInstructionsEnabled = false
 	} else {
 		// 验证目标分组存在且状态为 active
@@ -1097,6 +1098,7 @@ func (s *adminServiceImpl) AdminUpdateAPIKeyGroupID(ctx context.Context, keyID i
 		gid := *groupID
 		apiKey.GroupID = &gid
 		apiKey.Group = group
+		apiKey.OpenAIAvailabilityFallbackGroupID = nil
 		if !GroupOffersOptionalInstructions(group) {
 			apiKey.OptionalInstructionsEnabled = false
 		}

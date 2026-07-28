@@ -852,6 +852,9 @@ func (r *groupRepository) DeleteCascade(ctx context.Context, id int64) ([]int64,
 	if _, err := exec.ExecContext(ctx, "UPDATE api_keys SET optional_instructions_enabled = FALSE, updated_at = NOW() WHERE group_id = $1 AND optional_instructions_enabled = TRUE", id); err != nil {
 		return nil, err
 	}
+	if _, err := exec.ExecContext(ctx, "UPDATE api_keys SET openai_availability_fallback_group_id = NULL, updated_at = NOW() WHERE openai_availability_fallback_group_id = $1", id); err != nil {
+		return nil, err
+	}
 
 	// 5. Soft-delete group itself.
 	if _, err := txClient.Group.Delete().Where(group.IDEQ(id)).Exec(ctx); err != nil {

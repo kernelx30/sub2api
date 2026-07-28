@@ -29,6 +29,8 @@ const (
 	FieldName = "name"
 	// FieldGroupID holds the string denoting the group_id field in the database.
 	FieldGroupID = "group_id"
+	// FieldOpenaiAvailabilityFallbackGroupID holds the string denoting the openai_availability_fallback_group_id field in the database.
+	FieldOpenaiAvailabilityFallbackGroupID = "openai_availability_fallback_group_id"
 	// FieldStatus holds the string denoting the status field in the database.
 	FieldStatus = "status"
 	// FieldOptionalInstructionsEnabled holds the string denoting the optional_instructions_enabled field in the database.
@@ -104,6 +106,7 @@ var Columns = []string{
 	FieldKey,
 	FieldName,
 	FieldGroupID,
+	FieldOpenaiAvailabilityFallbackGroupID,
 	FieldStatus,
 	FieldOptionalInstructionsEnabled,
 	FieldLastUsedAt,
@@ -216,6 +219,11 @@ func ByName(opts ...sql.OrderTermOption) OrderOption {
 // ByGroupID orders the results by the group_id field.
 func ByGroupID(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldGroupID, opts...).ToFunc()
+}
+
+// ByOpenaiAvailabilityFallbackGroupID orders the results by the openai_availability_fallback_group_id field.
+func ByOpenaiAvailabilityFallbackGroupID(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldOpenaiAvailabilityFallbackGroupID, opts...).ToFunc()
 }
 
 // ByStatus orders the results by the status field.

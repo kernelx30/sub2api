@@ -90,6 +90,11 @@ func GroupID(v int64) predicate.APIKey {
 	return predicate.APIKey(sql.FieldEQ(FieldGroupID, v))
 }
 
+// OpenaiAvailabilityFallbackGroupID applies equality check predicate on the "openai_availability_fallback_group_id" field. It's identical to OpenaiAvailabilityFallbackGroupIDEQ.
+func OpenaiAvailabilityFallbackGroupID(v int64) predicate.APIKey {
+	return predicate.APIKey(sql.FieldEQ(FieldOpenaiAvailabilityFallbackGroupID, v))
+}
+
 // Status applies equality check predicate on the "status" field. It's identical to StatusEQ.
 func Status(v string) predicate.APIKey {
 	return predicate.APIKey(sql.FieldEQ(FieldStatus, v))
@@ -473,6 +478,56 @@ func GroupIDIsNil() predicate.APIKey {
 // GroupIDNotNil applies the NotNil predicate on the "group_id" field.
 func GroupIDNotNil() predicate.APIKey {
 	return predicate.APIKey(sql.FieldNotNull(FieldGroupID))
+}
+
+// OpenaiAvailabilityFallbackGroupIDEQ applies the EQ predicate on the "openai_availability_fallback_group_id" field.
+func OpenaiAvailabilityFallbackGroupIDEQ(v int64) predicate.APIKey {
+	return predicate.APIKey(sql.FieldEQ(FieldOpenaiAvailabilityFallbackGroupID, v))
+}
+
+// OpenaiAvailabilityFallbackGroupIDNEQ applies the NEQ predicate on the "openai_availability_fallback_group_id" field.
+func OpenaiAvailabilityFallbackGroupIDNEQ(v int64) predicate.APIKey {
+	return predicate.APIKey(sql.FieldNEQ(FieldOpenaiAvailabilityFallbackGroupID, v))
+}
+
+// OpenaiAvailabilityFallbackGroupIDIn applies the In predicate on the "openai_availability_fallback_group_id" field.
+func OpenaiAvailabilityFallbackGroupIDIn(vs ...int64) predicate.APIKey {
+	return predicate.APIKey(sql.FieldIn(FieldOpenaiAvailabilityFallbackGroupID, vs...))
+}
+
+// OpenaiAvailabilityFallbackGroupIDNotIn applies the NotIn predicate on the "openai_availability_fallback_group_id" field.
+func OpenaiAvailabilityFallbackGroupIDNotIn(vs ...int64) predicate.APIKey {
+	return predicate.APIKey(sql.FieldNotIn(FieldOpenaiAvailabilityFallbackGroupID, vs...))
+}
+
+// OpenaiAvailabilityFallbackGroupIDGT applies the GT predicate on the "openai_availability_fallback_group_id" field.
+func OpenaiAvailabilityFallbackGroupIDGT(v int64) predicate.APIKey {
+	return predicate.APIKey(sql.FieldGT(FieldOpenaiAvailabilityFallbackGroupID, v))
+}
+
+// OpenaiAvailabilityFallbackGroupIDGTE applies the GTE predicate on the "openai_availability_fallback_group_id" field.
+func OpenaiAvailabilityFallbackGroupIDGTE(v int64) predicate.APIKey {
+	return predicate.APIKey(sql.FieldGTE(FieldOpenaiAvailabilityFallbackGroupID, v))
+}
+
+// OpenaiAvailabilityFallbackGroupIDLT applies the LT predicate on the "openai_availability_fallback_group_id" field.
+func OpenaiAvailabilityFallbackGroupIDLT(v int64) predicate.APIKey {
+	return predicate.APIKey(sql.FieldLT(FieldOpenaiAvailabilityFallbackGroupID, v))
+}
+
+// OpenaiAvailabilityFallbackGroupIDLTE applies the LTE predicate on the "openai_availability_fallback_group_id" field.
+func OpenaiAvailabilityFallbackGroupIDLTE(v int64) predicate.APIKey {
+	return predicate.APIKey(sql.FieldLTE(FieldOpenaiAvailabilityFallbackGroupID, v))
+}
+
+// OpenaiAvailabilityFallbackGroupIDIsNil applies the IsNil predicate on the "openai_availability_fallback_group_id" field.
+func OpenaiAvailabilityFallbackGroupIDIsNil() predicate.APIKey {
+	return predicate.APIKey(sql.FieldIsNull(FieldOpenaiAvailabilityFallbackGroupID))
+}
+
+// OpenaiAvailabilityFallbackGroupIDNotNil applies the NotNil predicate on the "openai_availability_fallback_group_id" field.
+func OpenaiAvailabilityFallbackGroupIDNotNil() predicate.APIKey {
+	return predicate.APIKey(sql.FieldNotNull(FieldOpenaiAvailabilityFallbackGroupID))
 }
 
 // StatusEQ applies the EQ predicate on the "status" field.

@@ -48,6 +48,7 @@ func (r *apiKeyRepository) Create(ctx context.Context, key *service.APIKey) erro
 		SetStatus(key.Status).
 		SetOptionalInstructionsEnabled(key.OptionalInstructionsEnabled).
 		SetNillableGroupID(key.GroupID).
+		SetNillableOpenaiAvailabilityFallbackGroupID(key.OpenAIAvailabilityFallbackGroupID).
 		SetNillableLastUsedAt(key.LastUsedAt).
 		SetQuota(key.Quota).
 		SetQuotaUsed(key.QuotaUsed).
@@ -133,6 +134,7 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 			apikey.FieldID,
 			apikey.FieldUserID,
 			apikey.FieldGroupID,
+			apikey.FieldOpenaiAvailabilityFallbackGroupID,
 			apikey.FieldOptionalInstructionsEnabled,
 			apikey.FieldName,
 			apikey.FieldStatus,
@@ -252,6 +254,11 @@ func (r *apiKeyRepository) Update(ctx context.Context, key *service.APIKey) erro
 		builder.SetGroupID(*key.GroupID)
 	} else {
 		builder.ClearGroupID()
+	}
+	if key.OpenAIAvailabilityFallbackGroupID != nil {
+		builder.SetOpenaiAvailabilityFallbackGroupID(*key.OpenAIAvailabilityFallbackGroupID)
+	} else {
+		builder.ClearOpenaiAvailabilityFallbackGroupID()
 	}
 
 	// Expiration time
@@ -667,15 +674,24 @@ func (r *apiKeyRepository) SearchAPIKeys(ctx context.Context, userID int64, keyw
 	return outKeys, nil
 }
 
-// ClearGroupIDByGroupID unbinds all active API keys from a group. An unbound
-// key must never retain a latent optional-instructions opt-in.
+// ClearGroupIDByGroupID unbinds keys whose primary group was removed and clears
+// any key that used that group as its user-selected OpenAI fallback.
 func (r *apiKeyRepository) ClearGroupIDByGroupID(ctx context.Context, groupID int64) (int64, error) {
-	n, err := r.client.APIKey.Update().
+	client := clientFromContext(ctx, r.client)
+	primaryRows, err := client.APIKey.Update().
 		Where(apikey.GroupIDEQ(groupID), apikey.DeletedAtIsNil()).
 		ClearGroupID().
+		ClearOpenaiAvailabilityFallbackGroupID().
 		SetOptionalInstructionsEnabled(false).
 		Save(ctx)
-	return int64(n), err
+	if err != nil {
+		return 0, err
+	}
+	fallbackRows, err := client.APIKey.Update().
+		Where(apikey.OpenaiAvailabilityFallbackGroupIDEQ(groupID), apikey.DeletedAtIsNil()).
+		ClearOpenaiAvailabilityFallbackGroupID().
+		Save(ctx)
+	return int64(primaryRows + fallbackRows), err
 }
 
 // UpdateGroupIDByUserAndGroup 将用户下绑定 oldGroupID 的所有 Key 迁移到 newGroupID
@@ -687,12 +703,22 @@ func (r *apiKeyRepository) UpdateGroupIDByUserAndGroup(ctx context.Context, user
 	}
 	update := client.APIKey.Update().
 		Where(apikey.UserIDEQ(userID), apikey.GroupIDEQ(oldGroupID), apikey.DeletedAtIsNil()).
-		SetGroupID(newGroupID)
+		SetGroupID(newGroupID).
+		ClearOpenaiAvailabilityFallbackGroupID()
 	if !service.GroupOffersOptionalInstructions(groupEntityToService(target)) {
 		update.SetOptionalInstructionsEnabled(false)
 	}
 	n, err := update.Save(ctx)
-	return int64(n), err
+	if err != nil {
+		return 0, err
+	}
+	if _, err := client.APIKey.Update().
+		Where(apikey.UserIDEQ(userID), apikey.OpenaiAvailabilityFallbackGroupIDEQ(oldGroupID), apikey.DeletedAtIsNil()).
+		ClearOpenaiAvailabilityFallbackGroupID().
+		Save(ctx); err != nil {
+		return 0, err
+	}
+	return int64(n), nil
 }
 
 // CountByGroupID 获取分组的 API Key 数量
@@ -714,7 +740,10 @@ func (r *apiKeyRepository) ListKeysByUserID(ctx context.Context, userID int64) (
 
 func (r *apiKeyRepository) ListKeysByGroupID(ctx context.Context, groupID int64) ([]string, error) {
 	keys, err := r.activeQuery().
-		Where(apikey.GroupIDEQ(groupID)).
+		Where(apikey.Or(
+			apikey.GroupIDEQ(groupID),
+			apikey.OpenaiAvailabilityFallbackGroupIDEQ(groupID),
+		)).
 		Select(apikey.FieldKey).
 		Strings(ctx)
 	if err != nil {
@@ -842,30 +871,31 @@ func apiKeyEntityToService(m *dbent.APIKey) *service.APIKey {
 		return nil
 	}
 	out := &service.APIKey{
-		ID:                          m.ID,
-		UserID:                      m.UserID,
-		Key:                         m.Key,
-		Name:                        m.Name,
-		Status:                      m.Status,
-		IPWhitelist:                 m.IPWhitelist,
-		IPBlacklist:                 m.IPBlacklist,
-		LastUsedAt:                  m.LastUsedAt,
-		CreatedAt:                   m.CreatedAt,
-		UpdatedAt:                   m.UpdatedAt,
-		GroupID:                     m.GroupID,
-		OptionalInstructionsEnabled: m.OptionalInstructionsEnabled,
-		Quota:                       m.Quota,
-		QuotaUsed:                   m.QuotaUsed,
-		ExpiresAt:                   m.ExpiresAt,
-		RateLimit5h:                 m.RateLimit5h,
-		RateLimit1d:                 m.RateLimit1d,
-		RateLimit7d:                 m.RateLimit7d,
-		Usage5h:                     m.Usage5h,
-		Usage1d:                     m.Usage1d,
-		Usage7d:                     m.Usage7d,
-		Window5hStart:               m.Window5hStart,
-		Window1dStart:               m.Window1dStart,
-		Window7dStart:               m.Window7dStart,
+		ID:                                m.ID,
+		UserID:                            m.UserID,
+		Key:                               m.Key,
+		Name:                              m.Name,
+		Status:                            m.Status,
+		IPWhitelist:                       m.IPWhitelist,
+		IPBlacklist:                       m.IPBlacklist,
+		LastUsedAt:                        m.LastUsedAt,
+		CreatedAt:                         m.CreatedAt,
+		UpdatedAt:                         m.UpdatedAt,
+		GroupID:                           m.GroupID,
+		OpenAIAvailabilityFallbackGroupID: m.OpenaiAvailabilityFallbackGroupID,
+		OptionalInstructionsEnabled:       m.OptionalInstructionsEnabled,
+		Quota:                             m.Quota,
+		QuotaUsed:                         m.QuotaUsed,
+		ExpiresAt:                         m.ExpiresAt,
+		RateLimit5h:                       m.RateLimit5h,
+		RateLimit1d:                       m.RateLimit1d,
+		RateLimit7d:                       m.RateLimit7d,
+		Usage5h:                           m.Usage5h,
+		Usage1d:                           m.Usage1d,
+		Usage7d:                           m.Usage7d,
+		Window5hStart:                     m.Window5hStart,
+		Window1dStart:                     m.Window1dStart,
+		Window7dStart:                     m.Window7dStart,
 	}
 	if m.Edges.User != nil {
 		out.User = userEntityToService(m.Edges.User)

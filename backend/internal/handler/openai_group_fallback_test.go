@@ -188,12 +188,11 @@ func newOpenAIGroupFallbackFixture(t *testing.T, primaryAccounts []service.Accou
 	t.Helper()
 	fallbackID := openAIGroupFallbackTargetID
 	primaryGroup := &service.Group{
-		ID:              openAIGroupFallbackPrimaryID,
-		Name:            "0.05",
-		Platform:        service.PlatformOpenAI,
-		Status:          service.StatusActive,
-		RateMultiplier:  0.05,
-		FallbackGroupID: &fallbackID,
+		ID:             openAIGroupFallbackPrimaryID,
+		Name:           "0.05",
+		Platform:       service.PlatformOpenAI,
+		Status:         service.StatusActive,
+		RateMultiplier: 0.05,
 	}
 	fallbackGroup := &service.Group{
 		ID:             openAIGroupFallbackTargetID,
@@ -263,12 +262,13 @@ func newOpenAIGroupFallbackFixture(t *testing.T, primaryAccounts []service.Accou
 		cfg:                 gatewayCfg,
 	}
 	apiKey := &service.APIKey{
-		ID:      7005,
-		UserID:  8005,
-		GroupID: &primaryGroup.ID,
-		Group:   primaryGroup,
-		User:    &service.User{ID: 8005, Status: service.StatusActive},
-		Status:  service.StatusActive,
+		ID:                                7005,
+		UserID:                            8005,
+		GroupID:                           &primaryGroup.ID,
+		OpenAIAvailabilityFallbackGroupID: &fallbackID,
+		Group:                             primaryGroup,
+		User:                              &service.User{ID: 8005, Status: service.StatusActive},
+		Status:                            service.StatusActive,
 	}
 	return &openAIGroupFallbackFixture{handler: h, apiKey: apiKey, upstream: upstream, usage: usageRepo}
 }

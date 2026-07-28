@@ -507,6 +507,18 @@
           </Select>
         </div>
 
+        <div v-if="selectedFormGroupIsOpenAI">
+          <label class="input-label">{{ t('keys.openAIAvailabilityFallbackGroup') }}</label>
+          <Select
+            v-model="formData.openai_availability_fallback_group_id"
+            :options="openAIAvailabilityFallbackGroupOptions"
+            :placeholder="t('keys.noOpenAIAvailabilityFallbackGroup')"
+            :searchable="true"
+            :search-placeholder="t('keys.searchGroup')"
+          />
+          <p class="input-hint">{{ t('keys.openAIAvailabilityFallbackGroupHint') }}</p>
+        </div>
+
         <div class="flex items-center justify-between rounded border border-gray-200 p-3 dark:border-dark-600">
           <div>
             <div class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('keys.optionalInstructions') }}</div>
@@ -1358,6 +1370,7 @@ const setGroupButtonRef = (keyId: number, el: Element | ComponentPublicInstance 
 const formData = ref({
   name: '',
   group_id: null as number | null,
+	openai_availability_fallback_group_id: null as number | null,
 	optional_instructions_enabled: false,
   status: 'active' as 'active' | 'inactive',
   use_custom_key: false,
@@ -1458,17 +1471,33 @@ const selectedFormGroupOffersOptionalInstructions = computed(() => {
 	return group?.optional_instructions_available === true
 })
 
+const selectedFormGroupIsOpenAI = computed(() => {
+	const group = groups.value.find((item) => item.id === formData.value.group_id)
+	return group?.platform === 'openai'
+})
+
+const openAIAvailabilityFallbackGroupOptions = computed(() => [
+	{ value: null, label: t('keys.noOpenAIAvailabilityFallbackGroup') },
+	...groups.value
+		.filter((group) => group.platform === 'openai' && group.id !== formData.value.group_id)
+		.map((group) => ({ value: group.id, label: group.name }))
+])
+
 watch(
   () => formData.value.group_id,
   (groupID) => {
     if (groupID == null) {
       formData.value.optional_instructions_enabled = false
+		formData.value.openai_availability_fallback_group_id = null
       return
     }
     const group = groups.value.find((item) => item.id === groupID)
     if (group && group.optional_instructions_available !== true) {
       formData.value.optional_instructions_enabled = false
     }
+		if (!group || group.platform !== 'openai' || formData.value.openai_availability_fallback_group_id === groupID) {
+			formData.value.openai_availability_fallback_group_id = null
+		}
   }
 )
 
@@ -1612,6 +1641,7 @@ const editKey = (key: ApiKey) => {
   formData.value = {
     name: key.name,
     group_id: key.group_id,
+		openai_availability_fallback_group_id: key.openai_availability_fallback_group_id,
 	optional_instructions_enabled: key.optional_instructions_enabled,
     status: key.status === 'quota_exhausted' || key.status === 'expired' ? 'inactive' : key.status,
     use_custom_key: false,
@@ -1685,7 +1715,10 @@ const changeGroup = async (key: ApiKey, newGroupId: number | null) => {
   if (key.group_id === newGroupId) return
 
   try {
-    await keysAPI.update(key.id, { group_id: newGroupId })
+    await keysAPI.update(key.id, {
+      group_id: newGroupId,
+      openai_availability_fallback_group_id: null
+    })
     appStore.showSuccess(t('keys.groupChangedSuccess'))
     loadApiKeys()
   } catch (error) {
@@ -1763,6 +1796,9 @@ const handleSubmit = async () => {
     rate_limit_1d: formData.value.rate_limit_1d && formData.value.rate_limit_1d > 0 ? formData.value.rate_limit_1d : 0,
     rate_limit_7d: formData.value.rate_limit_7d && formData.value.rate_limit_7d > 0 ? formData.value.rate_limit_7d : 0,
   } : { rate_limit_5h: 0, rate_limit_1d: 0, rate_limit_7d: 0 }
+	const openAIAvailabilityFallbackGroupID = selectedFormGroupIsOpenAI.value
+		? formData.value.openai_availability_fallback_group_id
+		: null
 
   submitting.value = true
   try {
@@ -1770,6 +1806,7 @@ const handleSubmit = async () => {
       const updates: UpdateApiKeyRequest = {
         name: formData.value.name,
         group_id: formData.value.group_id,
+		openai_availability_fallback_group_id: openAIAvailabilityFallbackGroupID,
 		optional_instructions_enabled: formData.value.optional_instructions_enabled && selectedFormGroupOffersOptionalInstructions.value,
         ip_whitelist: ipWhitelist,
         ip_blacklist: ipBlacklist,
@@ -1795,7 +1832,8 @@ const handleSubmit = async () => {
         quota,
         expiresInDays,
         rateLimitData,
-		formData.value.optional_instructions_enabled && selectedFormGroupOffersOptionalInstructions.value
+		formData.value.optional_instructions_enabled && selectedFormGroupOffersOptionalInstructions.value,
+		openAIAvailabilityFallbackGroupID
       )
       appStore.showSuccess(t('keys.keyCreatedSuccess'))
       // Only advance tour if active, on submit step, and creation succeeded
@@ -1841,6 +1879,7 @@ const closeModals = () => {
   formData.value = {
     name: '',
     group_id: null,
+		openai_availability_fallback_group_id: null,
 	optional_instructions_enabled: false,
     status: 'active',
     use_custom_key: false,

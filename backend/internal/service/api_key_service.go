@@ -179,12 +179,13 @@ type APIKeyAuthCacheInvalidator interface {
 
 // CreateAPIKeyRequest 创建API Key请求
 type CreateAPIKeyRequest struct {
-	Name                        string   `json:"name"`
-	GroupID                     *int64   `json:"group_id"`
-	OptionalInstructionsEnabled bool     `json:"optional_instructions_enabled"`
-	CustomKey                   *string  `json:"custom_key"`   // 可选的自定义key
-	IPWhitelist                 []string `json:"ip_whitelist"` // IP 白名单
-	IPBlacklist                 []string `json:"ip_blacklist"` // IP 黑名单
+	Name                              string   `json:"name"`
+	GroupID                           *int64   `json:"group_id"`
+	OpenAIAvailabilityFallbackGroupID *int64   `json:"openai_availability_fallback_group_id"`
+	OptionalInstructionsEnabled       bool     `json:"optional_instructions_enabled"`
+	CustomKey                         *string  `json:"custom_key"`   // 可选的自定义key
+	IPWhitelist                       []string `json:"ip_whitelist"` // IP 白名单
+	IPBlacklist                       []string `json:"ip_blacklist"` // IP 黑名单
 
 	// Quota fields
 	Quota         float64 `json:"quota"`           // Quota limit in USD (0 = unlimited)
@@ -202,11 +203,13 @@ type UpdateAPIKeyRequest struct {
 	GroupID *int64  `json:"group_id"`
 	// GroupIDSet distinguishes an omitted field from an explicit JSON null.
 	// Direct service callers that provide a non-nil GroupID remain compatible.
-	GroupIDSet                  bool      `json:"-"`
-	Status                      *string   `json:"status"`
-	OptionalInstructionsEnabled *bool     `json:"optional_instructions_enabled"`
-	IPWhitelist                 *[]string `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
-	IPBlacklist                 *[]string `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
+	GroupIDSet                           bool      `json:"-"`
+	OpenAIAvailabilityFallbackGroupID    *int64    `json:"openai_availability_fallback_group_id"`
+	OpenAIAvailabilityFallbackGroupIDSet bool      `json:"-"`
+	Status                               *string   `json:"status"`
+	OptionalInstructionsEnabled          *bool     `json:"optional_instructions_enabled"`
+	IPWhitelist                          *[]string `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
+	IPBlacklist                          *[]string `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
 
 	// Quota fields
 	Quota           *float64   `json:"quota"`       // Quota limit in USD (nil = no change, 0 = unlimited)
@@ -402,6 +405,35 @@ func (s *APIKeyService) canUserBindGroup(ctx context.Context, user *User, group 
 	return user.CanBindGroup(group.ID, group.IsExclusive)
 }
 
+// validateOpenAIAvailabilityFallbackGroup ensures a key can only use a second
+// user-authorized OpenAI group. The primary group determines request order.
+func (s *APIKeyService) validateOpenAIAvailabilityFallbackGroup(ctx context.Context, user *User, primaryGroup *Group, fallbackGroupID *int64) error {
+	if fallbackGroupID == nil {
+		return nil
+	}
+	if primaryGroup == nil || primaryGroup.Platform != PlatformOpenAI {
+		return fmt.Errorf("%w: primary group must use openai platform", ErrOpenAIAvailabilityFallbackInvalid)
+	}
+	if primaryGroup.ID == *fallbackGroupID {
+		return fmt.Errorf("%w: group %d points to itself", ErrOpenAIAvailabilityFallbackInvalid, *fallbackGroupID)
+	}
+
+	fallbackGroup, err := s.groupRepo.GetByID(ctx, *fallbackGroupID)
+	if err != nil {
+		return fmt.Errorf("%w: resolve group %d: %v", ErrOpenAIAvailabilityFallbackInvalid, *fallbackGroupID, err)
+	}
+	if fallbackGroup.Platform != PlatformOpenAI {
+		return fmt.Errorf("%w: group %d platform is %s", ErrOpenAIAvailabilityFallbackInvalid, *fallbackGroupID, fallbackGroup.Platform)
+	}
+	if !fallbackGroup.IsActive() {
+		return fmt.Errorf("%w: group %d is inactive", ErrOpenAIAvailabilityFallbackInvalid, *fallbackGroupID)
+	}
+	if !s.canUserBindGroup(ctx, user, fallbackGroup) {
+		return ErrGroupNotAllowed
+	}
+	return nil
+}
+
 // Create 创建API Key
 func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIKeyRequest) (*APIKey, error) {
 	// 验证用户存在
@@ -437,6 +469,9 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 			return nil, ErrGroupNotAllowed
 		}
 		selectedGroup = group
+	}
+	if err := s.validateOpenAIAvailabilityFallbackGroup(ctx, user, selectedGroup, req.OpenAIAvailabilityFallbackGroupID); err != nil {
+		return nil, err
 	}
 
 	var key string
@@ -476,19 +511,20 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 
 	// 创建API Key记录
 	apiKey := &APIKey{
-		UserID:                      userID,
-		Key:                         key,
-		Name:                        html.EscapeString(req.Name),
-		GroupID:                     req.GroupID,
-		OptionalInstructionsEnabled: req.OptionalInstructionsEnabled && GroupOffersOptionalInstructions(selectedGroup),
-		Status:                      StatusActive,
-		IPWhitelist:                 req.IPWhitelist,
-		IPBlacklist:                 req.IPBlacklist,
-		Quota:                       req.Quota,
-		QuotaUsed:                   0,
-		RateLimit5h:                 req.RateLimit5h,
-		RateLimit1d:                 req.RateLimit1d,
-		RateLimit7d:                 req.RateLimit7d,
+		UserID:                            userID,
+		Key:                               key,
+		Name:                              html.EscapeString(req.Name),
+		GroupID:                           req.GroupID,
+		OpenAIAvailabilityFallbackGroupID: req.OpenAIAvailabilityFallbackGroupID,
+		OptionalInstructionsEnabled:       req.OptionalInstructionsEnabled && GroupOffersOptionalInstructions(selectedGroup),
+		Status:                            StatusActive,
+		IPWhitelist:                       req.IPWhitelist,
+		IPBlacklist:                       req.IPBlacklist,
+		Quota:                             req.Quota,
+		QuotaUsed:                         0,
+		RateLimit5h:                       req.RateLimit5h,
+		RateLimit1d:                       req.RateLimit1d,
+		RateLimit7d:                       req.RateLimit7d,
 	}
 
 	// Set expiration time if specified
@@ -732,6 +768,18 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 	}
 
 	targetGroup := apiKey.Group
+	var bindingUser *User
+	loadBindingUser := func() (*User, error) {
+		if bindingUser != nil {
+			return bindingUser, nil
+		}
+		user, err := s.userRepo.GetByID(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		bindingUser = user
+		return bindingUser, nil
+	}
 	groupIDSet := req.GroupIDSet || req.GroupID != nil
 	if groupIDSet && req.GroupID == nil {
 		apiKey.GroupID = nil
@@ -740,7 +788,7 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 		apiKey.OptionalInstructionsEnabled = false
 	} else if req.GroupID != nil {
 		// 验证分组权限
-		user, err := s.userRepo.GetByID(ctx, userID)
+		user, err := loadBindingUser()
 		if err != nil {
 			return nil, fmt.Errorf("get user: %w", err)
 		}
@@ -758,6 +806,27 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 		apiKey.GroupID = &groupID
 		apiKey.Group = group
 		targetGroup = group
+	}
+
+	fallbackGroupIDSet := req.OpenAIAvailabilityFallbackGroupIDSet || req.OpenAIAvailabilityFallbackGroupID != nil
+	if groupIDSet && !fallbackGroupIDSet {
+		// A primary-group-only update must not silently retain a second group.
+		apiKey.OpenAIAvailabilityFallbackGroupID = nil
+	}
+	if fallbackGroupIDSet {
+		if req.OpenAIAvailabilityFallbackGroupID == nil {
+			apiKey.OpenAIAvailabilityFallbackGroupID = nil
+		} else {
+			user, err := loadBindingUser()
+			if err != nil {
+				return nil, fmt.Errorf("get user: %w", err)
+			}
+			if err := s.validateOpenAIAvailabilityFallbackGroup(ctx, user, targetGroup, req.OpenAIAvailabilityFallbackGroupID); err != nil {
+				return nil, err
+			}
+			fallbackGroupID := *req.OpenAIAvailabilityFallbackGroupID
+			apiKey.OpenAIAvailabilityFallbackGroupID = &fallbackGroupID
+		}
 	}
 
 	if req.Status != nil {

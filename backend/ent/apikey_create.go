@@ -99,6 +99,20 @@ func (_c *APIKeyCreate) SetNillableGroupID(v *int64) *APIKeyCreate {
 	return _c
 }
 
+// SetOpenaiAvailabilityFallbackGroupID sets the "openai_availability_fallback_group_id" field.
+func (_c *APIKeyCreate) SetOpenaiAvailabilityFallbackGroupID(v int64) *APIKeyCreate {
+	_c.mutation.SetOpenaiAvailabilityFallbackGroupID(v)
+	return _c
+}
+
+// SetNillableOpenaiAvailabilityFallbackGroupID sets the "openai_availability_fallback_group_id" field if the given value is not nil.
+func (_c *APIKeyCreate) SetNillableOpenaiAvailabilityFallbackGroupID(v *int64) *APIKeyCreate {
+	if v != nil {
+		_c.SetOpenaiAvailabilityFallbackGroupID(*v)
+	}
+	return _c
+}
+
 // SetStatus sets the "status" field.
 func (_c *APIKeyCreate) SetStatus(v string) *APIKeyCreate {
 	_c.mutation.SetStatus(v)
@@ -552,6 +566,10 @@ func (_c *APIKeyCreate) createSpec() (*APIKey, *sqlgraph.CreateSpec) {
 		_spec.SetField(apikey.FieldName, field.TypeString, value)
 		_node.Name = value
 	}
+	if value, ok := _c.mutation.OpenaiAvailabilityFallbackGroupID(); ok {
+		_spec.SetField(apikey.FieldOpenaiAvailabilityFallbackGroupID, field.TypeInt64, value)
+		_node.OpenaiAvailabilityFallbackGroupID = &value
+	}
 	if value, ok := _c.mutation.Status(); ok {
 		_spec.SetField(apikey.FieldStatus, field.TypeString, value)
 		_node.Status = value
@@ -803,6 +821,30 @@ func (u *APIKeyUpsert) UpdateGroupID() *APIKeyUpsert {
 // ClearGroupID clears the value of the "group_id" field.
 func (u *APIKeyUpsert) ClearGroupID() *APIKeyUpsert {
 	u.SetNull(apikey.FieldGroupID)
+	return u
+}
+
+// SetOpenaiAvailabilityFallbackGroupID sets the "openai_availability_fallback_group_id" field.
+func (u *APIKeyUpsert) SetOpenaiAvailabilityFallbackGroupID(v int64) *APIKeyUpsert {
+	u.Set(apikey.FieldOpenaiAvailabilityFallbackGroupID, v)
+	return u
+}
+
+// UpdateOpenaiAvailabilityFallbackGroupID sets the "openai_availability_fallback_group_id" field to the value that was provided on create.
+func (u *APIKeyUpsert) UpdateOpenaiAvailabilityFallbackGroupID() *APIKeyUpsert {
+	u.SetExcluded(apikey.FieldOpenaiAvailabilityFallbackGroupID)
+	return u
+}
+
+// AddOpenaiAvailabilityFallbackGroupID adds v to the "openai_availability_fallback_group_id" field.
+func (u *APIKeyUpsert) AddOpenaiAvailabilityFallbackGroupID(v int64) *APIKeyUpsert {
+	u.Add(apikey.FieldOpenaiAvailabilityFallbackGroupID, v)
+	return u
+}
+
+// ClearOpenaiAvailabilityFallbackGroupID clears the value of the "openai_availability_fallback_group_id" field.
+func (u *APIKeyUpsert) ClearOpenaiAvailabilityFallbackGroupID() *APIKeyUpsert {
+	u.SetNull(apikey.FieldOpenaiAvailabilityFallbackGroupID)
 	return u
 }
 
@@ -1240,6 +1282,34 @@ func (u *APIKeyUpsertOne) UpdateGroupID() *APIKeyUpsertOne {
 func (u *APIKeyUpsertOne) ClearGroupID() *APIKeyUpsertOne {
 	return u.Update(func(s *APIKeyUpsert) {
 		s.ClearGroupID()
+	})
+}
+
+// SetOpenaiAvailabilityFallbackGroupID sets the "openai_availability_fallback_group_id" field.
+func (u *APIKeyUpsertOne) SetOpenaiAvailabilityFallbackGroupID(v int64) *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetOpenaiAvailabilityFallbackGroupID(v)
+	})
+}
+
+// AddOpenaiAvailabilityFallbackGroupID adds v to the "openai_availability_fallback_group_id" field.
+func (u *APIKeyUpsertOne) AddOpenaiAvailabilityFallbackGroupID(v int64) *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.AddOpenaiAvailabilityFallbackGroupID(v)
+	})
+}
+
+// UpdateOpenaiAvailabilityFallbackGroupID sets the "openai_availability_fallback_group_id" field to the value that was provided on create.
+func (u *APIKeyUpsertOne) UpdateOpenaiAvailabilityFallbackGroupID() *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateOpenaiAvailabilityFallbackGroupID()
+	})
+}
+
+// ClearOpenaiAvailabilityFallbackGroupID clears the value of the "openai_availability_fallback_group_id" field.
+func (u *APIKeyUpsertOne) ClearOpenaiAvailabilityFallbackGroupID() *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.ClearOpenaiAvailabilityFallbackGroupID()
 	})
 }
 
@@ -1892,6 +1962,34 @@ func (u *APIKeyUpsertBulk) UpdateGroupID() *APIKeyUpsertBulk {
 func (u *APIKeyUpsertBulk) ClearGroupID() *APIKeyUpsertBulk {
 	return u.Update(func(s *APIKeyUpsert) {
 		s.ClearGroupID()
+	})
+}
+
+// SetOpenaiAvailabilityFallbackGroupID sets the "openai_availability_fallback_group_id" field.
+func (u *APIKeyUpsertBulk) SetOpenaiAvailabilityFallbackGroupID(v int64) *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetOpenaiAvailabilityFallbackGroupID(v)
+	})
+}
+
+// AddOpenaiAvailabilityFallbackGroupID adds v to the "openai_availability_fallback_group_id" field.
+func (u *APIKeyUpsertBulk) AddOpenaiAvailabilityFallbackGroupID(v int64) *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.AddOpenaiAvailabilityFallbackGroupID(v)
+	})
+}
+
+// UpdateOpenaiAvailabilityFallbackGroupID sets the "openai_availability_fallback_group_id" field to the value that was provided on create.
+func (u *APIKeyUpsertBulk) UpdateOpenaiAvailabilityFallbackGroupID() *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateOpenaiAvailabilityFallbackGroupID()
+	})
+}
+
+// ClearOpenaiAvailabilityFallbackGroupID clears the value of the "openai_availability_fallback_group_id" field.
+func (u *APIKeyUpsertBulk) ClearOpenaiAvailabilityFallbackGroupID() *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.ClearOpenaiAvailabilityFallbackGroupID()
 	})
 }
 

@@ -120,6 +120,33 @@ func (_u *APIKeyUpdate) ClearGroupID() *APIKeyUpdate {
 	return _u
 }
 
+// SetOpenaiAvailabilityFallbackGroupID sets the "openai_availability_fallback_group_id" field.
+func (_u *APIKeyUpdate) SetOpenaiAvailabilityFallbackGroupID(v int64) *APIKeyUpdate {
+	_u.mutation.ResetOpenaiAvailabilityFallbackGroupID()
+	_u.mutation.SetOpenaiAvailabilityFallbackGroupID(v)
+	return _u
+}
+
+// SetNillableOpenaiAvailabilityFallbackGroupID sets the "openai_availability_fallback_group_id" field if the given value is not nil.
+func (_u *APIKeyUpdate) SetNillableOpenaiAvailabilityFallbackGroupID(v *int64) *APIKeyUpdate {
+	if v != nil {
+		_u.SetOpenaiAvailabilityFallbackGroupID(*v)
+	}
+	return _u
+}
+
+// AddOpenaiAvailabilityFallbackGroupID adds value to the "openai_availability_fallback_group_id" field.
+func (_u *APIKeyUpdate) AddOpenaiAvailabilityFallbackGroupID(v int64) *APIKeyUpdate {
+	_u.mutation.AddOpenaiAvailabilityFallbackGroupID(v)
+	return _u
+}
+
+// ClearOpenaiAvailabilityFallbackGroupID clears the value of the "openai_availability_fallback_group_id" field.
+func (_u *APIKeyUpdate) ClearOpenaiAvailabilityFallbackGroupID() *APIKeyUpdate {
+	_u.mutation.ClearOpenaiAvailabilityFallbackGroupID()
+	return _u
+}
+
 // SetStatus sets the "status" field.
 func (_u *APIKeyUpdate) SetStatus(v string) *APIKeyUpdate {
 	_u.mutation.SetStatus(v)
@@ -607,6 +634,15 @@ func (_u *APIKeyUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if value, ok := _u.mutation.Name(); ok {
 		_spec.SetField(apikey.FieldName, field.TypeString, value)
 	}
+	if value, ok := _u.mutation.OpenaiAvailabilityFallbackGroupID(); ok {
+		_spec.SetField(apikey.FieldOpenaiAvailabilityFallbackGroupID, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedOpenaiAvailabilityFallbackGroupID(); ok {
+		_spec.AddField(apikey.FieldOpenaiAvailabilityFallbackGroupID, field.TypeInt64, value)
+	}
+	if _u.mutation.OpenaiAvailabilityFallbackGroupIDCleared() {
+		_spec.ClearField(apikey.FieldOpenaiAvailabilityFallbackGroupID, field.TypeInt64)
+	}
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(apikey.FieldStatus, field.TypeString, value)
 	}
@@ -921,6 +957,33 @@ func (_u *APIKeyUpdateOne) SetNillableGroupID(v *int64) *APIKeyUpdateOne {
 // ClearGroupID clears the value of the "group_id" field.
 func (_u *APIKeyUpdateOne) ClearGroupID() *APIKeyUpdateOne {
 	_u.mutation.ClearGroupID()
+	return _u
+}
+
+// SetOpenaiAvailabilityFallbackGroupID sets the "openai_availability_fallback_group_id" field.
+func (_u *APIKeyUpdateOne) SetOpenaiAvailabilityFallbackGroupID(v int64) *APIKeyUpdateOne {
+	_u.mutation.ResetOpenaiAvailabilityFallbackGroupID()
+	_u.mutation.SetOpenaiAvailabilityFallbackGroupID(v)
+	return _u
+}
+
+// SetNillableOpenaiAvailabilityFallbackGroupID sets the "openai_availability_fallback_group_id" field if the given value is not nil.
+func (_u *APIKeyUpdateOne) SetNillableOpenaiAvailabilityFallbackGroupID(v *int64) *APIKeyUpdateOne {
+	if v != nil {
+		_u.SetOpenaiAvailabilityFallbackGroupID(*v)
+	}
+	return _u
+}
+
+// AddOpenaiAvailabilityFallbackGroupID adds value to the "openai_availability_fallback_group_id" field.
+func (_u *APIKeyUpdateOne) AddOpenaiAvailabilityFallbackGroupID(v int64) *APIKeyUpdateOne {
+	_u.mutation.AddOpenaiAvailabilityFallbackGroupID(v)
+	return _u
+}
+
+// ClearOpenaiAvailabilityFallbackGroupID clears the value of the "openai_availability_fallback_group_id" field.
+func (_u *APIKeyUpdateOne) ClearOpenaiAvailabilityFallbackGroupID() *APIKeyUpdateOne {
+	_u.mutation.ClearOpenaiAvailabilityFallbackGroupID()
 	return _u
 }
 
@@ -1440,6 +1503,15 @@ func (_u *APIKeyUpdateOne) sqlSave(ctx context.Context) (_node *APIKey, err erro
 	}
 	if value, ok := _u.mutation.Name(); ok {
 		_spec.SetField(apikey.FieldName, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.OpenaiAvailabilityFallbackGroupID(); ok {
+		_spec.SetField(apikey.FieldOpenaiAvailabilityFallbackGroupID, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedOpenaiAvailabilityFallbackGroupID(); ok {
+		_spec.AddField(apikey.FieldOpenaiAvailabilityFallbackGroupID, field.TypeInt64, value)
+	}
+	if _u.mutation.OpenaiAvailabilityFallbackGroupIDCleared() {
+		_spec.ClearField(apikey.FieldOpenaiAvailabilityFallbackGroupID, field.TypeInt64)
 	}
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(apikey.FieldStatus, field.TypeString, value)

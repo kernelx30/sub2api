@@ -55,6 +55,7 @@ export async function getById(id: number): Promise<ApiKey> {
  * @param quota - Optional quota limit in USD (0 = unlimited)
  * @param expiresInDays - Optional days until expiry (undefined = never expires)
  * @param rateLimitData - Optional rate limit fields
+ * @param openAIAvailabilityFallbackGroupId - Optional second GPT group for failover
  * @returns Created API key
  */
 export async function create(
@@ -66,10 +67,14 @@ export async function create(
   quota?: number,
   expiresInDays?: number,
   rateLimitData?: { rate_limit_5h?: number; rate_limit_1d?: number; rate_limit_7d?: number },
-  optionalInstructionsEnabled?: boolean
+  optionalInstructionsEnabled?: boolean,
+  openAIAvailabilityFallbackGroupId?: number | null
 ): Promise<ApiKey> {
   const payload: CreateApiKeyRequest = { name }
 	payload.optional_instructions_enabled = optionalInstructionsEnabled ?? false
+	if (openAIAvailabilityFallbackGroupId !== undefined) {
+		payload.openai_availability_fallback_group_id = openAIAvailabilityFallbackGroupId
+	}
   if (groupId !== undefined) {
     payload.group_id = groupId
   }
