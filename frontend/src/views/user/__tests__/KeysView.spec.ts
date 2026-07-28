@@ -115,6 +115,7 @@ const createApiKey = (): ApiKey => ({
   key: 'sk-test-key',
   name: 'test-key',
   group_id: null,
+  openai_availability_fallback_group_id: null,
   optional_instructions_enabled: false,
   status: 'active',
   ip_whitelist: [],
@@ -477,7 +478,8 @@ describe('user KeysView column settings', () => {
     await flushPromises()
 
     expect(createKey).toHaveBeenCalledTimes(1)
-    expect(createKey.mock.calls[0]?.at(-1)).toBe(true)
+    expect(createKey.mock.calls[0]?.at(-2)).toBe(true)
+    expect(createKey.mock.calls[0]?.at(-1)).toBeNull()
   })
 
   it('clears the opt-in when the selected group does not offer instructions', async () => {
@@ -502,7 +504,35 @@ describe('user KeysView column settings', () => {
 
     await wrapper.get('#key-form').trigger('submit')
     await flushPromises()
-    expect(createKey.mock.calls[0]?.at(-1)).toBe(false)
+    expect(createKey.mock.calls[0]?.at(-2)).toBe(false)
+    expect(createKey.mock.calls[0]?.at(-1)).toBeNull()
+  })
+
+  it('submits independently selected primary and backup OpenAI groups', async () => {
+    getAvailableGroups.mockResolvedValue([
+      { id: 42, name: '0.05', platform: 'openai', optional_instructions_available: false },
+      { id: 43, name: '0.1', platform: 'openai', optional_instructions_available: false },
+    ])
+    const wrapper = await mountView()
+
+    await getButtonByText(wrapper, 'Create API Key').trigger('click')
+    await wrapper.get('[data-tour="key-form-name"]').setValue('fallback-key')
+
+    const primaryGroupSelect = wrapper.findAllComponents({ name: 'Select' }).at(-1)
+    await primaryGroupSelect!.vm.$emit('update:modelValue', 42)
+    await nextTick()
+
+    const backupGroupSelect = wrapper.findAllComponents({ name: 'Select' }).at(-1)
+    expect(backupGroupSelect).not.toBe(primaryGroupSelect)
+    await backupGroupSelect!.vm.$emit('update:modelValue', 43)
+    await nextTick()
+
+    await wrapper.get('#key-form').trigger('submit')
+    await flushPromises()
+
+    expect(createKey).toHaveBeenCalledTimes(1)
+    expect(createKey.mock.calls[0]?.[1]).toBe(42)
+    expect(createKey.mock.calls[0]?.at(-1)).toBe(43)
   })
 
   it('restores and submits an existing key opt-in in edit mode', async () => {
