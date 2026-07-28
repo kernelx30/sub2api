@@ -125,8 +125,8 @@ def load_bank(path: Path) -> dict[str, Any]:
     except ValueError as exc:
         raise ValueError("prompt_source escapes the repository") from exc
     prompt = prompt_path.read_text(encoding="utf-8")
-    if len(prompt) > 16_384:
-        raise ValueError("prompt_source exceeds the 16384-character group limit")
+    if len(prompt) > 65_536:
+        raise ValueError("prompt_source exceeds the 65536-character group limit")
     if not prompt.startswith(EXPECTED_MODEL_SCOPE):
         raise ValueError(
             "prompt_source must begin with the GPT-5.5/GPT-5.6 model scope"

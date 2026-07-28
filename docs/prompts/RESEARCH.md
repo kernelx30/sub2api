@@ -126,7 +126,7 @@ workspace. The credential is intentionally not recorded here.
 
 1. Fetch upstream `main` and tags; diff the prompt, cases, and runner from the pinned
    snapshot above.
-2. Keep the canonical prompt below 16,384 characters.
+2. Keep the canonical prompt below 65,536 characters.
 3. Run `python tools/run_gpt55_56_prompt_bank.py --validate-only`.
 4. After deployment, run the bank through Responses and Chat Completions for the
    deployed GPT-5.5 and GPT-5.6 IDs.

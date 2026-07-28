@@ -1,15 +1,15 @@
 package domain
 
 import (
-	"errors"
+	"fmt"
 	"unicode/utf8"
 )
 
-const OptionalInstructionsMaxCharacters = 16 * 1024
+const OptionalInstructionsMaxCharacters = 64 * 1024
 
 func ValidateOptionalInstructions(instructions string) error {
 	if utf8.RuneCountInString(instructions) > OptionalInstructionsMaxCharacters {
-		return errors.New("optional instructions must not exceed 16384 characters")
+		return fmt.Errorf("optional instructions must not exceed %d characters", OptionalInstructionsMaxCharacters)
 	}
 	return nil
 }
