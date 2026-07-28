@@ -138,7 +138,7 @@ type CreateGroupRequest struct {
 	AllowMessagesDispatch       bool                                      `json:"allow_messages_dispatch"`
 	AllowLive                   bool                                      `json:"allow_live"`
 	OptionalInstructionsEnabled bool                                      `json:"optional_instructions_enabled"`
-	OptionalInstructions        string                                    `json:"optional_instructions" binding:"max=16384"`
+	OptionalInstructions        string                                    `json:"optional_instructions" binding:"max=65536"`
 	RequireOAuthOnly            bool                                      `json:"require_oauth_only"`
 	RequirePrivacySet           bool                                      `json:"require_privacy_set"`
 	DefaultMappedModel          string                                    `json:"default_mapped_model"`
@@ -199,7 +199,7 @@ type UpdateGroupRequest struct {
 	AllowMessagesDispatch       *bool                                      `json:"allow_messages_dispatch"`
 	AllowLive                   *bool                                      `json:"allow_live"`
 	OptionalInstructionsEnabled *bool                                      `json:"optional_instructions_enabled"`
-	OptionalInstructions        *string                                    `json:"optional_instructions" binding:"omitempty,max=16384"`
+	OptionalInstructions        *string                                    `json:"optional_instructions" binding:"omitempty,max=65536"`
 	RequireOAuthOnly            *bool                                      `json:"require_oauth_only"`
 	RequirePrivacySet           *bool                                      `json:"require_privacy_set"`
 	DefaultMappedModel          *string                                    `json:"default_mapped_model"`

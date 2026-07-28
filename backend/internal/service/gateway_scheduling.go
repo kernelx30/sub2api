@@ -697,17 +697,20 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 		}
 
-		// 分层过滤选择：优先级 →（可选）最早重置 → 负载率 → LRU
+		// Layered selection: probe auto-priority -> manual priority -> optional soonest reset -> load rate -> LRU.
+		// Probe auto-priority is runtime-only and never mutates Account.Priority.
 		for len(available) > 0 {
-			// 1. 取优先级最小的集合
-			candidates := filterByMinPriority(available)
-			// 2. （可选）use-it-or-lose-it：优先选用会话窗口最早重置的账号
+			// 1. Pick accounts with the best fresh probe status / latency.
+			candidates := filterByBestProbeAutoPriority(available, time.Now())
+			// 2. Keep manual priority as the first stable tie-breaker.
+			candidates = filterByMinPriority(candidates)
+			// 3. Optional use-it-or-lose-it: prefer accounts whose session window resets soonest.
 			if cfg.PreferSoonestReset {
 				candidates = filterBySoonestReset(candidates)
 			}
-			// 3. 取负载率最低的集合
+			// 4. Keep the existing load-rate layer.
 			candidates = filterByMinLoadRate(candidates)
-			// 4. LRU 选择最久未用的账号
+			// 5. LRU selects the least recently used account.
 			selected := selectByLRU(candidates, preferOAuth)
 			if selected == nil {
 				break
@@ -1470,7 +1473,168 @@ func filterByMinPriority(accounts []accountWithLoad) []accountWithLoad {
 	return result
 }
 
-// filterByMinLoadRate 过滤出负载率最低的账号集合
+// probeAutoPriorityInfo is the runtime health/latency rank used before manual priority.
+type probeAutoPriorityInfo struct {
+	tier         int
+	latencyMS    int64
+	failureCount int
+}
+
+const (
+	probeAutoPriorityTierHealthy = iota
+	probeAutoPriorityTierHealthyUnknownLatency
+	probeAutoPriorityTierUnmeasured
+	probeAutoPriorityTierFailed
+	probeAutoPriorityTierUnsupported
+)
+
+const (
+	probeAutoPriorityMinLatencySlackMS = int64(200)
+	probeAutoPriorityStaleFallbackTTL  = 15 * time.Minute
+)
+
+func filterByBestProbeAutoPriority(accounts []accountWithLoad, now time.Time) []accountWithLoad {
+	if len(accounts) <= 1 {
+		return accounts
+	}
+	infos := make([]probeAutoPriorityInfo, len(accounts))
+	hasSignal := false
+	bestTier := probeAutoPriorityTierUnsupported
+	for i, candidate := range accounts {
+		info, signal := accountProbeAutoPriority(candidate.account, now)
+		infos[i] = info
+		if signal {
+			hasSignal = true
+		}
+		if info.tier < bestTier {
+			bestTier = info.tier
+		}
+	}
+	if !hasSignal {
+		return accounts
+	}
+
+	result := make([]accountWithLoad, 0, len(accounts))
+	switch bestTier {
+	case probeAutoPriorityTierHealthy:
+		bestLatency := int64(0)
+		for _, info := range infos {
+			if info.tier == probeAutoPriorityTierHealthy && (bestLatency == 0 || info.latencyMS < bestLatency) {
+				bestLatency = info.latencyMS
+			}
+		}
+		latencySlack := bestLatency / 5
+		if latencySlack < probeAutoPriorityMinLatencySlackMS {
+			latencySlack = probeAutoPriorityMinLatencySlackMS
+		}
+		threshold := bestLatency + latencySlack
+		for i, candidate := range accounts {
+			info := infos[i]
+			if info.tier == probeAutoPriorityTierHealthy && info.latencyMS <= threshold {
+				result = append(result, candidate)
+			}
+		}
+	case probeAutoPriorityTierFailed:
+		bestFailureCount := 0
+		for _, info := range infos {
+			if info.tier == probeAutoPriorityTierFailed && (bestFailureCount == 0 || info.failureCount < bestFailureCount) {
+				bestFailureCount = info.failureCount
+			}
+		}
+		for i, candidate := range accounts {
+			info := infos[i]
+			if info.tier == probeAutoPriorityTierFailed && info.failureCount == bestFailureCount {
+				result = append(result, candidate)
+			}
+		}
+	default:
+		for i, candidate := range accounts {
+			if infos[i].tier == bestTier {
+				result = append(result, candidate)
+			}
+		}
+	}
+	if len(result) == 0 {
+		return accounts
+	}
+	return result
+}
+
+func accountProbeAutoPriority(account *Account, now time.Time) (probeAutoPriorityInfo, bool) {
+	info := probeAutoPriorityInfo{tier: probeAutoPriorityTierUnmeasured}
+	if account == nil || !upstreamBillingProbeEnabled(account) {
+		return info, false
+	}
+	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
+	if snapshot == nil {
+		return info, true
+	}
+
+	if snapshot.ModelProbeStatus != "" {
+		switch snapshot.ModelProbeStatus {
+		case UpstreamBillingProbeStatusOK:
+			if !isProbeSnapshotFresh(snapshot, now) {
+				return info, true
+			}
+			info.latencyMS = snapshot.ModelProbeLatencyMS
+			if info.latencyMS <= 0 {
+				info.latencyMS = snapshot.LatencyMS
+			}
+			if info.latencyMS > 0 {
+				info.tier = probeAutoPriorityTierHealthy
+			} else {
+				info.tier = probeAutoPriorityTierHealthyUnknownLatency
+			}
+			return info, true
+		case UpstreamBillingProbeStatusFailed:
+			info.tier = probeAutoPriorityTierFailed
+		case UpstreamBillingProbeStatusUnsupported:
+			info.tier = probeAutoPriorityTierUnsupported
+		}
+		info.failureCount = snapshot.FailureCount
+		if info.failureCount <= 0 {
+			info.failureCount = 1
+		}
+		return info, true
+	}
+
+	switch snapshot.Status {
+	case UpstreamBillingProbeStatusOK:
+		if !isProbeSnapshotFresh(snapshot, now) {
+			return info, true
+		}
+		if snapshot.LatencyMS > 0 {
+			info.tier = probeAutoPriorityTierHealthy
+			info.latencyMS = snapshot.LatencyMS
+		} else {
+			info.tier = probeAutoPriorityTierHealthyUnknownLatency
+		}
+	case UpstreamBillingProbeStatusFailed:
+		info.tier = probeAutoPriorityTierFailed
+	case UpstreamBillingProbeStatusUnsupported:
+		info.tier = probeAutoPriorityTierUnsupported
+	}
+	info.failureCount = snapshot.FailureCount
+	if info.failureCount <= 0 {
+		info.failureCount = 1
+	}
+	return info, true
+}
+
+func isProbeSnapshotFresh(snapshot *UpstreamBillingProbeSnapshot, now time.Time) bool {
+	if snapshot == nil {
+		return false
+	}
+	if snapshot.FreshUntil != nil {
+		return now.Before(*snapshot.FreshUntil) || now.Equal(*snapshot.FreshUntil)
+	}
+	if snapshot.LastAttemptAt.IsZero() {
+		return false
+	}
+	return now.Sub(snapshot.LastAttemptAt) <= probeAutoPriorityStaleFallbackTTL
+}
+
+// filterByMinLoadRate ?????????????
 func filterByMinLoadRate(accounts []accountWithLoad) []accountWithLoad {
 	if len(accounts) == 0 {
 		return accounts

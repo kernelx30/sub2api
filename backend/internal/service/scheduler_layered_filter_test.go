@@ -3,6 +3,7 @@
 package service
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -260,5 +261,173 @@ func TestLayeredFilterIntegration(t *testing.T) {
 		selected := selectByLRU(step2, false)
 		require.NotNil(t, selected)
 		require.Equal(t, int64(3), selected.account.ID)
+	})
+}
+
+func TestFilterByBestProbeAutoPriority(t *testing.T) {
+	now := time.Date(2026, time.July, 29, 10, 0, 0, 0, time.UTC)
+
+	snapshotExtra := func(status string, latencyMS int64, failureCount int, fresh bool) map[string]any {
+		freshUntil := now.Add(10 * time.Minute)
+		if !fresh {
+			freshUntil = now.Add(-time.Minute)
+		}
+		return map[string]any{
+			UpstreamBillingProbeEnabledExtraKey: true,
+			UpstreamBillingProbeExtraKey: map[string]any{
+				"status":          status,
+				"latency_ms":      latencyMS,
+				"last_attempt_at": now,
+				"fresh_until":     freshUntil,
+				"failure_count":   failureCount,
+			},
+		}
+	}
+
+	t.Run("healthy faster account wins over lower manual priority", func(t *testing.T) {
+		accounts := []accountWithLoad{
+			{account: &Account{ID: 1, Priority: 1, Extra: snapshotExtra(UpstreamBillingProbeStatusOK, 2200, 0, true)}, loadInfo: &AccountLoadInfo{}},
+			{account: &Account{ID: 2, Priority: 9, Extra: snapshotExtra(UpstreamBillingProbeStatusOK, 900, 0, true)}, loadInfo: &AccountLoadInfo{}},
+		}
+
+		result := filterByBestProbeAutoPriority(accounts, now)
+
+		require.Len(t, result, 1)
+		require.Equal(t, int64(2), result[0].account.ID)
+	})
+
+	t.Run("close healthy latency keeps both candidates for manual tie breakers", func(t *testing.T) {
+		accounts := []accountWithLoad{
+			{account: &Account{ID: 1, Priority: 1, Extra: snapshotExtra(UpstreamBillingProbeStatusOK, 1000, 0, true)}, loadInfo: &AccountLoadInfo{}},
+			{account: &Account{ID: 2, Priority: 2, Extra: snapshotExtra(UpstreamBillingProbeStatusOK, 1150, 0, true)}, loadInfo: &AccountLoadInfo{}},
+		}
+
+		result := filterByBestProbeAutoPriority(accounts, now)
+
+		require.Len(t, result, 2)
+		require.Equal(t, int64(1), result[0].account.ID)
+		require.Equal(t, int64(2), result[1].account.ID)
+	})
+
+	t.Run("failed account is ranked after unmeasured account", func(t *testing.T) {
+		accounts := []accountWithLoad{
+			{account: &Account{ID: 1, Priority: 1, Extra: snapshotExtra(UpstreamBillingProbeStatusFailed, 0, 2, true)}, loadInfo: &AccountLoadInfo{}},
+			{account: &Account{ID: 2, Priority: 5}, loadInfo: &AccountLoadInfo{}},
+		}
+
+		result := filterByBestProbeAutoPriority(accounts, now)
+
+		require.Len(t, result, 1)
+		require.Equal(t, int64(2), result[0].account.ID)
+	})
+
+	t.Run("model failure beats fast billing metadata", func(t *testing.T) {
+		freshUntil := now.Add(10 * time.Minute)
+		accounts := []accountWithLoad{
+			{
+				account: &Account{
+					ID:       1,
+					Priority: 1,
+					Extra: map[string]any{
+						UpstreamBillingProbeEnabledExtraKey: true,
+						UpstreamBillingProbeExtraKey: map[string]any{
+							"status":                  UpstreamBillingProbeStatusOK,
+							"latency_ms":              int64(350),
+							"model_probe_status":      UpstreamBillingProbeStatusFailed,
+							"model_probe_latency_ms":  int64(500),
+							"model_probe_http_status": http.StatusForbidden,
+							"last_attempt_at":         now,
+							"fresh_until":             freshUntil,
+							"failure_count":           1,
+						},
+					},
+				},
+				loadInfo: &AccountLoadInfo{},
+			},
+			{
+				account: &Account{
+					ID:       2,
+					Priority: 9,
+					Extra: map[string]any{
+						UpstreamBillingProbeEnabledExtraKey: true,
+						UpstreamBillingProbeExtraKey: map[string]any{
+							"status":                  UpstreamBillingProbeStatusOK,
+							"latency_ms":              int64(1800),
+							"model_probe_status":      UpstreamBillingProbeStatusOK,
+							"model_probe_latency_ms":  int64(900),
+							"model_probe_http_status": http.StatusOK,
+							"last_attempt_at":         now,
+							"fresh_until":             freshUntil,
+						},
+					},
+				},
+				loadInfo: &AccountLoadInfo{},
+			},
+		}
+
+		result := filterByBestProbeAutoPriority(accounts, now)
+
+		require.Len(t, result, 1)
+		require.Equal(t, int64(2), result[0].account.ID)
+	})
+
+	t.Run("model latency overrides billing latency", func(t *testing.T) {
+		freshUntil := now.Add(10 * time.Minute)
+		accounts := []accountWithLoad{
+			{
+				account: &Account{
+					ID:       1,
+					Priority: 1,
+					Extra: map[string]any{
+						UpstreamBillingProbeEnabledExtraKey: true,
+						UpstreamBillingProbeExtraKey: map[string]any{
+							"status":                 UpstreamBillingProbeStatusOK,
+							"latency_ms":             int64(300),
+							"model_probe_status":     UpstreamBillingProbeStatusOK,
+							"model_probe_latency_ms": int64(2200),
+							"last_attempt_at":        now,
+							"fresh_until":            freshUntil,
+						},
+					},
+				},
+				loadInfo: &AccountLoadInfo{},
+			},
+			{
+				account: &Account{
+					ID:       2,
+					Priority: 9,
+					Extra: map[string]any{
+						UpstreamBillingProbeEnabledExtraKey: true,
+						UpstreamBillingProbeExtraKey: map[string]any{
+							"status":                 UpstreamBillingProbeStatusOK,
+							"latency_ms":             int64(1800),
+							"model_probe_status":     UpstreamBillingProbeStatusOK,
+							"model_probe_latency_ms": int64(900),
+							"last_attempt_at":        now,
+							"fresh_until":            freshUntil,
+						},
+					},
+				},
+				loadInfo: &AccountLoadInfo{},
+			},
+		}
+
+		result := filterByBestProbeAutoPriority(accounts, now)
+
+		require.Len(t, result, 1)
+		require.Equal(t, int64(2), result[0].account.ID)
+	})
+
+	t.Run("no probe signal keeps original set", func(t *testing.T) {
+		accounts := []accountWithLoad{
+			{account: &Account{ID: 1, Priority: 1}, loadInfo: &AccountLoadInfo{}},
+			{account: &Account{ID: 2, Priority: 2}, loadInfo: &AccountLoadInfo{}},
+		}
+
+		result := filterByBestProbeAutoPriority(accounts, now)
+
+		require.Len(t, result, 2)
+		require.Equal(t, int64(1), result[0].account.ID)
+		require.Equal(t, int64(2), result[1].account.ID)
 	})
 }

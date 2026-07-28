@@ -124,6 +124,18 @@ func (r *upstreamBillingProbeAccountRepo) UpdateUpstreamBillingProbeSnapshot(_ c
 	return nil
 }
 
+func (r *upstreamBillingProbeAccountRepo) ListByPlatform(_ context.Context, platform string) ([]Account, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result := make([]Account, 0)
+	for _, account := range r.accounts {
+		if account.Platform == platform {
+			result = append(result, *account)
+		}
+	}
+	return result, nil
+}
+
 func (r *upstreamBillingProbeAccountRepo) FindByExtraField(_ context.Context, key string, value any) ([]Account, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -144,12 +156,21 @@ type upstreamBillingProbeSettingRepo struct {
 
 type upstreamBillingProbeHTTPStub struct {
 	calls          atomic.Int64
+	modelCalls     atomic.Int64
 	active         atomic.Int64
 	maxActive      atomic.Int64
 	beforeResponse func()
 }
 
 func (u *upstreamBillingProbeHTTPStub) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	if req != nil && req.URL != nil && strings.HasSuffix(req.URL.Path, "/responses") {
+		u.modelCalls.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader("{\"id\":\"resp_probe\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"name\":\"probe_ping\",\"arguments\":\"{\\\"ok\\\":true}\"}]}")),
+		}, nil
+	}
 	u.calls.Add(1)
 	active := u.active.Add(1)
 	defer u.active.Add(-1)
@@ -222,7 +243,7 @@ func TestUpstreamBillingProbeSettingsDefaultsAndValidation(t *testing.T) {
 	settings, err := settingsService.GetUpstreamBillingProbeSettings(context.Background())
 	require.NoError(t, err)
 	require.True(t, settings.Enabled)
-	require.Equal(t, 30, settings.IntervalMinutes)
+	require.Equal(t, 5, settings.IntervalMinutes)
 
 	err = settingsService.SetUpstreamBillingProbeSettings(context.Background(), &UpstreamBillingProbeSettings{
 		Enabled:         false,
@@ -250,7 +271,7 @@ func TestUpstreamBillingProbeSettingsDefaultsAndValidation(t *testing.T) {
 	settings, err = settingsService.GetUpstreamBillingProbeSettings(context.Background())
 	require.NoError(t, err)
 	require.False(t, settings.Enabled)
-	require.Equal(t, 30, settings.IntervalMinutes)
+	require.Equal(t, 5, settings.IntervalMinutes)
 
 	repo.values[SettingKeyUpstreamBillingProbeSettings] = `{"enabled":`
 	settings, err = settingsService.GetUpstreamBillingProbeSettings(context.Background())
@@ -304,9 +325,9 @@ func TestUpstreamBillingProbeSuccessPersistsSanitizedSnapshot(t *testing.T) {
 	require.NotNil(t, snapshot.ReceivedAt)
 	require.Equal(t, fixedNow, *snapshot.ReceivedAt)
 	require.NotNil(t, snapshot.FreshUntil)
-	require.Equal(t, fixedNow.Add(time.Hour), *snapshot.FreshUntil)
-	require.False(t, snapshot.NextProbeAt.Before(fixedNow.Add(24*time.Minute)))
-	require.False(t, snapshot.NextProbeAt.After(fixedNow.Add(36*time.Minute)))
+	require.Equal(t, fixedNow.Add(10*time.Minute), *snapshot.FreshUntil)
+	require.False(t, snapshot.NextProbeAt.Before(fixedNow.Add(4*time.Minute)))
+	require.False(t, snapshot.NextProbeAt.After(fixedNow.Add(6*time.Minute)))
 	require.Equal(t, "https://upstream.example/v1/sub2api/billing", upstream.lastReq.URL.String())
 	require.Equal(t, http.MethodGet, upstream.lastReq.Method)
 	require.Equal(t, "Bearer sk-sensitive", upstream.lastReq.Header.Get("Authorization"))
@@ -487,7 +508,7 @@ func TestUpstreamBillingProbeFailurePreservesLastSuccessAndRetryAfter(t *testing
 	require.Equal(t, previous.Data, snapshot.Data)
 	require.Equal(t, previous.ReceivedAt, snapshot.ReceivedAt)
 	require.NotNil(t, snapshot.FreshUntil)
-	require.Equal(t, receivedAt.Add(time.Hour), *snapshot.FreshUntil)
+	require.Equal(t, receivedAt.Add(10*time.Minute), *snapshot.FreshUntil)
 	require.Equal(t, 2, snapshot.FailureCount)
 	require.Equal(t, "http_error", snapshot.LastError)
 	require.False(t, snapshot.NextProbeAt.Before(fixedNow.Add(4*time.Hour)))
@@ -517,14 +538,12 @@ func TestUpstreamBillingProbeEmptyResponseIsPersistedAsFailure(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, UpstreamBillingProbeStatusFailed, snapshot.Status)
 	require.Equal(t, "empty_response", snapshot.LastError)
-	require.False(t, snapshot.NextProbeAt.Before(fixedNow.Add(24*time.Minute)))
-	require.False(t, snapshot.NextProbeAt.After(fixedNow.Add(36*time.Minute)))
+	require.Equal(t, fixedNow.Add(time.Minute), snapshot.NextProbeAt)
 
 	snapshot, err = svc.ProbeAccount(context.Background(), account.ID)
 	require.NoError(t, err)
 	require.Equal(t, 2, snapshot.FailureCount)
-	require.False(t, snapshot.NextProbeAt.Before(fixedNow.Add(24*time.Minute)))
-	require.False(t, snapshot.NextProbeAt.After(fixedNow.Add(36*time.Minute)))
+	require.Equal(t, fixedNow.Add(2*time.Minute), snapshot.NextProbeAt)
 }
 
 func TestUpstreamBillingProbeUnsupportedAndAccountToggle(t *testing.T) {
@@ -552,14 +571,12 @@ func TestUpstreamBillingProbeUnsupportedAndAccountToggle(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, UpstreamBillingProbeStatusUnsupported, snapshot.Status)
 	require.Equal(t, "unsupported", snapshot.LastError)
-	require.False(t, snapshot.NextProbeAt.Before(fixedNow.Add(24*time.Minute)))
-	require.False(t, snapshot.NextProbeAt.After(fixedNow.Add(36*time.Minute)))
+	require.Equal(t, fixedNow.Add(time.Minute), snapshot.NextProbeAt)
 
 	snapshot, err = svc.ProbeAccount(context.Background(), account.ID)
 	require.NoError(t, err)
 	require.Equal(t, 2, snapshot.FailureCount)
-	require.False(t, snapshot.NextProbeAt.Before(fixedNow.Add(24*time.Minute)))
-	require.False(t, snapshot.NextProbeAt.After(fixedNow.Add(36*time.Minute)))
+	require.Equal(t, fixedNow.Add(2*time.Minute), snapshot.NextProbeAt)
 
 	invalid := &Account{ID: 20, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 	repo.accounts[invalid.ID] = invalid
@@ -956,4 +973,103 @@ func TestUpstreamBillingProbeLeaderLockCoversStaggeredInstancesInCadenceWindow(t
 	staggered.SetLeaderLock(cache, nil)
 	require.NoError(t, staggered.RunDue(context.Background()))
 	require.Equal(t, int64(1), upstream.calls.Load(), "a staggered instance must not start a second batch inside the cadence window")
+}
+
+func TestUpstreamBillingProbeEnabledDefaultsToPoolMode(t *testing.T) {
+	t.Run("pool mode defaults enabled", func(t *testing.T) {
+		account := &Account{
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: map[string]any{"pool_mode": true},
+		}
+		require.True(t, upstreamBillingProbeEnabled(account))
+	})
+
+	t.Run("explicit false overrides pool mode", func(t *testing.T) {
+		account := &Account{
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: map[string]any{"pool_mode": true},
+			Extra:       map[string]any{UpstreamBillingProbeEnabledExtraKey: false},
+		}
+		require.False(t, upstreamBillingProbeEnabled(account))
+	})
+
+	t.Run("non pool account remains disabled by default", func(t *testing.T) {
+		account := &Account{
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: map[string]any{"pool_mode": false},
+		}
+		require.False(t, upstreamBillingProbeEnabled(account))
+	})
+
+	t.Run("explicit true enables non pool account", func(t *testing.T) {
+		account := &Account{
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: map[string]any{"pool_mode": false},
+			Extra:       map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+		}
+		require.True(t, upstreamBillingProbeEnabled(account))
+	})
+}
+
+func TestSelectUpstreamHealthProbeModelPrefersGPT56(t *testing.T) {
+	account := &Account{
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"codex-auto-review": "codex-auto-review",
+				"gpt-5.5":           "gpt-5.5-upstream",
+				"gpt-5.6-terra":     "gpt-5.6-terra-upstream",
+			},
+		},
+	}
+
+	require.Equal(t, "gpt-5.6-terra-upstream", selectUpstreamHealthProbeModel(account))
+}
+
+func TestNextProbeFailureDelayAdaptiveBackoff(t *testing.T) {
+	require.Equal(t, time.Minute, nextProbeFailureDelay(5, 1, 0))
+	require.Equal(t, 2*time.Minute, nextProbeFailureDelay(5, 2, 0))
+
+	third := nextProbeFailureDelay(5, 3, 0)
+	require.GreaterOrEqual(t, third, 4*time.Minute)
+	require.LessOrEqual(t, third, 6*time.Minute)
+
+	require.Equal(t, 9*time.Minute, nextProbeFailureDelay(5, 1, 9*time.Minute))
+}
+
+func TestProbePoolModeRecordsModelHealthAndLatency(t *testing.T) {
+	account := &Account{
+		ID:          73,
+		Name:        "pool-account",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":   "sk-test",
+			"base_url":  "https://upstream.example",
+			"pool_mode": true,
+			"model_mapping": map[string]any{
+				"gpt-5.6-terra": "gpt-5.6-terra",
+			},
+		},
+	}
+	repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}
+	upstream := &upstreamBillingProbeHTTPStub{}
+	svc := newUpstreamBillingProbeTestService(repo, upstream, &upstreamBillingProbeSettingRepo{})
+
+	snapshot, err := svc.ProbeAccount(context.Background(), account.ID)
+
+	require.NoError(t, err)
+	require.Equal(t, UpstreamBillingProbeStatusOK, snapshot.Status)
+	require.Equal(t, UpstreamBillingProbeStatusOK, snapshot.ModelProbeStatus)
+	require.Equal(t, "gpt-5.6-terra", snapshot.ModelProbeModel)
+	require.Equal(t, "responses", snapshot.ModelProbeEndpoint)
+	require.Equal(t, http.StatusOK, snapshot.ModelProbeHTTPStatus)
+	require.Greater(t, snapshot.ModelProbeLatencyMS, int64(0))
+	require.Equal(t, int64(1), upstream.modelCalls.Load())
+	require.Equal(t, int64(1), upstream.calls.Load())
 }

@@ -3383,7 +3383,13 @@ func (r *accountRepository) ListDueUpstreamBillingProbeAccounts(ctx context.Cont
 				AND status = 'active'
 				AND platform = 'openai'
 				AND type = 'apikey'
-				AND extra @> '{"upstream_billing_probe_enabled": true}'::jsonb
+				AND (
+					extra @> '{"upstream_billing_probe_enabled": true}'::jsonb
+					OR (
+						NOT (extra ? 'upstream_billing_probe_enabled')
+						AND COALESCE(credentials ->> 'pool_mode', 'false') = 'true'
+					)
+				)
 		), parsed AS MATERIALIZED (
 			SELECT
 				id,

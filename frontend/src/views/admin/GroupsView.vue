@@ -1488,14 +1488,18 @@
             <textarea
               v-model="createForm.optional_instructions"
               rows="8"
-              maxlength="16384"
+              :maxlength="OPTIONAL_INSTRUCTIONS_MAX_CHARACTERS"
               class="input mt-3 font-mono text-sm"
               :disabled="!createForm.optional_instructions_enabled"
               :placeholder="t('admin.groups.optionalInstructions.placeholder')"
             />
             <div class="mt-1 flex justify-between text-xs text-gray-500 dark:text-gray-400">
               <span>{{ t("admin.groups.optionalInstructions.hint") }}</span>
-              <span>{{ createForm.optional_instructions.length }}/16384</span>
+              <span
+                >{{ createForm.optional_instructions.length }}/{{
+                  OPTIONAL_INSTRUCTIONS_MAX_CHARACTERS
+                }}</span
+              >
             </div>
           </div>
 
@@ -3070,14 +3074,18 @@
             <textarea
               v-model="editForm.optional_instructions"
               rows="8"
-              maxlength="16384"
+              :maxlength="OPTIONAL_INSTRUCTIONS_MAX_CHARACTERS"
               class="input mt-3 font-mono text-sm"
               :disabled="!editForm.optional_instructions_enabled"
               :placeholder="t('admin.groups.optionalInstructions.placeholder')"
             />
             <div class="mt-1 flex justify-between text-xs text-gray-500 dark:text-gray-400">
               <span>{{ t("admin.groups.optionalInstructions.hint") }}</span>
-              <span>{{ editForm.optional_instructions.length }}/16384</span>
+              <span
+                >{{ editForm.optional_instructions.length }}/{{
+                  OPTIONAL_INSTRUCTIONS_MAX_CHARACTERS
+                }}</span
+              >
             </div>
           </div>
 
@@ -4178,6 +4186,7 @@ const { t } = useI18n();
 const appStore = useAppStore();
 const onboardingStore = useOnboardingStore();
 
+const OPTIONAL_INSTRUCTIONS_MAX_CHARACTERS = 65_536;
 const ALWAYS_VISIBLE_COLUMNS = new Set(["name", "actions"]);
 // Default hidden columns (hidden on first load / after schema bumps).
 const DEFAULT_HIDDEN_COLUMNS = ["id"];
