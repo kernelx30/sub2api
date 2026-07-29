@@ -3,12 +3,28 @@
 package service
 
 import (
+	"context"
 	"net/http"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGatewayPoolAutoPriorityGlobalSwitch(t *testing.T) {
+	repo := &upstreamBillingProbeSettingRepo{values: map[string]string{
+		SettingKeyPoolAutoPrioritySettings: `{"enabled":false,"interval_minutes":5}`,
+	}}
+	svc := &GatewayService{settingService: NewSettingService(repo, &config.Config{})}
+	require.False(t, svc.poolAutoPriorityGloballyEnabled(context.Background()))
+
+	repo.mu.Lock()
+	repo.values[SettingKeyPoolAutoPrioritySettings] = `{"enabled":true,"interval_minutes":5}`
+	repo.mu.Unlock()
+	svc.poolAutoPriorityCheckedAt.Store(0)
+	require.True(t, svc.poolAutoPriorityGloballyEnabled(context.Background()))
+}
 
 func TestFilterByMinPriority(t *testing.T) {
 	t.Run("empty slice", func(t *testing.T) {
@@ -273,21 +289,25 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 			freshUntil = now.Add(-time.Minute)
 		}
 		return map[string]any{
-			UpstreamBillingProbeEnabledExtraKey: true,
+			PoolAutoPriorityEnabledExtraKey: true,
 			UpstreamBillingProbeExtraKey: map[string]any{
-				"status":          status,
-				"latency_ms":      latencyMS,
-				"last_attempt_at": now,
-				"fresh_until":     freshUntil,
-				"failure_count":   failureCount,
+				"status":                       status,
+				"model_probe_status":           status,
+				"model_probe_latency_ms":       latencyMS,
+				"model_probe_last_attempt_at":  now,
+				"model_probe_fresh_until":       freshUntil,
+				"model_probe_failure_count":     failureCount,
 			},
 		}
+	}
+	poolAccount := func(id int64, priority int, extra map[string]any) *Account {
+		return &Account{ID: id, Priority: priority, Credentials: map[string]any{"pool_mode": true}, Extra: extra}
 	}
 
 	t.Run("healthy faster account wins over lower manual priority", func(t *testing.T) {
 		accounts := []accountWithLoad{
-			{account: &Account{ID: 1, Priority: 1, Extra: snapshotExtra(UpstreamBillingProbeStatusOK, 2200, 0, true)}, loadInfo: &AccountLoadInfo{}},
-			{account: &Account{ID: 2, Priority: 9, Extra: snapshotExtra(UpstreamBillingProbeStatusOK, 900, 0, true)}, loadInfo: &AccountLoadInfo{}},
+			{account: poolAccount(1, 1, snapshotExtra(UpstreamBillingProbeStatusOK, 2200, 0, true)), loadInfo: &AccountLoadInfo{}},
+			{account: poolAccount(2, 9, snapshotExtra(UpstreamBillingProbeStatusOK, 900, 0, true)), loadInfo: &AccountLoadInfo{}},
 		}
 
 		result := filterByBestProbeAutoPriority(accounts, now)
@@ -298,8 +318,8 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 
 	t.Run("close healthy latency keeps both candidates for manual tie breakers", func(t *testing.T) {
 		accounts := []accountWithLoad{
-			{account: &Account{ID: 1, Priority: 1, Extra: snapshotExtra(UpstreamBillingProbeStatusOK, 1000, 0, true)}, loadInfo: &AccountLoadInfo{}},
-			{account: &Account{ID: 2, Priority: 2, Extra: snapshotExtra(UpstreamBillingProbeStatusOK, 1150, 0, true)}, loadInfo: &AccountLoadInfo{}},
+			{account: poolAccount(1, 1, snapshotExtra(UpstreamBillingProbeStatusOK, 1000, 0, true)), loadInfo: &AccountLoadInfo{}},
+			{account: poolAccount(2, 2, snapshotExtra(UpstreamBillingProbeStatusOK, 1150, 0, true)), loadInfo: &AccountLoadInfo{}},
 		}
 
 		result := filterByBestProbeAutoPriority(accounts, now)
@@ -311,8 +331,8 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 
 	t.Run("failed account is ranked after unmeasured account", func(t *testing.T) {
 		accounts := []accountWithLoad{
-			{account: &Account{ID: 1, Priority: 1, Extra: snapshotExtra(UpstreamBillingProbeStatusFailed, 0, 2, true)}, loadInfo: &AccountLoadInfo{}},
-			{account: &Account{ID: 2, Priority: 5}, loadInfo: &AccountLoadInfo{}},
+			{account: poolAccount(1, 1, snapshotExtra(UpstreamBillingProbeStatusFailed, 0, 2, true)), loadInfo: &AccountLoadInfo{}},
+			{account: poolAccount(2, 5, nil), loadInfo: &AccountLoadInfo{}},
 		}
 
 		result := filterByBestProbeAutoPriority(accounts, now)
@@ -328,8 +348,9 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 				account: &Account{
 					ID:       1,
 					Priority: 1,
+					Credentials: map[string]any{"pool_mode": true},
 					Extra: map[string]any{
-						UpstreamBillingProbeEnabledExtraKey: true,
+						PoolAutoPriorityEnabledExtraKey: true,
 						UpstreamBillingProbeExtraKey: map[string]any{
 							"status":                  UpstreamBillingProbeStatusOK,
 							"latency_ms":              int64(350),
@@ -348,8 +369,9 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 				account: &Account{
 					ID:       2,
 					Priority: 9,
+					Credentials: map[string]any{"pool_mode": true},
 					Extra: map[string]any{
-						UpstreamBillingProbeEnabledExtraKey: true,
+						PoolAutoPriorityEnabledExtraKey: true,
 						UpstreamBillingProbeExtraKey: map[string]any{
 							"status":                  UpstreamBillingProbeStatusOK,
 							"latency_ms":              int64(1800),
@@ -378,8 +400,9 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 				account: &Account{
 					ID:       1,
 					Priority: 1,
+					Credentials: map[string]any{"pool_mode": true},
 					Extra: map[string]any{
-						UpstreamBillingProbeEnabledExtraKey: true,
+						PoolAutoPriorityEnabledExtraKey: true,
 						UpstreamBillingProbeExtraKey: map[string]any{
 							"status":                 UpstreamBillingProbeStatusOK,
 							"latency_ms":             int64(300),
@@ -396,8 +419,9 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 				account: &Account{
 					ID:       2,
 					Priority: 9,
+					Credentials: map[string]any{"pool_mode": true},
 					Extra: map[string]any{
-						UpstreamBillingProbeEnabledExtraKey: true,
+						PoolAutoPriorityEnabledExtraKey: true,
 						UpstreamBillingProbeExtraKey: map[string]any{
 							"status":                 UpstreamBillingProbeStatusOK,
 							"latency_ms":             int64(1800),
@@ -430,4 +454,19 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 		require.Equal(t, int64(1), result[0].account.ID)
 		require.Equal(t, int64(2), result[1].account.ID)
 	})
+
+	t.Run("explicit pool opt out is excluded from dynamic ordering", func(t *testing.T) {
+		optingOut := snapshotExtra(UpstreamBillingProbeStatusOK, 100, 0, true)
+		optingOut[PoolAutoPriorityEnabledExtraKey] = false
+		accounts := []accountWithLoad{
+			{account: poolAccount(1, 1, snapshotExtra(UpstreamBillingProbeStatusOK, 900, 0, true)), loadInfo: &AccountLoadInfo{}},
+			{account: poolAccount(2, 1, optingOut), loadInfo: &AccountLoadInfo{}},
+		}
+
+		result := filterByBestProbeAutoPriority(accounts, now)
+
+		require.Len(t, result, 1)
+		require.Equal(t, int64(1), result[0].account.ID)
+	})
 }
+	"github.com/Wei-Shaw/sub2api/internal/config"

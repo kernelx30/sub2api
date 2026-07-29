@@ -1635,6 +1635,23 @@
         />
       </div>
 
+      <div
+        v-if="account?.platform === 'openai' && account?.type === 'apikey' && poolModeEnabled"
+        class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div>
+          <label class="input-label mb-0">{{ t('admin.accounts.poolAutoPriority.enabled') }}</label>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            {{ t('admin.accounts.poolAutoPriority.enabledHint') }}
+          </p>
+        </div>
+        <Toggle
+          v-model="poolAutoPriorityEnabled"
+          data-testid="pool-auto-priority-enabled"
+          :aria-label="t('admin.accounts.poolAutoPriority.enabled')"
+        />
+      </div>
+
       <OllamaCloudUsageSettings
         v-if="account?.ollama_cloud_usage?.eligible"
         :account="account"
@@ -2791,6 +2808,7 @@ const autoPause7dThreshold = ref<number | null>(null)
 const autoPause5hDisabled = ref(false)
 const autoPause7dDisabled = ref(false)
 const upstreamBillingAutoProbeEnabled = ref(false)
+const poolAutoPriorityEnabled = ref(true)
 const mixedScheduling = ref(false) // For antigravity accounts: enable mixed scheduling
 const allowOverages = ref(false) // For antigravity accounts: enable AI Credits overages
 const antigravityProjectId = ref('')
@@ -3273,6 +3291,9 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 	autoPause5hDisabled.value = extra?.auto_pause_5h_disabled === true
 	autoPause7dDisabled.value = extra?.auto_pause_7d_disabled === true
 	upstreamBillingAutoProbeEnabled.value = extra?.upstream_billing_probe_enabled === true
+	poolAutoPriorityEnabled.value = typeof extra?.pool_auto_priority_enabled === 'boolean'
+		? extra.pool_auto_priority_enabled
+		: true
 
   // Load OpenAI passthrough toggle (OpenAI OAuth/SetupToken/API Key)
   openaiPassthroughEnabled.value = false
@@ -4543,6 +4564,7 @@ const handleSubmit = async () => {
           newExtra.openai_responses_mode = openAIResponsesMode.value
         }
 			newExtra.upstream_billing_probe_enabled = upstreamBillingAutoProbeEnabled.value
+			newExtra.pool_auto_priority_enabled = poolAutoPriorityEnabled.value
 		}
 		if (autoPause5hThreshold.value != null && autoPause5hThreshold.value > 0) {
 			newExtra.auto_pause_5h_threshold = autoPause5hThreshold.value / 100

@@ -43,7 +43,7 @@ func TestListDueUpstreamBillingProbeAccountsHandlesInvalidCalendarDate(t *testin
 	dueID := insert("probe-due", "2026-07-14T11:59:59Z")
 	_ = insert("probe-not-due", "2026-07-14T12:00:01Z")
 
-	accounts, err := repo.ListDueUpstreamBillingProbeAccounts(ctx, now, 20)
+	accounts, err := repo.ListDueUpstreamBillingProbeAccounts(ctx, now, true, true, 20)
 	require.NoError(t, err)
 	require.Len(t, accounts, 2)
 	require.Equal(t, invalidID, accounts[0].ID)
@@ -106,7 +106,7 @@ func TestListDueUpstreamBillingProbeAccountsParsesNanosecondTimestamps(t *testin
 	dueSecond := insertUpstreamBillingProbeAccount(ctx, t, tx,
 		"probe-nano-due-7digits", rfc3339WithFraction(now.Add(-2*time.Minute), "1234567"))
 
-	accounts, err := repo.ListDueUpstreamBillingProbeAccounts(ctx, now, 20)
+	accounts, err := repo.ListDueUpstreamBillingProbeAccounts(ctx, now, true, true, 20)
 	require.NoError(t, err)
 	require.Len(t, accounts, 3)
 	require.Equal(t, dueFirst, accounts[0].ID)
@@ -138,7 +138,7 @@ func TestListDueUpstreamBillingProbeAccountsSelectsEarliestDueAcrossIDs(t *testi
 			rfc3339WithFraction(due, "123456789")))
 	}
 
-	accounts, err := repo.ListDueUpstreamBillingProbeAccounts(ctx, now, 20)
+	accounts, err := repo.ListDueUpstreamBillingProbeAccounts(ctx, now, true, true, 20)
 	require.NoError(t, err)
 	require.Len(t, accounts, 20)
 	got := make([]int64, 0, len(accounts))

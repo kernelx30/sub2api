@@ -397,16 +397,22 @@ func (r *accountRepository) ListCRSAccountIDs(ctx context.Context) (map[string]i
 }
 
 func (r *accountRepository) Update(ctx context.Context, account *service.Account) error {
-	return r.updateAccount(ctx, account, nil)
+	return r.updateAccount(ctx, account, nil, nil)
 }
 
 // UpdateWithUpstreamBillingProbeEnabled applies an explicit probe switch in the
 // same row-lock transaction as the rest of an admin account edit.
 func (r *accountRepository) UpdateWithUpstreamBillingProbeEnabled(ctx context.Context, account *service.Account, enabled bool) error {
-	return r.updateAccount(ctx, account, &enabled)
+	return r.updateAccount(ctx, account, &enabled, nil)
 }
 
-func (r *accountRepository) updateAccount(ctx context.Context, account *service.Account, explicitProbeEnabled *bool) error {
+// UpdateWithProbeControls atomically applies both independent probe controls
+// while preserving the latest concurrent probe snapshot.
+func (r *accountRepository) UpdateWithProbeControls(ctx context.Context, account *service.Account, billingEnabled, poolAutoPriorityEnabled *bool) error {
+	return r.updateAccount(ctx, account, billingEnabled, poolAutoPriorityEnabled)
+}
+
+func (r *accountRepository) updateAccount(ctx context.Context, account *service.Account, explicitProbeEnabled, explicitPoolAutoPriorityEnabled *bool) error {
 	if account == nil {
 		return nil
 	}
@@ -430,7 +436,7 @@ func (r *accountRepository) updateAccount(ctx context.Context, account *service.
 		}
 	}
 
-	updated, err := r.updateLockedAccount(ctx, client, account, explicitProbeEnabled)
+	updated, err := r.updateLockedAccount(ctx, client, account, explicitProbeEnabled, explicitPoolAutoPriorityEnabled)
 	if err != nil {
 		return translatePersistenceError(err, service.ErrAccountNotFound, nil)
 	}
@@ -452,8 +458,8 @@ func (r *accountRepository) updateAccount(ctx context.Context, account *service.
 	return nil
 }
 
-func (r *accountRepository) updateLockedAccount(ctx context.Context, client *dbent.Client, account *service.Account, explicitProbeEnabled *bool) (*dbent.Account, error) {
-	extra, err := lockAndMergeAccountProbeExtra(ctx, client, account, explicitProbeEnabled)
+func (r *accountRepository) updateLockedAccount(ctx context.Context, client *dbent.Client, account *service.Account, explicitProbeEnabled, explicitPoolAutoPriorityEnabled *bool) (*dbent.Account, error) {
+	extra, err := lockAndMergeAccountProbeExtra(ctx, client, account, explicitProbeEnabled, explicitPoolAutoPriorityEnabled)
 	if err != nil {
 		return nil, err
 	}
@@ -542,7 +548,7 @@ func (r *accountRepository) updateLockedAccount(ctx context.Context, client *dbe
 	return builder.Save(ctx)
 }
 
-func lockAndMergeAccountProbeExtra(ctx context.Context, client *dbent.Client, account *service.Account, explicitProbeEnabled *bool) (map[string]any, error) {
+func lockAndMergeAccountProbeExtra(ctx context.Context, client *dbent.Client, account *service.Account, explicitProbeEnabled, explicitPoolAutoPriorityEnabled *bool) (map[string]any, error) {
 	credentials, err := json.Marshal(normalizeJSONMap(account.Credentials))
 	if err != nil {
 		return nil, err
@@ -569,6 +575,7 @@ func lockAndMergeAccountProbeExtra(ctx context.Context, client *dbent.Client, ac
 			),
 			proxy_id IS NOT DISTINCT FROM $5,
 			extra -> 'upstream_billing_probe_enabled',
+			extra -> 'pool_auto_priority_enabled',
 			extra -> 'upstream_billing_probe',
 			extra -> 'ollama_cloud_usage_session',
 			extra -> 'ollama_cloud_usage_auto_refresh',
@@ -593,6 +600,7 @@ func lockAndMergeAccountProbeExtra(ctx context.Context, client *dbent.Client, ac
 		ollamaGroupIdentityUnchanged bool
 		ollamaProxyIdentityUnchanged bool
 		currentEnabled               []byte
+		currentPoolAutoPriorityEnabled []byte
 		currentSnapshot              []byte
 		currentOllamaSession         []byte
 		currentOllamaAutoRefresh     []byte
@@ -603,6 +611,7 @@ func lockAndMergeAccountProbeExtra(ctx context.Context, client *dbent.Client, ac
 		&ollamaGroupIdentityUnchanged,
 		&ollamaProxyIdentityUnchanged,
 		&currentEnabled,
+		&currentPoolAutoPriorityEnabled,
 		&currentSnapshot,
 		&currentOllamaSession,
 		&currentOllamaAutoRefresh,
@@ -617,6 +626,7 @@ func lockAndMergeAccountProbeExtra(ctx context.Context, client *dbent.Client, ac
 	extra := copyJSONMap(normalizeJSONMap(account.Extra))
 	for _, key := range []string{
 		service.UpstreamBillingProbeEnabledExtraKey,
+		service.PoolAutoPriorityEnabledExtraKey,
 		service.UpstreamBillingProbeExtraKey,
 		service.OllamaCloudUsageSessionExtraKey,
 		service.OllamaCloudUsageAutoRefreshExtraKey,
@@ -639,7 +649,20 @@ func lockAndMergeAccountProbeExtra(ctx context.Context, client *dbent.Client, ac
 			}
 		}
 	}
-	if identityUnchanged && !probeExplicitlyDisabled {
+	if probeAccount && explicitPoolAutoPriorityEnabled != nil {
+		extra[service.PoolAutoPriorityEnabledExtraKey] = *explicitPoolAutoPriorityEnabled
+	} else if probeAccount {
+		if enabled, ok, err := decodeAccountExtraJSON(currentPoolAutoPriorityEnabled); err != nil {
+			return nil, err
+		} else if ok {
+			extra[service.PoolAutoPriorityEnabledExtraKey] = enabled
+		}
+	}
+	poolAutoPriorityActive := account.IsPoolMode()
+	if enabled, ok := extra[service.PoolAutoPriorityEnabledExtraKey].(bool); ok {
+		poolAutoPriorityActive = poolAutoPriorityActive && enabled
+	}
+	if identityUnchanged && (!probeExplicitlyDisabled || poolAutoPriorityActive) {
 		if snapshot, ok, err := decodeAccountExtraJSON(currentSnapshot); err != nil {
 			return nil, err
 		} else if ok {
@@ -2459,7 +2482,9 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		return err
 	}
 
-	clearProbeSnapshot := upstreamBillingProbeExplicitlyDisabled(updates) || upstreamBillingProbeSnapshotClearRequested(updates)
+	// Billing and pool-priority controls share one observation snapshot. Turning
+	// off either control must not erase data still used by the other one.
+	clearProbeSnapshot := upstreamBillingProbeSnapshotClearRequested(updates)
 	durableSchedulerChange := shouldEnqueueSchedulerOutboxForExtraUpdates(updates) || clearProbeSnapshot
 	baseCtx := ctx
 	contextTx := dbent.TxFromContext(ctx)
@@ -2584,6 +2609,14 @@ func (r *accountRepository) updateUpstreamBillingProbeSnapshotInTx(
 	if err != nil {
 		return err
 	}
+	var expectedPoolAutoPriorityEnabled any
+	if account.Extra != nil {
+		expectedPoolAutoPriorityEnabled = account.Extra[service.PoolAutoPriorityEnabledExtraKey]
+	}
+	expectedPoolAutoPriorityEnabledJSON, err := json.Marshal(expectedPoolAutoPriorityEnabled)
+	if err != nil {
+		return err
+	}
 	client := clientFromContext(ctx, r.client)
 	proxyMatches, err := lockAndMatchProbeProxyIdentity(ctx, client, account)
 	if err != nil {
@@ -2606,8 +2639,9 @@ func (r *accountRepository) updateUpstreamBillingProbeSnapshotInTx(
 			AND proxy_id IS NOT DISTINCT FROM $6
 			AND COALESCE(extra -> 'upstream_billing_probe', 'null'::jsonb) = $7::jsonb
 			AND COALESCE(extra -> 'upstream_billing_probe_enabled', 'null'::jsonb) = $8::jsonb
+			AND COALESCE(extra -> 'pool_auto_priority_enabled', 'null'::jsonb) = $9::jsonb
 			AND deleted_at IS NULL
-	`, string(payload), account.ID, account.Platform, account.Type, string(credentials), proxyID, string(expectedSnapshotJSON), string(expectedEnabledJSON))
+	`, string(payload), account.ID, account.Platform, account.Type, string(credentials), proxyID, string(expectedSnapshotJSON), string(expectedEnabledJSON), string(expectedPoolAutoPriorityEnabledJSON))
 	if err != nil {
 		return err
 	}
@@ -2763,6 +2797,12 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		}
 		updates.Extra[service.UpstreamBillingProbeEnabledExtraKey] = *updates.ProbeEnabled
 	}
+	if updates.PoolAutoPriorityEnabled != nil {
+		if updates.Extra == nil {
+			updates.Extra = make(map[string]any)
+		}
+		updates.Extra[service.PoolAutoPriorityEnabledExtraKey] = *updates.PoolAutoPriorityEnabled
+	}
 	// JSONB 需要合并而非覆盖，使用 raw SQL 保持旧行为。
 	credentialPlaceholder := ""
 	if len(updates.Credentials) > 0 {
@@ -2796,7 +2836,7 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 			extraExpression += " || $" + itoa(idx) + "::jsonb"
 			args = append(args, payload)
 			idx++
-			if upstreamBillingProbeExplicitlyDisabled(updates.Extra) || upstreamBillingProbeSnapshotClearRequested(updates.Extra) {
+			if upstreamBillingProbeSnapshotClearRequested(updates.Extra) {
 				extraExpression = "(" + extraExpression + ") - 'upstream_billing_probe'"
 			}
 			if ollamaCloudUsageSnapshotClearRequested(updates.Extra) {
@@ -3364,7 +3404,7 @@ func (r *accountRepository) FindByExtraField(ctx context.Context, key string, va
 // Without this, every nanosecond timestamp is treated as malformed and the
 // fail-open ordering pins the cycle to the lowest account IDs, starving the
 // rest of the pool.
-func (r *accountRepository) ListDueUpstreamBillingProbeAccounts(ctx context.Context, now time.Time, limit int) ([]service.Account, error) {
+func (r *accountRepository) ListDueUpstreamBillingProbeAccounts(ctx context.Context, now time.Time, includeBilling, includePoolPriority bool, limit int) ([]service.Account, error) {
 	if limit <= 0 {
 		return []service.Account{}, nil
 	}
@@ -3384,10 +3424,14 @@ func (r *accountRepository) ListDueUpstreamBillingProbeAccounts(ctx context.Cont
 				AND platform = 'openai'
 				AND type = 'apikey'
 				AND (
-					extra @> '{"upstream_billing_probe_enabled": true}'::jsonb
+					($3 AND extra @> '{"upstream_billing_probe_enabled": true}'::jsonb)
 					OR (
-						NOT (extra ? 'upstream_billing_probe_enabled')
+						$4
 						AND COALESCE(credentials ->> 'pool_mode', 'false') = 'true'
+						AND (
+							extra @> '{"pool_auto_priority_enabled": true}'::jsonb
+							OR NOT (extra ? 'pool_auto_priority_enabled')
+						)
 					)
 				)
 		), parsed AS MATERIALIZED (
@@ -3438,7 +3482,7 @@ func (r *accountRepository) ListDueUpstreamBillingProbeAccounts(ctx context.Cont
 			CASE WHEN valid_next_probe_at THEN parsed_next_probe_at::timestamptz END ASC NULLS FIRST,
 			id ASC
 		LIMIT $2
-	`, now.UTC(), limit)
+	`, now.UTC(), limit, includeBilling, includePoolPriority)
 	if err != nil {
 		return nil, err
 	}

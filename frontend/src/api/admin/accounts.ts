@@ -23,6 +23,7 @@ import type {
   CheckMixedChannelResponse,
   UpstreamBillingProbeResult,
   UpstreamBillingProbeSettings,
+  PoolAutoPrioritySettings,
   OllamaCloudUsageSettings,
   OllamaCloudUsageState
 } from '@/types'
@@ -871,6 +872,25 @@ export async function setUpstreamBillingProbeEnabled(id: number, enabled: boolea
   await apiClient.put(`/admin/accounts/${id}/upstream-billing-probe`, { enabled })
 }
 
+export async function getPoolAutoPrioritySettings(): Promise<PoolAutoPrioritySettings> {
+  const { data } = await apiClient.get<PoolAutoPrioritySettings>('/admin/accounts/pool-auto-priority/settings')
+  return data
+}
+
+export async function updatePoolAutoPrioritySettings(
+  settings: PoolAutoPrioritySettings
+): Promise<PoolAutoPrioritySettings> {
+  const { data } = await apiClient.put<PoolAutoPrioritySettings>(
+    '/admin/accounts/pool-auto-priority/settings',
+    settings
+  )
+  return data
+}
+
+export async function setPoolAutoPriorityEnabled(id: number, enabled: boolean): Promise<void> {
+  await apiClient.put(`/admin/accounts/${id}/pool-auto-priority`, { enabled })
+}
+
 export async function probeUpstreamBilling(id: number): Promise<UpstreamBillingProbeResult> {
   const { data } = await apiClient.post<UpstreamBillingProbeResult>(`/admin/accounts/${id}/upstream-billing-probe`)
   return data
@@ -978,6 +998,9 @@ export const accountsAPI = {
   getUpstreamBillingProbeSettings,
   updateUpstreamBillingProbeSettings,
   setUpstreamBillingProbeEnabled,
+  getPoolAutoPrioritySettings,
+  updatePoolAutoPrioritySettings,
+  setPoolAutoPriorityEnabled,
   probeUpstreamBilling,
   probeUpstreamBillingBatch,
   getOllamaCloudUsageSettings,

@@ -392,6 +392,10 @@ const (
 	// for probing remote Sub2API API-key billing metadata.
 	SettingKeyUpstreamBillingProbeSettings = "upstream_billing_probe_settings"
 
+	// SettingKeyPoolAutoPrioritySettings stores the independent global switch and
+	// cadence for pool-mode model health probes used by runtime account ordering.
+	SettingKeyPoolAutoPrioritySettings = "pool_auto_priority_settings"
+
 	// SettingKeyOllamaCloudUsageSettings stores the opt-in global runner switch and interval.
 	SettingKeyOllamaCloudUsageSettings = "ollama_cloud_usage_settings"
 

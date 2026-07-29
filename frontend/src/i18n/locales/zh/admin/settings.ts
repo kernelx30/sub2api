@@ -348,6 +348,16 @@ export default {
         saved: '上游倍率自动探测设置已保存',
         saveFailed: '保存上游倍率自动探测设置失败'
       },
+      poolAutoPriority: {
+        title: '池模式自动测速排序',
+        description: '独立测试池模式 OpenAI 上游的模型可用性和响应延迟，并在运行时优先选择健康且更快的账号；不会改写手动优先级。',
+        enabled: '启用自动优先级',
+        enabledHint: '此开关与上游倍率探测完全独立。开启后只处理账号自身已选择参与自动优先级的池模式账号。',
+        intervalMinutes: '测速周期（分钟）',
+        intervalHint: '范围 5–60 分钟，推荐 5 分钟。延迟接近时仍按账号手动优先级稳定排序。',
+        saved: '池模式自动优先级设置已保存',
+        saveFailed: '保存池模式自动优先级设置失败'
+      },
       ollamaCloudUsage: {
         title: 'Ollama Cloud 用量刷新',
         description: '在模型请求驱动下刷新账号在 Ollama 官方设置页展示的用量；默认关闭。无新请求时不会自动抓取。',

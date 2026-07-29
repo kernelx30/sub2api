@@ -455,6 +455,7 @@ func normalizeGrokMediaEligibilityUpdateExtra(account *Account, input *UpdateAcc
 func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]any) (*Account, error) {
 	// Probe/session state is system-managed. New accounts always start with automatic refresh disabled.
 	delete(accountExtra, UpstreamBillingProbeEnabledExtraKey)
+	delete(accountExtra, PoolAutoPriorityEnabledExtraKey)
 	delete(accountExtra, UpstreamBillingProbeExtraKey)
 	delete(accountExtra, OllamaCloudUsageSessionExtraKey)
 	delete(accountExtra, OllamaCloudUsageAutoRefreshExtraKey)
@@ -480,6 +481,15 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 			account.Extra = make(map[string]any)
 		}
 		account.Extra[UpstreamBillingProbeEnabledExtraKey] = true
+	}
+	if input.PoolAutoPriorityEnabled != nil {
+		if !isUpstreamBillingProbeAccount(account) {
+			return nil, ErrUpstreamBillingProbeAccountInvalid
+		}
+		if account.Extra == nil {
+			account.Extra = make(map[string]any)
+		}
+		account.Extra[PoolAutoPriorityEnabledExtraKey] = *input.PoolAutoPriorityEnabled
 	}
 	// 预计算固定时间重置的下次重置时间
 	if account.Extra != nil {
@@ -594,8 +604,8 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	return account, nil
 }
 
-type accountProbeEnabledAtomicUpdater interface {
-	UpdateWithUpstreamBillingProbeEnabled(context.Context, *Account, bool) error
+type accountProbeControlsAtomicUpdater interface {
+	UpdateWithProbeControls(context.Context, *Account, *bool, *bool) error
 }
 
 func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *UpdateAccountInput) (*Account, error) {
@@ -668,6 +678,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	// Extra 使用 map：需要区分“未提供(nil)”与“显式清空({})”。
 	// 关闭配额限制时前端会删除 quota_* 键并提交 extra:{}，此时也必须落库。
 	var requestedProbeEnabledUpdate *bool
+	var requestedPoolAutoPriorityEnabledUpdate *bool
 	if input.Extra != nil {
 		requestedProbeEnabled, hasRequestedProbeEnabled := normalizedExtra[UpstreamBillingProbeEnabledExtraKey]
 		if hasRequestedProbeEnabled {
@@ -677,7 +688,16 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			}
 			requestedProbeEnabledUpdate = &enabled
 		}
+		requestedPoolAutoPriorityEnabled, hasRequestedPoolAutoPriorityEnabled := normalizedExtra[PoolAutoPriorityEnabledExtraKey]
+		if hasRequestedPoolAutoPriorityEnabled {
+			enabled, ok := requestedPoolAutoPriorityEnabled.(bool)
+			if !ok {
+				return nil, infraerrors.BadRequest("INVALID_POOL_AUTO_PRIORITY_ENABLED", "pool_auto_priority_enabled must be a boolean")
+			}
+			requestedPoolAutoPriorityEnabledUpdate = &enabled
+		}
 		delete(normalizedExtra, UpstreamBillingProbeEnabledExtraKey)
+		delete(normalizedExtra, PoolAutoPriorityEnabledExtraKey)
 		delete(normalizedExtra, UpstreamBillingProbeExtraKey)
 		delete(normalizedExtra, OllamaCloudUsageSessionExtraKey)
 		delete(normalizedExtra, OllamaCloudUsageAutoRefreshExtraKey)
@@ -691,6 +711,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			"quota_weekly_start",
 			grokBillingExtraKey,
 			UpstreamBillingProbeEnabledExtraKey,
+			PoolAutoPriorityEnabledExtraKey,
 			UpstreamBillingProbeExtraKey,
 			OllamaCloudUsageSessionExtraKey,
 			OllamaCloudUsageAutoRefreshExtraKey,
@@ -705,6 +726,13 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 				normalizedExtra[UpstreamBillingProbeEnabledExtraKey] = requestedProbeEnabled
 			} else {
 				delete(normalizedExtra, UpstreamBillingProbeEnabledExtraKey)
+			}
+		}
+		if hasRequestedPoolAutoPriorityEnabled {
+			if isUpstreamBillingProbeAccount(account) {
+				normalizedExtra[PoolAutoPriorityEnabledExtraKey] = requestedPoolAutoPriorityEnabled
+			} else {
+				delete(normalizedExtra, PoolAutoPriorityEnabledExtraKey)
 			}
 		}
 		account.Extra = normalizedExtra
@@ -741,6 +769,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		delete(account.Extra, UpstreamBillingProbeExtraKey)
 		if !isUpstreamBillingProbeAccount(account) {
 			delete(account.Extra, UpstreamBillingProbeEnabledExtraKey)
+			delete(account.Extra, PoolAutoPriorityEnabledExtraKey)
 		}
 	}
 	if account.Extra != nil {
@@ -806,22 +835,29 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		}
 	}
 
-	probeEnabledAppliedAtomically := false
-	if requestedProbeEnabledUpdate != nil && isUpstreamBillingProbeAccount(account) {
-		if updater, ok := s.accountRepo.(accountProbeEnabledAtomicUpdater); ok {
-			if err := updater.UpdateWithUpstreamBillingProbeEnabled(ctx, account, *requestedProbeEnabledUpdate); err != nil {
+	probeControlsAppliedAtomically := false
+	if (requestedProbeEnabledUpdate != nil || requestedPoolAutoPriorityEnabledUpdate != nil) && isUpstreamBillingProbeAccount(account) {
+		if updater, ok := s.accountRepo.(accountProbeControlsAtomicUpdater); ok {
+			if err := updater.UpdateWithProbeControls(ctx, account, requestedProbeEnabledUpdate, requestedPoolAutoPriorityEnabledUpdate); err != nil {
 				return nil, err
 			}
-			probeEnabledAppliedAtomically = true
+			probeControlsAppliedAtomically = true
 		}
 	}
-	if !probeEnabledAppliedAtomically {
+	if !probeControlsAppliedAtomically {
 		if err := s.accountRepo.Update(ctx, account); err != nil {
 			return nil, err
 		}
 		if requestedProbeEnabledUpdate != nil && isUpstreamBillingProbeAccount(account) {
 			if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{
 				UpstreamBillingProbeEnabledExtraKey: *requestedProbeEnabledUpdate,
+			}); err != nil {
+				return nil, err
+			}
+		}
+		if requestedPoolAutoPriorityEnabledUpdate != nil && isUpstreamBillingProbeAccount(account) {
+			if err := s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{
+				PoolAutoPriorityEnabledExtraKey: *requestedPoolAutoPriorityEnabledUpdate,
 			}); err != nil {
 				return nil, err
 			}
@@ -877,6 +913,7 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
 	// Managed probe/session state may only enter through dedicated typed endpoints.
 	delete(input.Extra, UpstreamBillingProbeEnabledExtraKey)
+	delete(input.Extra, PoolAutoPriorityEnabledExtraKey)
 	delete(input.Extra, UpstreamBillingProbeExtraKey)
 	delete(input.Extra, OllamaCloudUsageSessionExtraKey)
 	delete(input.Extra, OllamaCloudUsageAutoRefreshExtraKey)
@@ -910,14 +947,14 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 
 	// 预取所有目标账号，供凭据守卫/代理守卫/混合渠道检查共用，避免多次 DB 查询。
 	var cachedTargets []*Account
-	if len(input.Credentials) > 0 || input.ProxyID != nil || needMixedChannelCheck || hasLongContextBillingUpdate || input.ProbeEnabled != nil {
+	if len(input.Credentials) > 0 || input.ProxyID != nil || needMixedChannelCheck || hasLongContextBillingUpdate || input.ProbeEnabled != nil || input.PoolAutoPriorityEnabled != nil {
 		loaded, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
 			return nil, err
 		}
 		cachedTargets = loaded
 	}
-	if input.ProbeEnabled != nil {
+	if input.ProbeEnabled != nil || input.PoolAutoPriorityEnabled != nil {
 		targetsByID := make(map[int64]*Account, len(cachedTargets))
 		for _, account := range cachedTargets {
 			if account != nil {
@@ -1008,12 +1045,19 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		Credentials:  input.Credentials,
 		Extra:        input.Extra,
 		ProbeEnabled: input.ProbeEnabled,
+		PoolAutoPriorityEnabled: input.PoolAutoPriorityEnabled,
 	}
 	if input.ProbeEnabled != nil {
 		if repoUpdates.Extra == nil {
 			repoUpdates.Extra = make(map[string]any)
 		}
 		repoUpdates.Extra[UpstreamBillingProbeEnabledExtraKey] = *input.ProbeEnabled
+	}
+	if input.PoolAutoPriorityEnabled != nil {
+		if repoUpdates.Extra == nil {
+			repoUpdates.Extra = make(map[string]any)
+		}
+		repoUpdates.Extra[PoolAutoPriorityEnabledExtraKey] = *input.PoolAutoPriorityEnabled
 	}
 	if updatesUpstreamBillingProbeIdentity(input.Credentials) || input.ProxyID != nil {
 		if repoUpdates.Extra == nil {

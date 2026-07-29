@@ -701,7 +701,10 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		// Probe auto-priority is runtime-only and never mutates Account.Priority.
 		for len(available) > 0 {
 			// 1. Pick accounts with the best fresh probe status / latency.
-			candidates := filterByBestProbeAutoPriority(available, time.Now())
+			candidates := available
+			if s.poolAutoPriorityGloballyEnabled(ctx) {
+				candidates = filterByBestProbeAutoPriority(available, time.Now())
+			}
 			// 2. Keep manual priority as the first stable tie-breaker.
 			candidates = filterByMinPriority(candidates)
 			// 3. Optional use-it-or-lose-it: prefer accounts whose session window resets soonest.
@@ -1498,15 +1501,17 @@ func filterByBestProbeAutoPriority(accounts []accountWithLoad, now time.Time) []
 		return accounts
 	}
 	infos := make([]probeAutoPriorityInfo, len(accounts))
+	signals := make([]bool, len(accounts))
 	hasSignal := false
 	bestTier := probeAutoPriorityTierUnsupported
 	for i, candidate := range accounts {
 		info, signal := accountProbeAutoPriority(candidate.account, now)
 		infos[i] = info
+		signals[i] = signal
 		if signal {
 			hasSignal = true
 		}
-		if info.tier < bestTier {
+		if signal && info.tier < bestTier {
 			bestTier = info.tier
 		}
 	}
@@ -1549,7 +1554,7 @@ func filterByBestProbeAutoPriority(accounts []accountWithLoad, now time.Time) []
 		}
 	default:
 		for i, candidate := range accounts {
-			if infos[i].tier == bestTier {
+			if signals[i] && infos[i].tier == bestTier {
 				result = append(result, candidate)
 			}
 		}
@@ -1560,9 +1565,32 @@ func filterByBestProbeAutoPriority(accounts []accountWithLoad, now time.Time) []
 	return result
 }
 
+const poolAutoPrioritySettingsCacheTTL = 30 * time.Second
+
+func (s *GatewayService) poolAutoPriorityGloballyEnabled(ctx context.Context) bool {
+	if s == nil || s.settingService == nil {
+		return true
+	}
+	now := time.Now()
+	checkedAt := s.poolAutoPriorityCheckedAt.Load()
+	if checkedAt > 0 && now.Sub(time.Unix(0, checkedAt)) < poolAutoPrioritySettingsCacheTTL {
+		return s.poolAutoPriorityEnabled.Load()
+	}
+	settings, err := s.settingService.GetPoolAutoPrioritySettings(ctx)
+	if err != nil || settings == nil {
+		if checkedAt == 0 {
+			return true
+		}
+		return s.poolAutoPriorityEnabled.Load()
+	}
+	s.poolAutoPriorityEnabled.Store(settings.Enabled)
+	s.poolAutoPriorityCheckedAt.Store(now.UnixNano())
+	return settings.Enabled
+}
+
 func accountProbeAutoPriority(account *Account, now time.Time) (probeAutoPriorityInfo, bool) {
 	info := probeAutoPriorityInfo{tier: probeAutoPriorityTierUnmeasured}
-	if account == nil || !upstreamBillingProbeEnabled(account) {
+	if account == nil || !poolAutoPriorityEnabled(account) {
 		return info, false
 	}
 	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
@@ -1570,10 +1598,12 @@ func accountProbeAutoPriority(account *Account, now time.Time) (probeAutoPriorit
 		return info, true
 	}
 
-	if snapshot.ModelProbeStatus != "" {
-		switch snapshot.ModelProbeStatus {
+	if snapshot.ModelProbeStatus == "" {
+		return info, true
+	}
+	switch snapshot.ModelProbeStatus {
 		case UpstreamBillingProbeStatusOK:
-			if !isProbeSnapshotFresh(snapshot, now) {
+			if !isModelProbeSnapshotFresh(snapshot, now) {
 				return info, true
 			}
 			info.latencyMS = snapshot.ModelProbeLatencyMS
@@ -1590,35 +1620,28 @@ func accountProbeAutoPriority(account *Account, now time.Time) (probeAutoPriorit
 			info.tier = probeAutoPriorityTierFailed
 		case UpstreamBillingProbeStatusUnsupported:
 			info.tier = probeAutoPriorityTierUnsupported
-		}
+	}
+	info.failureCount = snapshot.ModelProbeFailureCount
+	if info.failureCount <= 0 {
 		info.failureCount = snapshot.FailureCount
-		if info.failureCount <= 0 {
-			info.failureCount = 1
-		}
-		return info, true
 	}
-
-	switch snapshot.Status {
-	case UpstreamBillingProbeStatusOK:
-		if !isProbeSnapshotFresh(snapshot, now) {
-			return info, true
-		}
-		if snapshot.LatencyMS > 0 {
-			info.tier = probeAutoPriorityTierHealthy
-			info.latencyMS = snapshot.LatencyMS
-		} else {
-			info.tier = probeAutoPriorityTierHealthyUnknownLatency
-		}
-	case UpstreamBillingProbeStatusFailed:
-		info.tier = probeAutoPriorityTierFailed
-	case UpstreamBillingProbeStatusUnsupported:
-		info.tier = probeAutoPriorityTierUnsupported
-	}
-	info.failureCount = snapshot.FailureCount
 	if info.failureCount <= 0 {
 		info.failureCount = 1
 	}
 	return info, true
+}
+
+func isModelProbeSnapshotFresh(snapshot *UpstreamBillingProbeSnapshot, now time.Time) bool {
+	if snapshot == nil {
+		return false
+	}
+	if snapshot.ModelProbeFreshUntil != nil {
+		return now.Before(*snapshot.ModelProbeFreshUntil) || now.Equal(*snapshot.ModelProbeFreshUntil)
+	}
+	if snapshot.ModelProbeLastAttemptAt != nil {
+		return now.Sub(*snapshot.ModelProbeLastAttemptAt) <= probeAutoPriorityStaleFallbackTTL
+	}
+	return isProbeSnapshotFresh(snapshot, now)
 }
 
 func isProbeSnapshotFresh(snapshot *UpstreamBillingProbeSnapshot, now time.Time) bool {

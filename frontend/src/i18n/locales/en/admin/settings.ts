@@ -355,6 +355,16 @@ export default {
         saved: 'Upstream rate auto detection settings saved',
         saveFailed: 'Failed to save upstream rate auto detection settings'
       },
+      poolAutoPriority: {
+        title: 'Pool Auto Latency Ordering',
+        description: 'Independently test model availability and latency for pooled OpenAI upstreams, then prefer healthy and faster accounts at runtime without rewriting manual priority.',
+        enabled: 'Enable automatic priority',
+        enabledHint: 'This switch is independent from upstream billing detection and only applies to pooled accounts that opt in.',
+        intervalMinutes: 'Probe interval (minutes)',
+        intervalHint: 'Range: 5–60 minutes. Five minutes is recommended; manual priority remains the stable tie-breaker.',
+        saved: 'Pool automatic priority settings saved',
+        saveFailed: 'Failed to save pool automatic priority settings'
+      },
       ollamaCloudUsage: {
         title: 'Ollama Cloud Usage Refresh',
         description: 'Refresh official Ollama settings-page usage driven by model requests for individually opted-in accounts. Disabled by default. Idle accounts are not polled.',

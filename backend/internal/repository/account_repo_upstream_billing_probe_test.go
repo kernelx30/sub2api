@@ -9,8 +9,12 @@ import (
 func TestUpstreamBillingProbeExtraIsSchedulerNeutral(t *testing.T) {
 	require.True(t, isSchedulerNeutralExtraKey("upstream_billing_probe"))
 	require.True(t, isSchedulerNeutralExtraKey("upstream_billing_probe_enabled"))
+	require.False(t, isSchedulerNeutralExtraKey("pool_auto_priority_enabled"))
 	require.False(t, shouldEnqueueSchedulerOutboxForExtraUpdates(map[string]any{
 		"upstream_billing_probe":         map[string]any{"status": "ok"},
 		"upstream_billing_probe_enabled": true,
+	}))
+	require.True(t, shouldEnqueueSchedulerOutboxForExtraUpdates(map[string]any{
+		"pool_auto_priority_enabled": false,
 	}))
 }

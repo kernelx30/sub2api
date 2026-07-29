@@ -63,6 +63,25 @@
           {{ t('admin.accounts.upstreamBilling.globalProbeState') }}
           <span class="text-red-400">{{ t('admin.accounts.upstreamBilling.disabled') }}</span>
         </p>
+        <template v-if="poolMode">
+          <p class="mt-2 border-t border-white/15 pt-2" data-testid="pool-auto-priority-state">
+            {{ t('admin.accounts.poolAutoPriority.accountState') }}
+            <span :class="poolAutoPriorityEnabled ? 'text-emerald-400' : 'text-red-400'">
+              {{ poolAutoPriorityEnabled ? t('admin.accounts.upstreamBilling.enabled') : t('admin.accounts.upstreamBilling.disabled') }}
+            </span>
+          </p>
+          <p v-if="globalPoolAutoPriorityEnabled === false" data-testid="pool-auto-priority-global-state">
+            {{ t('admin.accounts.poolAutoPriority.globalState') }}
+            <span class="text-red-400">{{ t('admin.accounts.upstreamBilling.disabled') }}</span>
+          </p>
+          <template v-if="snapshot?.model_probe_status">
+            <p>{{ t('admin.accounts.poolAutoPriority.modelStatus', { value: snapshot.model_probe_status }) }}</p>
+            <p v-if="snapshot.model_probe_model">{{ t('admin.accounts.poolAutoPriority.model', { value: snapshot.model_probe_model }) }}</p>
+            <p v-if="typeof snapshot.model_probe_latency_ms === 'number'">{{ t('admin.accounts.poolAutoPriority.latency', { value: snapshot.model_probe_latency_ms }) }}</p>
+            <p>{{ t('admin.accounts.poolAutoPriority.lastProbe', { value: formatDate(snapshot.model_probe_last_attempt_at || snapshot.last_attempt_at) }) }}</p>
+          </template>
+          <p v-else>{{ t('admin.accounts.poolAutoPriority.notMeasured') }}</p>
+        </template>
       </div>
     </HelpTooltip>
     <span v-if="hasEffectiveRate && statusLabel" :class="statusClass" class="whitespace-nowrap text-[10px] font-medium">
@@ -95,8 +114,10 @@ const props = withDefaults(defineProps<{
   now: number
   probing?: boolean
   globalProbeEnabled?: boolean
+  globalPoolAutoPriorityEnabled?: boolean
 }>(), {
-  globalProbeEnabled: true
+  globalProbeEnabled: true,
+  globalPoolAutoPriorityEnabled: true
 })
 
 defineEmits<{
@@ -108,7 +129,17 @@ const CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000
 const eligible = computed(() => props.account.platform === 'openai' && props.account.type === 'apikey')
 const snapshot = computed<UpstreamBillingProbeSnapshot | undefined>(() => props.account.extra?.upstream_billing_probe)
 const data = computed(() => snapshot.value?.data)
+const hasBillingObservation = computed(() => {
+  if (!snapshot.value) return false
+  if (snapshot.value.billing_probe_attempted === true || data.value != null) return true
+  return !snapshot.value.model_probe_status
+})
 const probeEnabled = computed(() => props.account.extra?.upstream_billing_probe_enabled === true)
+const poolMode = computed(() => props.account.credentials?.pool_mode === true)
+const poolAutoPriorityEnabled = computed(() => {
+  const value = props.account.extra?.pool_auto_priority_enabled
+  return typeof value === 'boolean' ? value : poolMode.value
+})
 const nextProbeAt = computed(() => {
   const value = snapshot.value?.next_probe_at
   return typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : ''
@@ -127,7 +158,7 @@ const validTimestamps = computed(() => {
   return Number.isFinite(freshUntil.value) && freshUntil.value > receivedAt.value
 })
 const stale = computed(() => {
-  if (!snapshot.value) return false
+	if (!snapshot.value || !hasBillingObservation.value) return false
   if (!Number.isFinite(receivedAt.value)) return snapshot.value.status === 'ok'
   if (!validTimestamps.value) return true
   return props.now > freshUntil.value
@@ -193,7 +224,7 @@ const effectiveRate = computed(() => {
   return value == null ? '-' : `${Number(value.toPrecision(12))}x`
 })
 const statusLabel = computed(() => {
-  if (!snapshot.value) return t('admin.accounts.upstreamBilling.notProbed')
+	if (!snapshot.value || !hasBillingObservation.value) return t('admin.accounts.upstreamBilling.notProbed')
   if (snapshot.value.status === 'unsupported') return t('admin.accounts.upstreamBilling.unsupported')
   if (stale.value) return t('admin.accounts.upstreamBilling.stale')
   if (snapshot.value.status === 'failed') return t('admin.accounts.upstreamBilling.failed')

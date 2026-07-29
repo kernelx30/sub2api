@@ -354,6 +354,7 @@
             <UpstreamBillingRateCell
               :account="row"
               :global-probe-enabled="upstreamBillingProbeGloballyEnabled"
+              :global-pool-auto-priority-enabled="poolAutoPriorityGloballyEnabled"
               :now="upstreamBillingNow"
               :probing="probingUpstreamBilling.has(row.id)"
               @probe="handleProbeUpstreamBilling(row)"
@@ -591,6 +592,7 @@ const menu = reactive<{show:boolean, acc:Account|null, pos:{top:number, left:num
 const exportingData = ref(false)
 const probingUpstreamBilling = reactive(new Set<number>())
 const upstreamBillingProbeGloballyEnabled = ref<boolean | undefined>(undefined)
+const poolAutoPriorityGloballyEnabled = ref<boolean | undefined>(undefined)
 const upstreamBillingNow = ref(Date.now())
 let lastUpstreamBillingSortRefreshMinute = -1
 useIntervalFn(() => { upstreamBillingNow.value = Date.now() }, 60_000)
@@ -1176,7 +1178,7 @@ const refreshAccountsIncrementally = async () => {
 }
 
 const handleManualRefresh = async () => {
-  await Promise.all([load(), loadUpstreamBillingProbeGlobalState()])
+  await Promise.all([load(), loadUpstreamBillingProbeGlobalState(), loadPoolAutoPriorityGlobalState()])
   // Force usage cells to refetch /usage on explicit user refresh.
   usageManualRefreshToken.value += 1
 }
@@ -1187,6 +1189,15 @@ const loadUpstreamBillingProbeGlobalState = async () => {
     upstreamBillingProbeGloballyEnabled.value = settings.enabled
   } catch (error) {
     console.error('Failed to load upstream billing probe settings:', error)
+  }
+}
+
+const loadPoolAutoPriorityGlobalState = async () => {
+  try {
+    const settings = await adminAPI.accounts.getPoolAutoPrioritySettings()
+    poolAutoPriorityGloballyEnabled.value = settings.enabled
+  } catch (error) {
+    console.error('Failed to load pool auto priority settings:', error)
   }
 }
 
@@ -2094,6 +2105,7 @@ const handleClickOutside = (event: MouseEvent) => {
 onMounted(async () => {
   load()
   loadUpstreamBillingProbeGlobalState()
+  loadPoolAutoPriorityGlobalState()
   try {
     const [p, g] = await Promise.all([adminAPI.proxies.getAll(), adminAPI.groups.getAll()])
     proxies.value = p

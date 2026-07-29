@@ -30,6 +30,7 @@ const (
 	// These values live in accounts.extra so PR2 does not require a schema migration.
 	UpstreamBillingProbeExtraKey        = "upstream_billing_probe"
 	UpstreamBillingProbeEnabledExtraKey = "upstream_billing_probe_enabled"
+	PoolAutoPriorityEnabledExtraKey     = "pool_auto_priority_enabled"
 
 	upstreamBillingProbeDefaultIntervalMinutes = 5
 	upstreamBillingProbeMinIntervalMinutes     = 5
@@ -42,6 +43,9 @@ const (
 	upstreamBillingProbeMaxDelay               = 24 * time.Hour
 	upstreamBillingProbeLeaderLockKey          = "upstream:billing:probe:leader"
 	upstreamBillingProbeLeaderLockTTL          = 2 * time.Minute
+	poolAutoPriorityDefaultIntervalMinutes     = 5
+	poolAutoPriorityMinIntervalMinutes         = 5
+	poolAutoPriorityMaxIntervalMinutes         = 60
 )
 
 // UpstreamBillingProbeMaxBatchSize limits one manual batch and one runner cycle.
@@ -71,10 +75,18 @@ type UpstreamBillingProbeSettings struct {
 	IntervalMinutes int  `json:"interval_minutes"`
 }
 
+// PoolAutoPrioritySettings controls model health probes used only by pool-mode
+// runtime ordering. It is intentionally independent from billing discovery.
+type PoolAutoPrioritySettings struct {
+	Enabled         bool `json:"enabled"`
+	IntervalMinutes int  `json:"interval_minutes"`
+}
+
 // UpstreamBillingProbeSnapshot is persisted in accounts.extra. Data is kept as
 // a sanitized map so future response fields do not require a database change.
 type UpstreamBillingProbeSnapshot struct {
 	Status               string         `json:"status"`
+	BillingProbeAttempted bool           `json:"billing_probe_attempted,omitempty"`
 	Data                 map[string]any `json:"data,omitempty"`
 	ReceivedAt           *time.Time     `json:"received_at,omitempty"`
 	FreshUntil           *time.Time     `json:"fresh_until,omitempty"`
@@ -89,6 +101,10 @@ type UpstreamBillingProbeSnapshot struct {
 	ModelProbeLatencyMS  int64          `json:"model_probe_latency_ms,omitempty"`
 	ModelProbeHTTPStatus int            `json:"model_probe_http_status,omitempty"`
 	ModelProbeLastError  string         `json:"model_probe_last_error,omitempty"`
+	ModelProbeLastAttemptAt *time.Time  `json:"model_probe_last_attempt_at,omitempty"`
+	ModelProbeFreshUntil    *time.Time  `json:"model_probe_fresh_until,omitempty"`
+	ModelProbeNextAt        *time.Time  `json:"model_probe_next_at,omitempty"`
+	ModelProbeFailureCount  int         `json:"model_probe_failure_count,omitempty"`
 	LastError            string         `json:"last_error,omitempty"`
 }
 
@@ -178,6 +194,67 @@ func normalizeUpstreamBillingProbeSettings(settings *UpstreamBillingProbeSetting
 	}
 }
 
+// GetPoolAutoPrioritySettings returns the independent pool ordering settings.
+func (s *SettingService) GetPoolAutoPrioritySettings(ctx context.Context) (*PoolAutoPrioritySettings, error) {
+	defaults := defaultPoolAutoPrioritySettings()
+	if s == nil || s.settingRepo == nil {
+		return defaults, nil
+	}
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyPoolAutoPrioritySettings)
+	if err != nil {
+		if errors.Is(err, ErrSettingNotFound) {
+			return defaults, nil
+		}
+		return nil, fmt.Errorf("get pool auto priority settings: %w", err)
+	}
+	if strings.TrimSpace(value) == "" {
+		return defaults, nil
+	}
+	settings := *defaults
+	if err := json.Unmarshal([]byte(value), &settings); err != nil {
+		return nil, fmt.Errorf("parse pool auto priority settings: %w", err)
+	}
+	if settings.IntervalMinutes == 0 {
+		settings.IntervalMinutes = defaults.IntervalMinutes
+	}
+	normalizePoolAutoPrioritySettings(&settings)
+	return &settings, nil
+}
+
+func (s *SettingService) SetPoolAutoPrioritySettings(ctx context.Context, settings *PoolAutoPrioritySettings) error {
+	if s == nil || s.settingRepo == nil {
+		return fmt.Errorf("setting repository is unavailable")
+	}
+	if settings == nil {
+		return infraerrors.BadRequest("INVALID_POOL_AUTO_PRIORITY_SETTINGS", "settings cannot be nil")
+	}
+	if settings.IntervalMinutes < poolAutoPriorityMinIntervalMinutes || settings.IntervalMinutes > poolAutoPriorityMaxIntervalMinutes {
+		return infraerrors.BadRequest(
+			"INVALID_POOL_AUTO_PRIORITY_INTERVAL",
+			fmt.Sprintf("interval_minutes must be between %d and %d", poolAutoPriorityMinIntervalMinutes, poolAutoPriorityMaxIntervalMinutes),
+		)
+	}
+	normalizePoolAutoPrioritySettings(settings)
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return fmt.Errorf("marshal pool auto priority settings: %w", err)
+	}
+	return s.settingRepo.Set(ctx, SettingKeyPoolAutoPrioritySettings, string(data))
+}
+
+func defaultPoolAutoPrioritySettings() *PoolAutoPrioritySettings {
+	return &PoolAutoPrioritySettings{Enabled: true, IntervalMinutes: poolAutoPriorityDefaultIntervalMinutes}
+}
+
+func normalizePoolAutoPrioritySettings(settings *PoolAutoPrioritySettings) {
+	if settings.IntervalMinutes < poolAutoPriorityMinIntervalMinutes {
+		settings.IntervalMinutes = poolAutoPriorityMinIntervalMinutes
+	}
+	if settings.IntervalMinutes > poolAutoPriorityMaxIntervalMinutes {
+		settings.IntervalMinutes = poolAutoPriorityMaxIntervalMinutes
+	}
+}
+
 // UpstreamBillingProbeService discovers a remote Sub2API billing snapshot.
 type UpstreamBillingProbeService struct {
 	accountRepo        AccountRepository
@@ -204,7 +281,7 @@ type upstreamBillingProbeSnapshotWriter interface {
 }
 
 type upstreamBillingProbeDueAccountLister interface {
-	ListDueUpstreamBillingProbeAccounts(context.Context, time.Time, int) ([]Account, error)
+	ListDueUpstreamBillingProbeAccounts(context.Context, time.Time, bool, bool, int) ([]Account, error)
 }
 
 func NewUpstreamBillingProbeService(
@@ -306,7 +383,11 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if !settings.Enabled {
+	poolSettings, err := s.getPoolAutoPrioritySettings(ctx)
+	if err != nil {
+		return err
+	}
+	if !settings.Enabled && !poolSettings.Enabled {
 		return nil
 	}
 	runRelease, acquired, lockErr := s.tryAcquireLeaderLock(ctx, upstreamBillingProbeLeaderLockKey)
@@ -329,14 +410,15 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 	defer releaseUpstreamBillingProbeLeaderLock(cadenceRelease, lockNow.Truncate(upstreamBillingProbeCycleInterval).Add(upstreamBillingProbeCycleInterval))
 
 	now := s.currentTime()
-	accounts, err := s.listDueAccounts(ctx, now)
+	accounts, err := s.listDueAccounts(ctx, now, settings.Enabled, poolSettings.Enabled)
 	if err != nil {
 		return fmt.Errorf("list enabled upstream billing probes: %w", err)
 	}
 	due := make([]Account, 0, len(accounts))
 	for i := range accounts {
 		account := accounts[i]
-		if !isUpstreamBillingProbeAccount(&account) || !account.IsActive() || !upstreamBillingProbeEnabled(&account) {
+		billingEnabled, priorityEnabled := scheduledProbeModes(&account, settings.Enabled, poolSettings.Enabled)
+		if !isUpstreamBillingProbeAccount(&account) || !account.IsActive() || (!billingEnabled && !priorityEnabled) {
 			continue
 		}
 		snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
@@ -369,7 +451,7 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 	for i := range due {
 		accountID := due[i].ID
 		group.Go(func() error {
-			if _, probeErr := s.probeScheduledAccount(ctx, accountID, settings.IntervalMinutes); probeErr != nil {
+			if _, probeErr := s.probeScheduledAccount(ctx, accountID, settings, poolSettings); probeErr != nil {
 				logger.LegacyPrintf("service.upstream_billing_probe", "probe_due_failed: account_id=%d err=%v", accountID, probeErr)
 			}
 			return nil
@@ -378,9 +460,9 @@ func (s *UpstreamBillingProbeService) RunDue(ctx context.Context) error {
 	return group.Wait()
 }
 
-func (s *UpstreamBillingProbeService) listDueAccounts(ctx context.Context, now time.Time) ([]Account, error) {
+func (s *UpstreamBillingProbeService) listDueAccounts(ctx context.Context, now time.Time, includeBilling, includePoolPriority bool) ([]Account, error) {
 	if lister, ok := s.accountRepo.(upstreamBillingProbeDueAccountLister); ok {
-		return lister.ListDueUpstreamBillingProbeAccounts(ctx, now, upstreamBillingProbeMaxPerCycle)
+		return lister.ListDueUpstreamBillingProbeAccounts(ctx, now, includeBilling, includePoolPriority, upstreamBillingProbeMaxPerCycle)
 	}
 	// Non-production repositories and older adapters load OpenAI accounts, then
 	// RunDue applies the same explicit-switch-or-pool-mode eligibility rule.
@@ -394,6 +476,13 @@ func (s *UpstreamBillingProbeService) getSettings(ctx context.Context) (*Upstrea
 	return s.settingService.GetUpstreamBillingProbeSettings(ctx)
 }
 
+func (s *UpstreamBillingProbeService) getPoolAutoPrioritySettings(ctx context.Context) (*PoolAutoPrioritySettings, error) {
+	if s.settingService == nil {
+		return defaultPoolAutoPrioritySettings(), nil
+	}
+	return s.settingService.GetPoolAutoPrioritySettings(ctx)
+}
+
 func (s *UpstreamBillingProbeService) GetSettings(ctx context.Context) (*UpstreamBillingProbeSettings, error) {
 	return s.getSettings(ctx)
 }
@@ -405,6 +494,17 @@ func (s *UpstreamBillingProbeService) UpdateSettings(ctx context.Context, settin
 	return s.settingService.SetUpstreamBillingProbeSettings(ctx, settings)
 }
 
+func (s *UpstreamBillingProbeService) GetPoolAutoPrioritySettings(ctx context.Context) (*PoolAutoPrioritySettings, error) {
+	return s.getPoolAutoPrioritySettings(ctx)
+}
+
+func (s *UpstreamBillingProbeService) UpdatePoolAutoPrioritySettings(ctx context.Context, settings *PoolAutoPrioritySettings) error {
+	if s == nil || s.settingService == nil {
+		return ErrUpstreamBillingProbeUnavailable
+	}
+	return s.settingService.SetPoolAutoPrioritySettings(ctx, settings)
+}
+
 // ProbeAccount performs one manual or scheduled probe. Manual calls ignore both switches.
 func (s *UpstreamBillingProbeService) ProbeAccount(ctx context.Context, accountID int64) (*UpstreamBillingProbeSnapshot, error) {
 	if s == nil || s.accountRepo == nil {
@@ -414,18 +514,22 @@ func (s *UpstreamBillingProbeService) ProbeAccount(ctx context.Context, accountI
 	if err != nil {
 		return nil, err
 	}
-	return s.probeAccount(ctx, accountID, settings.IntervalMinutes)
+	poolSettings, err := s.getPoolAutoPrioritySettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.probeAccount(ctx, accountID, settings, poolSettings)
 }
 
-func (s *UpstreamBillingProbeService) probeAccount(ctx context.Context, accountID int64, intervalMinutes int) (*UpstreamBillingProbeSnapshot, error) {
-	return s.probeAccountWithMode(ctx, accountID, intervalMinutes, false)
+func (s *UpstreamBillingProbeService) probeAccount(ctx context.Context, accountID int64, settings *UpstreamBillingProbeSettings, poolSettings *PoolAutoPrioritySettings) (*UpstreamBillingProbeSnapshot, error) {
+	return s.probeAccountWithMode(ctx, accountID, settings, poolSettings, false)
 }
 
-func (s *UpstreamBillingProbeService) probeScheduledAccount(ctx context.Context, accountID int64, intervalMinutes int) (*UpstreamBillingProbeSnapshot, error) {
-	return s.probeAccountWithMode(ctx, accountID, intervalMinutes, true)
+func (s *UpstreamBillingProbeService) probeScheduledAccount(ctx context.Context, accountID int64, settings *UpstreamBillingProbeSettings, poolSettings *PoolAutoPrioritySettings) (*UpstreamBillingProbeSnapshot, error) {
+	return s.probeAccountWithMode(ctx, accountID, settings, poolSettings, true)
 }
 
-func (s *UpstreamBillingProbeService) probeAccountWithMode(ctx context.Context, accountID int64, intervalMinutes int, requireEnabled bool) (*UpstreamBillingProbeSnapshot, error) {
+func (s *UpstreamBillingProbeService) probeAccountWithMode(ctx context.Context, accountID int64, settings *UpstreamBillingProbeSettings, poolSettings *PoolAutoPrioritySettings, requireEnabled bool) (*UpstreamBillingProbeSnapshot, error) {
 	key := strconv.FormatInt(accountID, 10)
 	value, err, _ := s.probeGroup.Do(key, func() (any, error) {
 		select {
@@ -441,8 +545,17 @@ func (s *UpstreamBillingProbeService) probeAccountWithMode(ctx context.Context, 
 		if !isUpstreamBillingProbeAccount(account) {
 			return nil, ErrUpstreamBillingProbeAccountInvalid
 		}
+		if settings == nil {
+			settings = defaultUpstreamBillingProbeSettings()
+		}
+		if poolSettings == nil {
+			poolSettings = defaultPoolAutoPrioritySettings()
+		}
+		includeBilling := true
+		includeModel := account.IsPoolMode()
 		if requireEnabled {
-			if !account.IsActive() || !upstreamBillingProbeEnabled(account) {
+			includeBilling, includeModel = scheduledProbeModes(account, settings.Enabled, poolSettings.Enabled)
+			if !account.IsActive() || (!includeBilling && !includeModel) {
 				return nil, nil
 			}
 			if snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra); snapshot != nil &&
@@ -450,7 +563,8 @@ func (s *UpstreamBillingProbeService) probeAccountWithMode(ctx context.Context, 
 				return nil, nil
 			}
 		}
-		return s.probeLoadedAccount(ctx, account, intervalMinutes)
+		intervalMinutes := effectiveProbeIntervalMinutes(includeBilling, includeModel, settings.IntervalMinutes, poolSettings.IntervalMinutes)
+		return s.probeLoadedAccount(ctx, account, intervalMinutes, includeBilling, includeModel)
 	})
 	if err != nil {
 		return nil, err
@@ -484,12 +598,19 @@ func (s *UpstreamBillingProbeService) ProbeAccounts(ctx context.Context, account
 		}
 		return results
 	}
+	poolSettings, settingsErr := s.getPoolAutoPrioritySettings(ctx)
+	if settingsErr != nil {
+		for i, accountID := range accountIDs {
+			results[i] = UpstreamBillingProbeResult{AccountID: accountID, Error: safeProbeError(settingsErr)}
+		}
+		return results
+	}
 	var group errgroup.Group
 	for i, accountID := range accountIDs {
 		i, accountID := i, accountID
 		results[i].AccountID = accountID
 		group.Go(func() error {
-			snapshot, err := s.probeAccount(ctx, accountID, settings.IntervalMinutes)
+			snapshot, err := s.probeAccount(ctx, accountID, settings, poolSettings)
 			if err != nil {
 				results[i].Error = safeProbeError(err)
 				return nil
@@ -554,6 +675,22 @@ func (s *UpstreamBillingProbeService) SetAccountEnabled(ctx context.Context, acc
 	})
 }
 
+func (s *UpstreamBillingProbeService) SetPoolAutoPriorityEnabled(ctx context.Context, accountID int64, enabled bool) error {
+	if s == nil || s.accountRepo == nil {
+		return ErrUpstreamBillingProbeUnavailable
+	}
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	if !isUpstreamBillingProbeAccount(account) {
+		return ErrUpstreamBillingProbeAccountInvalid
+	}
+	return s.accountRepo.UpdateExtra(ctx, accountID, map[string]any{
+		PoolAutoPriorityEnabledExtraKey: enabled,
+	})
+}
+
 type upstreamModelProbeResult struct {
 	Status     string
 	Model      string
@@ -563,14 +700,14 @@ type upstreamModelProbeResult struct {
 	LastError  string
 }
 
-func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, account *Account, intervalMinutes int) (*UpstreamBillingProbeSnapshot, error) {
+func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, account *Account, intervalMinutes int, includeBilling, includeModel bool) (*UpstreamBillingProbeSnapshot, error) {
 	now := s.currentTime().UTC()
 	if s.accountTestService == nil || s.accountTestService.httpUpstream == nil {
-		return s.persistProbeFailure(ctx, account, intervalMinutes, now, 0, "transport_unavailable", 0, nil)
+		return s.persistPlannedProbeFailure(ctx, account, intervalMinutes, now, "transport_unavailable", includeBilling, includeModel)
 	}
 	apiKey := account.GetOpenAIApiKey()
 	if apiKey == "" {
-		return s.persistProbeFailure(ctx, account, intervalMinutes, now, 0, "missing_api_key", 0, nil)
+		return s.persistPlannedProbeFailure(ctx, account, intervalMinutes, now, "missing_api_key", includeBilling, includeModel)
 	}
 	baseURL := account.GetOpenAIBaseURL()
 	if baseURL == "" {
@@ -578,12 +715,12 @@ func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, ac
 	}
 	normalizedBaseURL, err := s.accountTestService.validateUpstreamBaseURL(baseURL)
 	if err != nil {
-		return s.persistProbeFailure(ctx, account, intervalMinutes, now, 0, "invalid_base_url", 0, nil)
+		return s.persistPlannedProbeFailure(ctx, account, intervalMinutes, now, "invalid_base_url", includeBilling, includeModel)
 	}
 	proxyURL := ""
 	if account.ProxyID != nil {
 		if account.Proxy == nil {
-			return s.persistProbeFailure(ctx, account, intervalMinutes, now, 0, "proxy_unavailable", 0, nil)
+			return s.persistPlannedProbeFailure(ctx, account, intervalMinutes, now, "proxy_unavailable", includeBilling, includeModel)
 		}
 		if account.Proxy.ID != *account.ProxyID {
 			return nil, ErrUpstreamBillingProbeIdentityChanged
@@ -598,8 +735,11 @@ func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, ac
 	// Pool-mode routing needs real model reachability. Ordinary channel-status
 	// probes keep the original billing-only behavior to avoid unnecessary spend.
 	var modelProbe *upstreamModelProbeResult
-	if account.IsPoolMode() {
+	if includeModel {
 		modelProbe = s.probeUpstreamModel(ctx, account, normalizedBaseURL, apiKey, proxyURL, tlsProfile)
+	}
+	if !includeBilling {
+		return s.persistModelOnlyProbe(ctx, account, intervalMinutes, now, modelProbe)
 	}
 
 	probeURL := buildOpenAIEndpointURL(normalizedBaseURL, "/v1/sub2api/billing")
@@ -644,6 +784,7 @@ func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, ac
 	}
 	snapshot := &UpstreamBillingProbeSnapshot{
 		Status:        UpstreamBillingProbeStatusOK,
+		BillingProbeAttempted: true,
 		Data:          data,
 		ReceivedAt:    probeTimePtr(now),
 		FreshUntil:    probeTimePtr(now.Add(2 * time.Duration(intervalMinutes) * time.Minute)),
@@ -652,14 +793,9 @@ func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, ac
 		HTTPStatus:    resp.StatusCode,
 		LatencyMS:     latencyMS,
 	}
-	applyUpstreamModelProbe(snapshot, modelProbe)
-	if modelProbe != nil && modelProbe.Status != UpstreamBillingProbeStatusOK {
-		snapshot.Status = modelProbe.Status
-		snapshot.FailureCount = nextProbeFailureCount(account)
-		snapshot.LastError = "model_probe_" + modelProbe.LastError
-		if modelProbe.Status == UpstreamBillingProbeStatusFailed {
-			snapshot.NextProbeAt = now.Add(nextProbeFailureDelay(intervalMinutes, snapshot.FailureCount, 0))
-		}
+	applyScheduledUpstreamModelProbe(snapshot, account, modelProbe, now, intervalMinutes, 0)
+	if snapshot.ModelProbeNextAt != nil && snapshot.ModelProbeNextAt.Before(snapshot.NextProbeAt) {
+		snapshot.NextProbeAt = *snapshot.ModelProbeNextAt
 	}
 	if err := s.updateSnapshot(ctx, account, snapshot); err != nil {
 		return nil, err
@@ -792,12 +928,105 @@ func applyUpstreamModelProbe(snapshot *UpstreamBillingProbeSnapshot, result *ups
 	snapshot.ModelProbeLastError = result.LastError
 }
 
+func applyScheduledUpstreamModelProbe(snapshot *UpstreamBillingProbeSnapshot, account *Account, result *upstreamModelProbeResult, now time.Time, intervalMinutes int, retryAfterDuration time.Duration) {
+	if snapshot == nil || result == nil {
+		return
+	}
+	applyUpstreamModelProbe(snapshot, result)
+	snapshot.ModelProbeLastAttemptAt = probeTimePtr(now)
+	failureCount := 0
+	delay := nextProbeDelay(intervalMinutes, retryAfterDuration)
+	if result.Status == UpstreamBillingProbeStatusOK {
+		snapshot.ModelProbeFreshUntil = probeTimePtr(now.Add(2 * time.Duration(intervalMinutes) * time.Minute))
+	} else {
+		failureCount = nextModelProbeFailureCount(account)
+		delay = nextProbeFailureDelay(intervalMinutes, failureCount, retryAfterDuration)
+		snapshot.ModelProbeFreshUntil = nil
+	}
+	snapshot.ModelProbeFailureCount = failureCount
+	snapshot.ModelProbeNextAt = probeTimePtr(now.Add(delay))
+}
+
 func nextProbeFailureCount(account *Account) int {
 	previous := decodeUpstreamBillingProbeSnapshot(account.Extra)
 	if previous == nil || previous.FailureCount < 1 {
 		return 1
 	}
 	return previous.FailureCount + 1
+}
+
+func nextModelProbeFailureCount(account *Account) int {
+	previous := decodeUpstreamBillingProbeSnapshot(account.Extra)
+	if previous == nil || previous.ModelProbeFailureCount < 1 {
+		return 1
+	}
+	return previous.ModelProbeFailureCount + 1
+}
+
+func failedUpstreamModelProbe(account *Account, reason string) *upstreamModelProbeResult {
+	result := &upstreamModelProbeResult{
+		Status:    UpstreamBillingProbeStatusFailed,
+		Model:     selectUpstreamHealthProbeModel(account),
+		LastError: reason,
+	}
+	if openai_compat.ShouldUseResponsesAPI(account.Extra) {
+		result.Endpoint = "responses"
+	} else {
+		result.Endpoint = "chat_completions"
+	}
+	return result
+}
+
+func (s *UpstreamBillingProbeService) persistPlannedProbeFailure(
+	ctx context.Context,
+	account *Account,
+	intervalMinutes int,
+	now time.Time,
+	reason string,
+	includeBilling bool,
+	includeModel bool,
+) (*UpstreamBillingProbeSnapshot, error) {
+	var modelProbe *upstreamModelProbeResult
+	if includeModel {
+		modelProbe = failedUpstreamModelProbe(account, reason)
+	}
+	if includeBilling {
+		return s.persistProbeFailure(ctx, account, intervalMinutes, now, 0, reason, 0, modelProbe)
+	}
+	return s.persistModelOnlyProbe(ctx, account, intervalMinutes, now, modelProbe)
+}
+
+func (s *UpstreamBillingProbeService) persistModelOnlyProbe(
+	ctx context.Context,
+	account *Account,
+	intervalMinutes int,
+	now time.Time,
+	modelProbe *upstreamModelProbeResult,
+) (*UpstreamBillingProbeSnapshot, error) {
+	if modelProbe == nil {
+		modelProbe = failedUpstreamModelProbe(account, "model_probe_unavailable")
+	}
+	previous := decodeUpstreamBillingProbeSnapshot(account.Extra)
+	snapshot := &UpstreamBillingProbeSnapshot{}
+	if previous != nil {
+		*snapshot = *previous
+	}
+	applyScheduledUpstreamModelProbe(snapshot, account, modelProbe, now, intervalMinutes, 0)
+	snapshot.LastAttemptAt = now
+	if snapshot.ModelProbeNextAt != nil {
+		snapshot.NextProbeAt = *snapshot.ModelProbeNextAt
+	}
+	if snapshot.Status == "" {
+		snapshot.Status = modelProbe.Status
+	}
+	if snapshot.Data == nil {
+		snapshot.FailureCount = snapshot.ModelProbeFailureCount
+		snapshot.LastError = modelProbe.LastError
+	}
+	if err := s.updateSnapshot(ctx, account, snapshot); err != nil {
+		return nil, err
+	}
+	return snapshot, nil
 }
 
 func (s *UpstreamBillingProbeService) persistProbeFailure(
@@ -818,6 +1047,7 @@ func (s *UpstreamBillingProbeService) persistProbeFailure(
 	}
 	snapshot := &UpstreamBillingProbeSnapshot{
 		Status:        status,
+		BillingProbeAttempted: true,
 		LastAttemptAt: now,
 		NextProbeAt:   now.Add(nextProbeFailureDelay(intervalMinutes, failureCount, retryAfterDuration)),
 		FailureCount:  failureCount,
@@ -832,19 +1062,9 @@ func (s *UpstreamBillingProbeService) persistProbeFailure(
 			snapshot.FreshUntil = probeTimePtr(previous.ReceivedAt.Add(2 * time.Duration(intervalMinutes) * time.Minute))
 		}
 	}
-	applyUpstreamModelProbe(snapshot, modelProbe)
-	if modelProbe != nil {
-		switch modelProbe.Status {
-		case UpstreamBillingProbeStatusOK:
-			snapshot.Status = UpstreamBillingProbeStatusOK
-			snapshot.FailureCount = 0
-			snapshot.NextProbeAt = now.Add(nextProbeDelay(intervalMinutes, retryAfterDuration))
-			snapshot.FreshUntil = probeTimePtr(now.Add(2 * time.Duration(intervalMinutes) * time.Minute))
-		case UpstreamBillingProbeStatusUnsupported:
-			snapshot.Status = UpstreamBillingProbeStatusUnsupported
-		default:
-			snapshot.Status = UpstreamBillingProbeStatusFailed
-		}
+	applyScheduledUpstreamModelProbe(snapshot, account, modelProbe, now, intervalMinutes, retryAfterDuration)
+	if snapshot.ModelProbeNextAt != nil && snapshot.ModelProbeNextAt.Before(snapshot.NextProbeAt) {
+		snapshot.NextProbeAt = *snapshot.ModelProbeNextAt
 	}
 	if err := s.updateSnapshot(ctx, account, snapshot); err != nil {
 		return nil, err
@@ -1036,7 +1256,41 @@ func upstreamBillingProbeEnabled(account *Account) bool {
 			return enabled
 		}
 	}
-	return account.IsPoolMode()
+	return false
+}
+
+func poolAutoPriorityEnabled(account *Account) bool {
+	if account == nil || !account.IsPoolMode() {
+		return false
+	}
+	if account.Extra != nil {
+		if enabled, ok := account.Extra[PoolAutoPriorityEnabledExtraKey].(bool); ok {
+			return enabled
+		}
+	}
+	return true
+}
+
+func scheduledProbeModes(account *Account, billingGloballyEnabled, poolPriorityGloballyEnabled bool) (bool, bool) {
+	if !isUpstreamBillingProbeAccount(account) {
+		return false, false
+	}
+	return billingGloballyEnabled && upstreamBillingProbeEnabled(account),
+		poolPriorityGloballyEnabled && poolAutoPriorityEnabled(account)
+}
+
+func effectiveProbeIntervalMinutes(includeBilling, includeModel bool, billingInterval, modelInterval int) int {
+	interval := 0
+	if includeBilling {
+		interval = billingInterval
+	}
+	if includeModel && (interval == 0 || modelInterval < interval) {
+		interval = modelInterval
+	}
+	if interval <= 0 {
+		interval = upstreamBillingProbeDefaultIntervalMinutes
+	}
+	return interval
 }
 
 func (s *UpstreamBillingProbeService) currentTime() time.Time {

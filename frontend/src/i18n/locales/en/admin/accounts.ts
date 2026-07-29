@@ -255,6 +255,17 @@ export default {
         batchCompleted: 'Probed {count} account(s)',
         batchPartial: 'Probe partially completed: {success} succeeded, {failed} failed'
       },
+      poolAutoPriority: {
+        enabled: 'Join pool automatic priority',
+        enabledHint: 'Independently test model availability and response time. Healthy faster accounts win; manual priority breaks close ties.',
+        accountState: 'Account automatic priority:',
+        globalState: 'Global automatic priority:',
+        modelStatus: 'Model probe status: {value}',
+        model: 'Probe model: {value}',
+        latency: 'Response latency: {value} ms',
+        lastProbe: 'Last probe: {value}',
+        notMeasured: 'Not measured'
+      },
       allPrivacyModes: 'All Privacy States',
       privacyUnset: 'Unset',
       privacyTrainingOff: 'Training data sharing disabled',

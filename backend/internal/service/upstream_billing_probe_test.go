@@ -31,7 +31,7 @@ type staleDueUpstreamBillingProbeAccountRepo struct {
 	due []Account
 }
 
-func (r *staleDueUpstreamBillingProbeAccountRepo) ListDueUpstreamBillingProbeAccounts(_ context.Context, _ time.Time, limit int) ([]Account, error) {
+func (r *staleDueUpstreamBillingProbeAccountRepo) ListDueUpstreamBillingProbeAccounts(_ context.Context, _ time.Time, _, _ bool, limit int) ([]Account, error) {
 	if limit < len(r.due) {
 		return append([]Account(nil), r.due[:limit]...), nil
 	}
@@ -277,6 +277,27 @@ func TestUpstreamBillingProbeSettingsDefaultsAndValidation(t *testing.T) {
 	settings, err = settingsService.GetUpstreamBillingProbeSettings(context.Background())
 	require.ErrorContains(t, err, "parse upstream billing probe settings")
 	require.Nil(t, settings)
+
+	poolSettings, err := settingsService.GetPoolAutoPrioritySettings(context.Background())
+	require.NoError(t, err)
+	require.True(t, poolSettings.Enabled)
+	require.Equal(t, 5, poolSettings.IntervalMinutes)
+
+	err = settingsService.SetPoolAutoPrioritySettings(context.Background(), &PoolAutoPrioritySettings{
+		Enabled:         false,
+		IntervalMinutes: 4,
+	})
+	require.ErrorContains(t, err, "interval_minutes must be between 5 and 60")
+
+	err = settingsService.SetPoolAutoPrioritySettings(context.Background(), &PoolAutoPrioritySettings{
+		Enabled:         false,
+		IntervalMinutes: 10,
+	})
+	require.NoError(t, err)
+	poolSettings, err = settingsService.GetPoolAutoPrioritySettings(context.Background())
+	require.NoError(t, err)
+	require.False(t, poolSettings.Enabled)
+	require.Equal(t, 10, poolSettings.IntervalMinutes)
 }
 
 func TestUpstreamBillingProbeSuccessPersistsSanitizedSnapshot(t *testing.T) {
@@ -646,6 +667,60 @@ func TestUpstreamBillingProbeRunnerRechecksEnabledAfterDueSelection(t *testing.T
 	require.NotContains(t, account.Extra, UpstreamBillingProbeExtraKey)
 }
 
+func TestPoolAutoPriorityRunnerIsIndependentFromBillingDiscovery(t *testing.T) {
+	newPoolAccount := func(id int64) *Account {
+		return &Account{
+			ID:          id,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Concurrency: 1,
+			Credentials: map[string]any{
+				"api_key":   "sk-test",
+				"base_url":  "https://upstream.example",
+				"pool_mode": true,
+			},
+		}
+	}
+
+	t.Run("billing off still performs model health probe", func(t *testing.T) {
+		account := newPoolAccount(61)
+		repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}
+		settingsRepo := &upstreamBillingProbeSettingRepo{values: map[string]string{
+			SettingKeyUpstreamBillingProbeSettings: `{"enabled":false,"interval_minutes":30}`,
+			SettingKeyPoolAutoPrioritySettings:     `{"enabled":true,"interval_minutes":5}`,
+		}}
+		upstream := &upstreamBillingProbeHTTPStub{}
+		svc := newUpstreamBillingProbeTestService(repo, upstream, settingsRepo)
+
+		require.NoError(t, svc.RunDue(context.Background()))
+		require.Equal(t, int64(1), upstream.modelCalls.Load())
+		require.Zero(t, upstream.calls.Load(), "billing endpoint must stay off")
+		snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
+		require.NotNil(t, snapshot)
+		require.Equal(t, UpstreamBillingProbeStatusOK, snapshot.ModelProbeStatus)
+	})
+
+	t.Run("auto priority off keeps billing probe but skips model request", func(t *testing.T) {
+		account := newPoolAccount(62)
+		account.Extra = map[string]any{UpstreamBillingProbeEnabledExtraKey: true}
+		repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}
+		settingsRepo := &upstreamBillingProbeSettingRepo{values: map[string]string{
+			SettingKeyUpstreamBillingProbeSettings: `{"enabled":true,"interval_minutes":30}`,
+			SettingKeyPoolAutoPrioritySettings:     `{"enabled":false,"interval_minutes":5}`,
+		}}
+		upstream := &upstreamBillingProbeHTTPStub{}
+		svc := newUpstreamBillingProbeTestService(repo, upstream, settingsRepo)
+
+		require.NoError(t, svc.RunDue(context.Background()))
+		require.Equal(t, int64(1), upstream.calls.Load())
+		require.Zero(t, upstream.modelCalls.Load())
+		snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
+		require.NotNil(t, snapshot)
+		require.Empty(t, snapshot.ModelProbeStatus)
+	})
+}
+
 func TestUpstreamBillingProbeNeverDowngradesMissingConfiguredProxyToDirect(t *testing.T) {
 	proxyID := int64(7)
 	for _, tc := range []struct {
@@ -888,7 +963,7 @@ func TestUpstreamBillingProbeManualAndScheduledRequestsShareOneNetworkProbe(t *t
 
 	errs := make(chan error, 2)
 	go func() {
-		_, err := svc.probeScheduledAccount(context.Background(), account.ID, 30)
+		_, err := svc.probeScheduledAccount(context.Background(), account.ID, &UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 30}, defaultPoolAutoPrioritySettings())
 		errs <- err
 	}()
 	select {
@@ -928,7 +1003,7 @@ func TestUpstreamBillingProbeScheduledRechecksAfterWaitingForSlot(t *testing.T) 
 	}
 	result := make(chan error, 1)
 	go func() {
-		_, err := svc.probeScheduledAccount(context.Background(), account.ID, 30)
+		_, err := svc.probeScheduledAccount(context.Background(), account.ID, &UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 30}, defaultPoolAutoPrioritySettings())
 		result <- err
 	}()
 	time.Sleep(20 * time.Millisecond)
@@ -975,14 +1050,15 @@ func TestUpstreamBillingProbeLeaderLockCoversStaggeredInstancesInCadenceWindow(t
 	require.Equal(t, int64(1), upstream.calls.Load(), "a staggered instance must not start a second batch inside the cadence window")
 }
 
-func TestUpstreamBillingProbeEnabledDefaultsToPoolMode(t *testing.T) {
-	t.Run("pool mode defaults enabled", func(t *testing.T) {
+func TestBillingProbeAndPoolAutoPriorityFlagsAreIndependent(t *testing.T) {
+	t.Run("pool mode does not implicitly enable billing discovery", func(t *testing.T) {
 		account := &Account{
 			Platform:    PlatformOpenAI,
 			Type:        AccountTypeAPIKey,
 			Credentials: map[string]any{"pool_mode": true},
 		}
-		require.True(t, upstreamBillingProbeEnabled(account))
+		require.False(t, upstreamBillingProbeEnabled(account))
+		require.True(t, poolAutoPriorityEnabled(account))
 	})
 
 	t.Run("explicit false overrides pool mode", func(t *testing.T) {
@@ -993,6 +1069,17 @@ func TestUpstreamBillingProbeEnabledDefaultsToPoolMode(t *testing.T) {
 			Extra:       map[string]any{UpstreamBillingProbeEnabledExtraKey: false},
 		}
 		require.False(t, upstreamBillingProbeEnabled(account))
+		require.True(t, poolAutoPriorityEnabled(account))
+	})
+
+	t.Run("explicit pool opt out overrides pool mode", func(t *testing.T) {
+		account := &Account{
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Credentials: map[string]any{"pool_mode": true},
+			Extra:       map[string]any{PoolAutoPriorityEnabledExtraKey: false},
+		}
+		require.False(t, poolAutoPriorityEnabled(account))
 	})
 
 	t.Run("non pool account remains disabled by default", func(t *testing.T) {
@@ -1002,6 +1089,7 @@ func TestUpstreamBillingProbeEnabledDefaultsToPoolMode(t *testing.T) {
 			Credentials: map[string]any{"pool_mode": false},
 		}
 		require.False(t, upstreamBillingProbeEnabled(account))
+		require.False(t, poolAutoPriorityEnabled(account))
 	})
 
 	t.Run("explicit true enables non pool account", func(t *testing.T) {

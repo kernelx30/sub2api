@@ -972,6 +972,7 @@ export type UpstreamBillingProbeStatus = 'ok' | 'unsupported' | 'failed'
 
 export interface UpstreamBillingProbeSnapshot {
   status: UpstreamBillingProbeStatus
+  billing_probe_attempted?: boolean
   data?: UpstreamBillingData
   received_at?: string
   fresh_until?: string
@@ -979,10 +980,25 @@ export interface UpstreamBillingProbeSnapshot {
   next_probe_at: string
   failure_count?: number
   http_status?: number
+  model_probe_status?: UpstreamBillingProbeStatus
+  model_probe_model?: string
+  model_probe_endpoint?: string
+  model_probe_latency_ms?: number
+  model_probe_http_status?: number
+  model_probe_last_error?: string
+  model_probe_last_attempt_at?: string
+  model_probe_fresh_until?: string
+  model_probe_next_at?: string
+  model_probe_failure_count?: number
   last_error?: string
 }
 
 export interface UpstreamBillingProbeSettings {
+  enabled: boolean
+  interval_minutes: number
+}
+
+export interface PoolAutoPrioritySettings {
   enabled: boolean
   interval_minutes: number
 }
@@ -1061,6 +1077,7 @@ export interface Account {
     model_rate_limits?: Record<string, { rate_limited_at: string; rate_limit_reset_at: string }>
     antigravity_credits_overages?: Record<string, { activated_at: string; active_until: string }>
     upstream_billing_probe_enabled?: boolean
+    pool_auto_priority_enabled?: boolean
     upstream_billing_probe?: UpstreamBillingProbeSnapshot
   } & Record<string, unknown>)
   proxy_id: number | null
@@ -1345,6 +1362,7 @@ export interface CreateAccountRequest {
   expires_at?: number | null
   auto_pause_on_expired?: boolean
   upstream_billing_probe_enabled?: boolean
+  pool_auto_priority_enabled?: boolean
   confirm_mixed_channel_risk?: boolean
 }
 

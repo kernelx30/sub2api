@@ -703,6 +703,8 @@ type GatewayService struct {
 	modelsListCache       *gocache.Cache
 	modelsListCacheTTL    time.Duration
 	settingService        *SettingService
+	poolAutoPriorityEnabled   atomic.Bool
+	poolAutoPriorityCheckedAt atomic.Int64
 	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
 	debugModelRouting     atomic.Bool
 	debugClaudeMimic      atomic.Bool
@@ -783,6 +785,9 @@ func NewGatewayService(
 		balanceNotifyService:  balanceNotifyService,
 		userPlatformQuotaRepo: userPlatformQuotaRepo,
 	}
+	// Fail open until the first settings refresh so an unavailable settings
+	// repository never silently disables an already configured pool.
+	svc.poolAutoPriorityEnabled.Store(true)
 	svc.userGroupRateResolver = newUserGroupRateResolver(
 		userGroupRateRepo,
 		svc.userGroupRateCache,

@@ -4380,6 +4380,76 @@
             </div>
           </div>
 
+          <!-- Pool Auto Priority Settings -->
+          <div class="card" data-testid="pool-auto-priority-settings">
+            <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t("admin.settings.poolAutoPriority.title") }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t("admin.settings.poolAutoPriority.description") }}
+              </p>
+            </div>
+            <div class="space-y-5 p-6">
+              <div v-if="poolAutoPriorityLoading" class="flex items-center gap-2 text-gray-500">
+                <div class="h-4 w-4 animate-spin rounded-full border-b-2 border-primary-600"></div>
+                {{ t("common.loading") }}
+              </div>
+              <template v-else>
+                <div class="flex items-center justify-between gap-4">
+                  <div>
+                    <label class="font-medium text-gray-900 dark:text-white">
+                      {{ t("admin.settings.poolAutoPriority.enabled") }}
+                    </label>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.poolAutoPriority.enabledHint") }}
+                    </p>
+                  </div>
+                  <Toggle
+                    v-model="poolAutoPriorityForm.enabled"
+                    :aria-label="t('admin.settings.poolAutoPriority.enabled')"
+                    data-testid="pool-auto-priority-enabled"
+                  />
+                </div>
+                <div
+                  v-if="poolAutoPriorityForm.enabled"
+                  class="border-t border-gray-100 pt-4 dark:border-dark-700"
+                >
+                  <label
+                    class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                    for="pool-auto-priority-interval"
+                  >
+                    {{ t("admin.settings.poolAutoPriority.intervalMinutes") }}
+                  </label>
+                  <input
+                    id="pool-auto-priority-interval"
+                    v-model.number="poolAutoPriorityForm.interval_minutes"
+                    type="number"
+                    min="5"
+                    max="60"
+                    class="input w-32"
+                    data-testid="pool-auto-priority-interval"
+                    @keydown.enter.prevent="savePoolAutoPrioritySettings"
+                  />
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.poolAutoPriority.intervalHint") }}
+                  </p>
+                </div>
+                <div class="flex justify-end border-t border-gray-100 pt-4 dark:border-dark-700">
+                  <button
+                    type="button"
+                    class="btn btn-primary btn-sm"
+                    :disabled="poolAutoPrioritySaving"
+                    data-testid="pool-auto-priority-save"
+                    @click="savePoolAutoPrioritySettings"
+                  >
+                    {{ poolAutoPrioritySaving ? t("common.saving") : t("common.save") }}
+                  </button>
+                </div>
+              </template>
+            </div>
+          </div>
+
           <!-- Ollama Cloud Usage Settings -->
           <div class="card" data-testid="ollama-cloud-usage-global-settings">
             <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
@@ -8148,6 +8218,13 @@ const upstreamBillingProbeForm = reactive({
   interval_minutes: 30,
 });
 
+const poolAutoPriorityLoading = ref(true);
+const poolAutoPrioritySaving = ref(false);
+const poolAutoPriorityForm = reactive({
+  enabled: true,
+  interval_minutes: 5,
+});
+
 const ollamaCloudUsageLoading = ref(true);
 const ollamaCloudUsageSaving = ref(false);
 const ollamaCloudUsageForm = reactive({
@@ -10786,6 +10863,40 @@ async function saveUpstreamBillingProbeSettings() {
   }
 }
 
+async function loadPoolAutoPrioritySettings() {
+  poolAutoPriorityLoading.value = true;
+  try {
+    Object.assign(
+      poolAutoPriorityForm,
+      await adminAPI.accounts.getPoolAutoPrioritySettings(),
+    );
+  } catch (_error: unknown) {
+    // Keep fail-open defaults when this optional setting cannot be loaded.
+  } finally {
+    poolAutoPriorityLoading.value = false;
+  }
+}
+
+async function savePoolAutoPrioritySettings() {
+  poolAutoPrioritySaving.value = true;
+  try {
+    const updated = await adminAPI.accounts.updatePoolAutoPrioritySettings({
+      ...poolAutoPriorityForm,
+    });
+    Object.assign(poolAutoPriorityForm, updated);
+    appStore.showSuccess(t("admin.settings.poolAutoPriority.saved"));
+  } catch (error: unknown) {
+    appStore.showError(
+      extractApiErrorMessage(
+        error,
+        t("admin.settings.poolAutoPriority.saveFailed"),
+      ),
+    );
+  } finally {
+    poolAutoPrioritySaving.value = false;
+  }
+}
+
 async function loadOllamaCloudUsageSettings() {
   ollamaCloudUsageLoading.value = true;
   try {
@@ -11551,6 +11662,7 @@ onMounted(() => {
   loadSubscriptionGroups();
   loadAdminApiKey();
   loadUpstreamBillingProbeSettings();
+  loadPoolAutoPrioritySettings();
   loadOllamaCloudUsageSettings();
   loadOverloadCooldownSettings();
   loadRateLimit429CooldownSettings();

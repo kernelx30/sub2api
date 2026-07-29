@@ -12,9 +12,12 @@ vi.mock('@/api/client', () => ({
 
 import {
   getUpstreamBillingProbeSettings,
+  getPoolAutoPrioritySettings,
   probeUpstreamBilling,
   probeUpstreamBillingBatch,
   setUpstreamBillingProbeEnabled,
+  setPoolAutoPriorityEnabled,
+  updatePoolAutoPrioritySettings,
   updateUpstreamBillingProbeSettings
 } from '@/api/admin/accounts'
 
@@ -23,6 +26,21 @@ describe('admin account upstream billing probe API', () => {
     get.mockReset()
     post.mockReset()
     put.mockReset()
+  })
+
+  it('keeps pool automatic priority on independent endpoints', async () => {
+    const settings = { enabled: true, interval_minutes: 5 }
+    get.mockResolvedValueOnce({ data: settings })
+    put.mockResolvedValueOnce({ data: settings })
+    put.mockResolvedValueOnce({ data: {} })
+
+    await expect(getPoolAutoPrioritySettings()).resolves.toEqual(settings)
+    await expect(updatePoolAutoPrioritySettings(settings)).resolves.toEqual(settings)
+    await setPoolAutoPriorityEnabled(7, false)
+
+    expect(get).toHaveBeenCalledWith('/admin/accounts/pool-auto-priority/settings')
+    expect(put).toHaveBeenNthCalledWith(1, '/admin/accounts/pool-auto-priority/settings', settings)
+    expect(put).toHaveBeenNthCalledWith(2, '/admin/accounts/7/pool-auto-priority', { enabled: false })
   })
 
   it('reads and updates global settings', async () => {

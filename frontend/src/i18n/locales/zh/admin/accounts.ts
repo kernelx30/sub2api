@@ -208,6 +208,17 @@ export default {
         batchCompleted: '已完成 {count} 个账号的倍率探测',
         batchPartial: '倍率探测部分完成：成功 {success} 个，失败 {failed} 个'
       },
+      poolAutoPriority: {
+        enabled: '参与池模式自动优先级',
+        enabledHint: '独立测试模型可用性和响应时间；健康且更快的账号优先，延迟接近时再按手动优先级排序。',
+        accountState: '当前账号自动优先级：',
+        globalState: '全局自动优先级：',
+        modelStatus: '模型测速状态：{value}',
+        model: '测速模型：{value}',
+        latency: '响应延迟：{value} ms',
+        lastProbe: '最后测速：{value}',
+        notMeasured: '未测速'
+      },
       allPrivacyModes: '全部Privacy状态',
       privacyUnset: '未设置',
       privacyTrainingOff: '已关闭训练数据共享',
