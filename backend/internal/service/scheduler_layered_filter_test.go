@@ -301,7 +301,7 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 		}
 	}
 	poolAccount := func(id int64, priority int, extra map[string]any) *Account {
-		return &Account{ID: id, Priority: priority, Credentials: map[string]any{"pool_mode": true}, Extra: extra}
+		return &Account{ID: id, Type: AccountTypeAPIKey, Priority: priority, Credentials: map[string]any{"pool_mode": true}, Extra: extra}
 	}
 
 	t.Run("healthy faster account wins over lower manual priority", func(t *testing.T) {
@@ -347,6 +347,7 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 			{
 				account: &Account{
 					ID:          1,
+					Type:        AccountTypeAPIKey,
 					Priority:    1,
 					Credentials: map[string]any{"pool_mode": true},
 					Extra: map[string]any{
@@ -368,6 +369,7 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 			{
 				account: &Account{
 					ID:          2,
+					Type:        AccountTypeAPIKey,
 					Priority:    9,
 					Credentials: map[string]any{"pool_mode": true},
 					Extra: map[string]any{
@@ -399,6 +401,7 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 			{
 				account: &Account{
 					ID:          1,
+					Type:        AccountTypeAPIKey,
 					Priority:    1,
 					Credentials: map[string]any{"pool_mode": true},
 					Extra: map[string]any{
@@ -418,6 +421,7 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 			{
 				account: &Account{
 					ID:          2,
+					Type:        AccountTypeAPIKey,
 					Priority:    9,
 					Credentials: map[string]any{"pool_mode": true},
 					Extra: map[string]any{
