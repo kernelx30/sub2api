@@ -43,7 +43,8 @@ func TestAccountUpdatePreservesConcurrentProbeSnapshot(t *testing.T) {
 	require.NoError(t, repo.UpdateExtra(ctx, got.ID, map[string]any{service.UpstreamBillingProbeEnabledExtraKey: false}))
 	disabled, err := repo.GetByID(ctx, account.ID)
 	require.NoError(t, err)
-	require.NotContains(t, disabled.Extra, service.UpstreamBillingProbeExtraKey)
+	require.Contains(t, disabled.Extra, service.UpstreamBillingProbeExtraKey,
+		"disabling billing discovery must not discard the shared model-health snapshot")
 }
 
 func TestAccountUpdatePreservesConcurrentProbeEnableFlag(t *testing.T) {
