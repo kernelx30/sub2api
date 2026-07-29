@@ -20,6 +20,8 @@ const {
   getBetaPolicySettings,
   getUpstreamBillingProbeSettings,
   updateUpstreamBillingProbeSettings,
+  getPoolAutoPrioritySettings,
+  updatePoolAutoPrioritySettings,
   getOllamaCloudUsageSettings,
   updateOllamaCloudUsageSettings,
   getGroups,
@@ -57,6 +59,11 @@ const {
     interval_minutes: 30,
   }),
   updateUpstreamBillingProbeSettings: vi.fn().mockImplementation(async (payload) => payload),
+  getPoolAutoPrioritySettings: vi.fn().mockResolvedValue({
+    enabled: true,
+    interval_minutes: 5,
+  }),
+  updatePoolAutoPrioritySettings: vi.fn().mockImplementation(async (payload) => payload),
   getOllamaCloudUsageSettings: vi.fn().mockResolvedValue({
     enabled: false,
     interval_minutes: 60,
@@ -97,6 +104,8 @@ vi.mock("@/api", () => ({
     accounts: {
       getUpstreamBillingProbeSettings,
       updateUpstreamBillingProbeSettings,
+      getPoolAutoPrioritySettings,
+      updatePoolAutoPrioritySettings,
       getOllamaCloudUsageSettings,
       updateOllamaCloudUsageSettings,
     },
@@ -225,6 +234,14 @@ vi.mock("vue-i18n", async () => {
     "admin.settings.upstreamBillingProbe.intervalHint": "范围 5–1440 分钟。",
     "admin.settings.upstreamBillingProbe.saved": "上游倍率自动探测设置已保存",
     "admin.settings.upstreamBillingProbe.saveFailed": "保存上游倍率自动探测设置失败",
+    "admin.settings.poolAutoPriority.title": "池模式自动测速排序",
+    "admin.settings.poolAutoPriority.description": "定期发起真实模型请求，并按健康状态和响应延迟动态排序池模式账号。",
+    "admin.settings.poolAutoPriority.enabled": "启用池模式自动优先级",
+    "admin.settings.poolAutoPriority.enabledHint": "仅影响已参与该功能的池模式账号，不修改手动优先级。",
+    "admin.settings.poolAutoPriority.intervalMinutes": "测速周期（分钟）",
+    "admin.settings.poolAutoPriority.intervalHint": "范围 5–60 分钟。",
+    "admin.settings.poolAutoPriority.saved": "池模式自动测速排序设置已保存",
+    "admin.settings.poolAutoPriority.saveFailed": "保存池模式自动测速排序设置失败",
     "admin.settings.site.uploadImage": "上传图片",
     "admin.settings.site.remove": "移除",
     "admin.settings.platformQuota.platform": "平台",
@@ -596,6 +613,8 @@ describe("admin SettingsView payment visible method controls", () => {
     getBetaPolicySettings.mockReset();
     getUpstreamBillingProbeSettings.mockReset();
     updateUpstreamBillingProbeSettings.mockReset();
+    getPoolAutoPrioritySettings.mockReset();
+    updatePoolAutoPrioritySettings.mockReset();
     getOllamaCloudUsageSettings.mockReset();
     updateOllamaCloudUsageSettings.mockReset();
     getGroups.mockReset();
@@ -658,6 +677,11 @@ describe("admin SettingsView payment visible method controls", () => {
       interval_minutes: 30,
     });
     updateUpstreamBillingProbeSettings.mockImplementation(async (payload) => payload);
+    getPoolAutoPrioritySettings.mockResolvedValue({
+      enabled: true,
+      interval_minutes: 5,
+    });
+    updatePoolAutoPrioritySettings.mockImplementation(async (payload) => payload);
     getOllamaCloudUsageSettings.mockResolvedValue({
       enabled: false,
       interval_minutes: 60,
@@ -1043,6 +1067,39 @@ describe("admin SettingsView payment visible method controls", () => {
       interval_minutes: 60,
     });
     expect(showSuccess).toHaveBeenCalledWith("上游倍率自动探测设置已保存");
+  });
+
+  it("loads and saves pool auto-priority independently from billing discovery", async () => {
+    getPoolAutoPrioritySettings.mockResolvedValueOnce({
+      enabled: false,
+      interval_minutes: 10,
+    });
+
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openGatewayTab(wrapper);
+
+    const card = wrapper.get('[data-testid="pool-auto-priority-settings"]');
+    expect(card.isVisible()).toBe(true);
+    expect(card.text()).toContain("池模式自动测速排序");
+    expect(
+      (card.get('[data-testid="pool-auto-priority-enabled"]').element as HTMLInputElement)
+        .checked,
+    ).toBe(false);
+    expect(card.find('[data-testid="pool-auto-priority-interval"]').exists()).toBe(false);
+
+    await card.get('[data-testid="pool-auto-priority-enabled"]').setValue(true);
+    await card.get('[data-testid="pool-auto-priority-interval"]').setValue(15);
+    await card.get('[data-testid="pool-auto-priority-save"]').trigger("click");
+    await flushPromises();
+
+    expect(updatePoolAutoPrioritySettings).toHaveBeenCalledWith({
+      enabled: true,
+      interval_minutes: 15,
+    });
+    expect(updateUpstreamBillingProbeSettings).not.toHaveBeenCalled();
+    expect(showSuccess).toHaveBeenCalledWith("池模式自动测速排序设置已保存");
   });
 
   it("loads fail-safe-off Ollama Cloud usage refresh settings and saves an explicit opt-in", async () => {

@@ -85,27 +85,27 @@ type PoolAutoPrioritySettings struct {
 // UpstreamBillingProbeSnapshot is persisted in accounts.extra. Data is kept as
 // a sanitized map so future response fields do not require a database change.
 type UpstreamBillingProbeSnapshot struct {
-	Status               string         `json:"status"`
-	BillingProbeAttempted bool           `json:"billing_probe_attempted,omitempty"`
-	Data                 map[string]any `json:"data,omitempty"`
-	ReceivedAt           *time.Time     `json:"received_at,omitempty"`
-	FreshUntil           *time.Time     `json:"fresh_until,omitempty"`
-	LastAttemptAt        time.Time      `json:"last_attempt_at"`
-	NextProbeAt          time.Time      `json:"next_probe_at"`
-	FailureCount         int            `json:"failure_count,omitempty"`
-	HTTPStatus           int            `json:"http_status,omitempty"`
-	LatencyMS            int64          `json:"latency_ms,omitempty"`
-	ModelProbeStatus     string         `json:"model_probe_status,omitempty"`
-	ModelProbeModel      string         `json:"model_probe_model,omitempty"`
-	ModelProbeEndpoint   string         `json:"model_probe_endpoint,omitempty"`
-	ModelProbeLatencyMS  int64          `json:"model_probe_latency_ms,omitempty"`
-	ModelProbeHTTPStatus int            `json:"model_probe_http_status,omitempty"`
-	ModelProbeLastError  string         `json:"model_probe_last_error,omitempty"`
-	ModelProbeLastAttemptAt *time.Time  `json:"model_probe_last_attempt_at,omitempty"`
-	ModelProbeFreshUntil    *time.Time  `json:"model_probe_fresh_until,omitempty"`
-	ModelProbeNextAt        *time.Time  `json:"model_probe_next_at,omitempty"`
-	ModelProbeFailureCount  int         `json:"model_probe_failure_count,omitempty"`
-	LastError            string         `json:"last_error,omitempty"`
+	Status                  string         `json:"status"`
+	BillingProbeAttempted   bool           `json:"billing_probe_attempted,omitempty"`
+	Data                    map[string]any `json:"data,omitempty"`
+	ReceivedAt              *time.Time     `json:"received_at,omitempty"`
+	FreshUntil              *time.Time     `json:"fresh_until,omitempty"`
+	LastAttemptAt           time.Time      `json:"last_attempt_at"`
+	NextProbeAt             time.Time      `json:"next_probe_at"`
+	FailureCount            int            `json:"failure_count,omitempty"`
+	HTTPStatus              int            `json:"http_status,omitempty"`
+	LatencyMS               int64          `json:"latency_ms,omitempty"`
+	ModelProbeStatus        string         `json:"model_probe_status,omitempty"`
+	ModelProbeModel         string         `json:"model_probe_model,omitempty"`
+	ModelProbeEndpoint      string         `json:"model_probe_endpoint,omitempty"`
+	ModelProbeLatencyMS     int64          `json:"model_probe_latency_ms,omitempty"`
+	ModelProbeHTTPStatus    int            `json:"model_probe_http_status,omitempty"`
+	ModelProbeLastError     string         `json:"model_probe_last_error,omitempty"`
+	ModelProbeLastAttemptAt *time.Time     `json:"model_probe_last_attempt_at,omitempty"`
+	ModelProbeFreshUntil    *time.Time     `json:"model_probe_fresh_until,omitempty"`
+	ModelProbeNextAt        *time.Time     `json:"model_probe_next_at,omitempty"`
+	ModelProbeFailureCount  int            `json:"model_probe_failure_count,omitempty"`
+	LastError               string         `json:"last_error,omitempty"`
 }
 
 // UpstreamBillingProbeResult is returned by manual probe endpoints.
@@ -783,15 +783,15 @@ func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, ac
 		return s.persistProbeFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "invalid_response", retryAfter(resp.Header, now), modelProbe)
 	}
 	snapshot := &UpstreamBillingProbeSnapshot{
-		Status:        UpstreamBillingProbeStatusOK,
+		Status:                UpstreamBillingProbeStatusOK,
 		BillingProbeAttempted: true,
-		Data:          data,
-		ReceivedAt:    probeTimePtr(now),
-		FreshUntil:    probeTimePtr(now.Add(2 * time.Duration(intervalMinutes) * time.Minute)),
-		LastAttemptAt: now,
-		NextProbeAt:   now.Add(nextProbeDelay(intervalMinutes, 0)),
-		HTTPStatus:    resp.StatusCode,
-		LatencyMS:     latencyMS,
+		Data:                  data,
+		ReceivedAt:            probeTimePtr(now),
+		FreshUntil:            probeTimePtr(now.Add(2 * time.Duration(intervalMinutes) * time.Minute)),
+		LastAttemptAt:         now,
+		NextProbeAt:           now.Add(nextProbeDelay(intervalMinutes, 0)),
+		HTTPStatus:            resp.StatusCode,
+		LatencyMS:             latencyMS,
 	}
 	applyScheduledUpstreamModelProbe(snapshot, account, modelProbe, now, intervalMinutes, 0)
 	if snapshot.ModelProbeNextAt != nil && snapshot.ModelProbeNextAt.Before(snapshot.NextProbeAt) {
@@ -1046,13 +1046,13 @@ func (s *UpstreamBillingProbeService) persistProbeFailure(
 		status = UpstreamBillingProbeStatusUnsupported
 	}
 	snapshot := &UpstreamBillingProbeSnapshot{
-		Status:        status,
+		Status:                status,
 		BillingProbeAttempted: true,
-		LastAttemptAt: now,
-		NextProbeAt:   now.Add(nextProbeFailureDelay(intervalMinutes, failureCount, retryAfterDuration)),
-		FailureCount:  failureCount,
-		HTTPStatus:    statusCode,
-		LastError:     reason,
+		LastAttemptAt:         now,
+		NextProbeAt:           now.Add(nextProbeFailureDelay(intervalMinutes, failureCount, retryAfterDuration)),
+		FailureCount:          failureCount,
+		HTTPStatus:            statusCode,
+		LastError:             reason,
 	}
 	if previous != nil {
 		snapshot.Data = previous.Data

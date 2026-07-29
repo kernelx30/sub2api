@@ -596,15 +596,15 @@ func lockAndMergeAccountProbeExtra(ctx context.Context, client *dbent.Client, ac
 	}
 
 	var (
-		identityUnchanged            bool
-		ollamaGroupIdentityUnchanged bool
-		ollamaProxyIdentityUnchanged bool
-		currentEnabled               []byte
+		identityUnchanged              bool
+		ollamaGroupIdentityUnchanged   bool
+		ollamaProxyIdentityUnchanged   bool
+		currentEnabled                 []byte
 		currentPoolAutoPriorityEnabled []byte
-		currentSnapshot              []byte
-		currentOllamaSession         []byte
-		currentOllamaAutoRefresh     []byte
-		currentOllamaSnapshot        []byte
+		currentSnapshot                []byte
+		currentOllamaSession           []byte
+		currentOllamaAutoRefresh       []byte
+		currentOllamaSnapshot          []byte
 	)
 	if err := rows.Scan(
 		&identityUnchanged,
@@ -2712,11 +2712,6 @@ func isSchedulerNeutralExtraKey(key string) bool {
 		}
 	}
 	return false
-}
-
-func upstreamBillingProbeExplicitlyDisabled(extra map[string]any) bool {
-	enabled, ok := extra[service.UpstreamBillingProbeEnabledExtraKey].(bool)
-	return ok && !enabled
 }
 
 func upstreamBillingProbeSnapshotClearRequested(extra map[string]any) bool {

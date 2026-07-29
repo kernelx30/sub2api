@@ -1042,9 +1042,9 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 
 	// Prepare bulk updates for columns and JSONB fields.
 	repoUpdates := AccountBulkUpdate{
-		Credentials:  input.Credentials,
-		Extra:        input.Extra,
-		ProbeEnabled: input.ProbeEnabled,
+		Credentials:             input.Credentials,
+		Extra:                   input.Extra,
+		ProbeEnabled:            input.ProbeEnabled,
 		PoolAutoPriorityEnabled: input.PoolAutoPriorityEnabled,
 	}
 	if input.ProbeEnabled != nil {

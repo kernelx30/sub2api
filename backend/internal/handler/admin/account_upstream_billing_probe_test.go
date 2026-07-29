@@ -19,8 +19,10 @@ func setupUpstreamBillingProbeRouter() *gin.Engine {
 
 	router := gin.New()
 	router.GET("/admin/accounts/upstream-billing-probe/settings", handler.GetUpstreamBillingProbeSettings)
+	router.GET("/admin/accounts/pool-auto-priority/settings", handler.GetPoolAutoPrioritySettings)
 	router.POST("/admin/accounts/upstream-billing-probe/batch", handler.ProbeUpstreamBillingBatch)
 	router.PUT("/admin/accounts/:id/upstream-billing-probe", handler.SetUpstreamBillingProbeEnabled)
+	router.PUT("/admin/accounts/:id/pool-auto-priority", handler.SetPoolAutoPriorityEnabled)
 	return router
 }
 
@@ -32,6 +34,20 @@ func TestAccountHandlerGetUpstreamBillingProbeSettingsReturnsDefaults(t *testing
 	require.Equal(t, http.StatusOK, recorder.Code)
 	var response struct {
 		Data service.UpstreamBillingProbeSettings `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	require.True(t, response.Data.Enabled)
+	require.Equal(t, 5, response.Data.IntervalMinutes)
+}
+
+func TestAccountHandlerGetPoolAutoPrioritySettingsReturnsIndependentDefaults(t *testing.T) {
+	router := setupUpstreamBillingProbeRouter()
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/admin/accounts/pool-auto-priority/settings", nil))
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var response struct {
+		Data service.PoolAutoPrioritySettings `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
 	require.True(t, response.Data.Enabled)
@@ -68,4 +84,22 @@ func TestAccountHandlerSetUpstreamBillingProbeEnabledRequiresValue(t *testing.T)
 	router.ServeHTTP(recorder, request)
 
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
+}
+
+func TestAccountHandlerSetPoolAutoPriorityEnabledValidatesInput(t *testing.T) {
+	router := setupUpstreamBillingProbeRouter()
+
+	for _, tc := range []struct {
+		path string
+		body string
+	}{
+		{path: "/admin/accounts/not-an-id/pool-auto-priority", body: `{"enabled":true}`},
+		{path: "/admin/accounts/1/pool-auto-priority", body: `{}`},
+	} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPut, tc.path, bytes.NewBufferString(tc.body))
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(recorder, request)
+		require.Equal(t, http.StatusBadRequest, recorder.Code)
+	}
 }

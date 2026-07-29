@@ -1602,24 +1602,24 @@ func accountProbeAutoPriority(account *Account, now time.Time) (probeAutoPriorit
 		return info, true
 	}
 	switch snapshot.ModelProbeStatus {
-		case UpstreamBillingProbeStatusOK:
-			if !isModelProbeSnapshotFresh(snapshot, now) {
-				return info, true
-			}
-			info.latencyMS = snapshot.ModelProbeLatencyMS
-			if info.latencyMS <= 0 {
-				info.latencyMS = snapshot.LatencyMS
-			}
-			if info.latencyMS > 0 {
-				info.tier = probeAutoPriorityTierHealthy
-			} else {
-				info.tier = probeAutoPriorityTierHealthyUnknownLatency
-			}
+	case UpstreamBillingProbeStatusOK:
+		if !isModelProbeSnapshotFresh(snapshot, now) {
 			return info, true
-		case UpstreamBillingProbeStatusFailed:
-			info.tier = probeAutoPriorityTierFailed
-		case UpstreamBillingProbeStatusUnsupported:
-			info.tier = probeAutoPriorityTierUnsupported
+		}
+		info.latencyMS = snapshot.ModelProbeLatencyMS
+		if info.latencyMS <= 0 {
+			info.latencyMS = snapshot.LatencyMS
+		}
+		if info.latencyMS > 0 {
+			info.tier = probeAutoPriorityTierHealthy
+		} else {
+			info.tier = probeAutoPriorityTierHealthyUnknownLatency
+		}
+		return info, true
+	case UpstreamBillingProbeStatusFailed:
+		info.tier = probeAutoPriorityTierFailed
+	case UpstreamBillingProbeStatusUnsupported:
+		info.tier = probeAutoPriorityTierUnsupported
 	}
 	info.failureCount = snapshot.ModelProbeFailureCount
 	if info.failureCount <= 0 {

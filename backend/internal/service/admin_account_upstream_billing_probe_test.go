@@ -64,6 +64,22 @@ func TestCreateAccountAcceptsDedicatedUpstreamBillingProbeSetting(t *testing.T) 
 	require.ErrorIs(t, err, ErrUpstreamBillingProbeAccountInvalid)
 }
 
+func TestCreateAccountAcceptsDedicatedPoolAutoPrioritySetting(t *testing.T) {
+	enabled := false
+	repo := &upstreamBillingProbeAccountRepo{}
+	created, err := (&adminServiceImpl{accountRepo: repo}).CreateAccount(context.Background(), &CreateAccountInput{
+		Name:                    "pool upstream",
+		Platform:                PlatformOpenAI,
+		Type:                    AccountTypeAPIKey,
+		Credentials:             map[string]any{"api_key": "sk-test", "pool_mode": true},
+		PoolAutoPriorityEnabled: &enabled,
+		SkipDefaultGroupBind:    true,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, false, created.Extra[PoolAutoPriorityEnabledExtraKey])
+}
+
 func TestUpdateAccountPreservesManagedUpstreamBillingProbeStateForUnrelatedEdit(t *testing.T) {
 	accountID := int64(110)
 	repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{
@@ -299,6 +315,29 @@ func TestUpdateAccountAcceptsProbeEnabledAndRejectsInjectedSnapshot(t *testing.T
 	require.NotContains(t, updated.Extra, UpstreamBillingProbeExtraKey)
 }
 
+func TestUpdateAccountAcceptsPoolAutoPriorityControl(t *testing.T) {
+	accountID := int64(121)
+	repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{
+		accountID: {
+			ID:          accountID,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Credentials: map[string]any{"pool_mode": true},
+			Extra:       map[string]any{},
+		},
+	}}
+
+	updated, err := (&adminServiceImpl{accountRepo: repo}).UpdateAccount(context.Background(), accountID, &UpdateAccountInput{
+		Extra: map[string]any{PoolAutoPriorityEnabledExtraKey: false},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, false, updated.Extra[PoolAutoPriorityEnabledExtraKey])
+	require.Len(t, repo.updates[accountID], 1)
+	require.Equal(t, false, repo.updates[accountID][0][PoolAutoPriorityEnabledExtraKey])
+}
+
 func TestUpdateAccountExplicitProbeDisableUsesDedicatedExtraUpdate(t *testing.T) {
 	accountID := int64(113)
 	repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{
@@ -407,6 +446,26 @@ func TestBulkUpdateAccountsAcceptsDedicatedUpstreamBillingProbeSetting(t *testin
 			require.Equal(t, enabled, *repo.bulkUpdates[0].ProbeEnabled)
 		})
 	}
+}
+
+func TestBulkUpdateAccountsAcceptsDedicatedPoolAutoPrioritySetting(t *testing.T) {
+	enabled := false
+	repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{
+		1: {ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+		2: {ID: 2, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+	}}
+
+	result, err := (&adminServiceImpl{accountRepo: repo}).BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs:              []int64{1, 2},
+		PoolAutoPriorityEnabled: &enabled,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 2, result.Success)
+	require.Len(t, repo.bulkUpdates, 1)
+	require.Equal(t, false, repo.bulkUpdates[0].Extra[PoolAutoPriorityEnabledExtraKey])
+	require.NotNil(t, repo.bulkUpdates[0].PoolAutoPriorityEnabled)
+	require.False(t, *repo.bulkUpdates[0].PoolAutoPriorityEnabled)
 }
 
 func TestBulkUpdateAccountsRejectsProbeSettingForIneligibleTargetBeforeWrite(t *testing.T) {

@@ -291,12 +291,12 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 		return map[string]any{
 			PoolAutoPriorityEnabledExtraKey: true,
 			UpstreamBillingProbeExtraKey: map[string]any{
-				"status":                       status,
-				"model_probe_status":           status,
-				"model_probe_latency_ms":       latencyMS,
-				"model_probe_last_attempt_at":  now,
-				"model_probe_fresh_until":       freshUntil,
-				"model_probe_failure_count":     failureCount,
+				"status":                      status,
+				"model_probe_status":          status,
+				"model_probe_latency_ms":      latencyMS,
+				"model_probe_last_attempt_at": now,
+				"model_probe_fresh_until":     freshUntil,
+				"model_probe_failure_count":   failureCount,
 			},
 		}
 	}
@@ -346,8 +346,8 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 		accounts := []accountWithLoad{
 			{
 				account: &Account{
-					ID:       1,
-					Priority: 1,
+					ID:          1,
+					Priority:    1,
 					Credentials: map[string]any{"pool_mode": true},
 					Extra: map[string]any{
 						PoolAutoPriorityEnabledExtraKey: true,
@@ -367,8 +367,8 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 			},
 			{
 				account: &Account{
-					ID:       2,
-					Priority: 9,
+					ID:          2,
+					Priority:    9,
 					Credentials: map[string]any{"pool_mode": true},
 					Extra: map[string]any{
 						PoolAutoPriorityEnabledExtraKey: true,
@@ -398,8 +398,8 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 		accounts := []accountWithLoad{
 			{
 				account: &Account{
-					ID:       1,
-					Priority: 1,
+					ID:          1,
+					Priority:    1,
 					Credentials: map[string]any{"pool_mode": true},
 					Extra: map[string]any{
 						PoolAutoPriorityEnabledExtraKey: true,
@@ -417,8 +417,8 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 			},
 			{
 				account: &Account{
-					ID:       2,
-					Priority: 9,
+					ID:          2,
+					Priority:    9,
 					Credentials: map[string]any{"pool_mode": true},
 					Extra: map[string]any{
 						PoolAutoPriorityEnabledExtraKey: true,
@@ -469,4 +469,3 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 		require.Equal(t, int64(1), result[0].account.ID)
 	})
 }
-	"github.com/Wei-Shaw/sub2api/internal/config"
