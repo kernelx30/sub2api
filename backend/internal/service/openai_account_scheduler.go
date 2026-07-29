@@ -586,14 +586,16 @@ func (s *defaultOpenAIAccountScheduler) shouldEscapeStickyAccount(accountID int6
 }
 
 type openAIAccountCandidateScore struct {
-	account   *Account
-	loadInfo  *AccountLoadInfo
-	loadKnown bool
-	score     float64
-	priority  int
-	errorRate float64
-	ttft      float64
-	hasTTFT   bool
+	account     *Account
+	loadInfo    *AccountLoadInfo
+	loadKnown   bool
+	score       float64
+	priority    int
+	errorRate   float64
+	ttft        float64
+	hasTTFT     bool
+	probeRank   int
+	probeRanked bool
 }
 
 type openAIAccountCandidateHeap []openAIAccountCandidateScore
@@ -628,6 +630,14 @@ func (h *openAIAccountCandidateHeap) Pop() any {
 }
 
 func isOpenAIAccountCandidateBetter(left openAIAccountCandidateScore, right openAIAccountCandidateScore) bool {
+	if left.probeRanked || right.probeRanked {
+		if left.probeRanked != right.probeRanked {
+			return left.probeRanked
+		}
+		if left.probeRank != right.probeRank {
+			return left.probeRank < right.probeRank
+		}
+	}
 	if left.score != right.score {
 		return left.score > right.score
 	}
@@ -794,6 +804,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 	filtered []*Account,
 	loadMap map[int64]*AccountLoadInfo,
 ) openAIAccountLoadPlan {
+	probeRanks, probeRanked := s.service.openAIProbeAutoPriorityRanks(ctx, filtered)
 	allCandidates := make([]openAIAccountCandidateScore, 0, len(filtered))
 	for _, account := range filtered {
 		loadInfo, loadKnown := loadMap[account.ID]
@@ -806,12 +817,14 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 			errorRate, ttft, hasTTFT = s.stats.snapshot(account.ID)
 		}
 		allCandidates = append(allCandidates, openAIAccountCandidateScore{
-			account:   account,
-			loadInfo:  loadInfo,
-			loadKnown: loadKnown,
-			errorRate: errorRate,
-			ttft:      ttft,
-			hasTTFT:   hasTTFT,
+			account:     account,
+			loadInfo:    loadInfo,
+			loadKnown:   loadKnown,
+			errorRate:   errorRate,
+			ttft:        ttft,
+			hasTTFT:     hasTTFT,
+			probeRank:   probeRanks[account.ID],
+			probeRanked: probeRanked,
 		})
 	}
 
@@ -833,6 +846,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		candidates:                candidates,
 		staleSnapshotCompactRetry: staleSnapshotCompactRetry,
 		candidateCount:            len(candidates),
+		includeOverflowFallback:   probeRanked,
 	}
 	if len(candidates) == 0 {
 		plan.selectionOrder = s.buildOpenAISelectionOrder(req, plan)
@@ -1054,10 +1068,35 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		if len(plan.staleSnapshotCompactRetry) > 0 && s.service.schedulerSnapshot != nil {
 			selectionOrder = append(selectionOrder, sortOpenAICompactRetryCandidates(plan.staleSnapshotCompactRetry)...)
 		}
-		return selectionOrder
+		return orderOpenAICandidatesByProbePriority(selectionOrder)
 	}
 
-	return buildSelectionOrder(plan.candidates)
+	return orderOpenAICandidatesByProbePriority(buildSelectionOrder(plan.candidates))
+}
+
+func orderOpenAICandidatesByProbePriority(candidates []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+	if len(candidates) <= 1 {
+		return candidates
+	}
+	hasRank := false
+	for _, candidate := range candidates {
+		if candidate.probeRanked {
+			hasRank = true
+			break
+		}
+	}
+	if !hasRank {
+		return candidates
+	}
+	ordered := append([]openAIAccountCandidateScore(nil), candidates...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left, right := ordered[i], ordered[j]
+		if left.probeRanked != right.probeRanked {
+			return left.probeRanked
+		}
+		return left.probeRank < right.probeRank
+	})
+	return ordered
 }
 
 func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
@@ -1067,6 +1106,14 @@ func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore) []open
 	ordered := append([]openAIAccountCandidateScore(nil), pool...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		a, b := ordered[i], ordered[j]
+		if a.probeRanked || b.probeRanked {
+			if a.probeRanked != b.probeRanked {
+				return a.probeRanked
+			}
+			if a.probeRank != b.probeRank {
+				return a.probeRank < b.probeRank
+			}
+		}
 		if a.account.Priority != b.account.Priority {
 			return a.account.Priority < b.account.Priority
 		}

@@ -437,6 +437,8 @@ type OpenAIGatewayService struct {
 	grokCredentialMutationLocks         sync.Map // key: int64(accountID), value: *sync.Mutex
 	openaiOAuth429WindowStartUnixNano   atomic.Int64
 	openaiOAuth429WindowCount           atomic.Int64
+	poolAutoPriorityEnabled             atomic.Bool
+	poolAutoPriorityCheckedAt           atomic.Int64
 	openaiWSRetryMetrics                openAIWSRetryMetrics
 	responseHeaderFilter                *responseheaders.CompiledHeaderFilter
 	codexSnapshotThrottle               *accountWriteThrottle
@@ -514,6 +516,7 @@ func NewOpenAIGatewayService(
 	if openAITokenProvider != nil {
 		openAITokenProvider.SetAccountRuntimeBlocker(svc)
 	}
+	svc.poolAutoPriorityEnabled.Store(true)
 	svc.logOpenAIWSModeBootstrap()
 	return svc
 }

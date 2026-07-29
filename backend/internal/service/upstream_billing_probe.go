@@ -901,8 +901,8 @@ func selectUpstreamHealthProbeModel(account *Account) string {
 	}
 	mapping := account.GetModelMapping()
 	for _, requested := range []string{
-		"gpt-5.6-terra",
 		"gpt-5.6-sol",
+		"gpt-5.6-terra",
 		"gpt-5.6",
 		"gpt-5.5",
 		"gpt-5.4",

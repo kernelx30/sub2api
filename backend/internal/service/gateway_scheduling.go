@@ -1565,6 +1565,72 @@ func filterByBestProbeAutoPriority(accounts []accountWithLoad, now time.Time) []
 	return result
 }
 
+// probeAutoPriorityRanks converts the layered probe filter into stable cohort
+// ranks that can also be consumed by the dedicated OpenAI schedulers. Rank 0 is
+// the best fresh health/latency cohort; later ranks are fallback cohorts. The
+// boolean is false when no account opted into pool auto-priority, preserving the
+// legacy ordering without any synthetic rank.
+func probeAutoPriorityRanks(accounts []*Account, now time.Time) (map[int64]int, bool) {
+	if len(accounts) == 0 {
+		return nil, false
+	}
+
+	remaining := make([]accountWithLoad, 0, len(accounts))
+	hasSignal := false
+	for _, account := range accounts {
+		if account == nil {
+			continue
+		}
+		remaining = append(remaining, accountWithLoad{
+			account:  account,
+			loadInfo: &AccountLoadInfo{AccountID: account.ID},
+		})
+		if _, signal := accountProbeAutoPriority(account, now); signal {
+			hasSignal = true
+		}
+	}
+	if !hasSignal || len(remaining) == 0 {
+		return nil, false
+	}
+
+	ranks := make(map[int64]int, len(remaining))
+	for rank := 0; len(remaining) > 0; rank++ {
+		best := filterByBestProbeAutoPriority(remaining, now)
+		if len(best) == 0 {
+			for _, candidate := range remaining {
+				ranks[candidate.account.ID] = rank
+			}
+			break
+		}
+
+		selected := make(map[int64]struct{}, len(best))
+		for _, candidate := range best {
+			if candidate.account == nil {
+				continue
+			}
+			ranks[candidate.account.ID] = rank
+			selected[candidate.account.ID] = struct{}{}
+		}
+		if len(selected) == 0 || len(selected) >= len(remaining) {
+			for _, candidate := range remaining {
+				if _, ok := ranks[candidate.account.ID]; !ok {
+					ranks[candidate.account.ID] = rank
+				}
+			}
+			break
+		}
+
+		next := make([]accountWithLoad, 0, len(remaining)-len(selected))
+		for _, candidate := range remaining {
+			if _, ok := selected[candidate.account.ID]; !ok {
+				next = append(next, candidate)
+			}
+		}
+		remaining = next
+	}
+	return ranks, true
+}
+
 const poolAutoPrioritySettingsCacheTTL = 30 * time.Second
 
 func (s *GatewayService) poolAutoPriorityGloballyEnabled(ctx context.Context) bool {

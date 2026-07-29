@@ -11,11 +11,13 @@ import (
 func TestFilterSchedulerCredentialsKeepsSubscriptionPlanType(t *testing.T) {
 	filtered := filterSchedulerCredentials(map[string]any{
 		"plan_type":     "plus",
+		"pool_mode":     true,
 		"access_token":  "secret-access-token",
 		"refresh_token": "secret-refresh-token",
 	})
 
 	require.Equal(t, "plus", filtered["plan_type"])
+	require.Equal(t, true, filtered["pool_mode"])
 	require.NotContains(t, filtered, "access_token")
 	require.NotContains(t, filtered, "refresh_token")
 }
@@ -40,7 +42,15 @@ func TestSchedulerMetadataAccountKeepsOpenAISubscriptionIdentity(t *testing.T) {
 func TestSchedulerMetadataAccountProjectsUpstreamBillingProbe(t *testing.T) {
 	lastError := strings.Repeat("upstream diagnostic ", 512)
 	probe := map[string]any{
-		"status": "ok",
+		"status":                      "ok",
+		"model_probe_status":          "ok",
+		"model_probe_model":           "gpt-5.6-sol",
+		"model_probe_endpoint":        "responses",
+		"model_probe_latency_ms":      int64(1430),
+		"model_probe_last_attempt_at": "2026-07-29T10:00:00Z",
+		"model_probe_fresh_until":     "2026-07-29T10:10:00Z",
+		"model_probe_next_at":         "2026-07-29T10:05:00Z",
+		"model_probe_failure_count":   0,
 		"data": map[string]any{
 			"billing_scope":             "token",
 			"resolved_rate_multiplier":  0.03,
@@ -59,10 +69,16 @@ func TestSchedulerMetadataAccountProjectsUpstreamBillingProbe(t *testing.T) {
 		"last_error":    lastError,
 	}
 	account := service.Account{
-		ID: 42,
+		ID:       42,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true,
+		},
 		Extra: map[string]any{
-			"upstream_billing_probe": probe,
-			"unused_large_field":     "drop-me",
+			service.UpstreamBillingProbeExtraKey:    probe,
+			service.PoolAutoPriorityEnabledExtraKey: true,
+			"unused_large_field":                    "drop-me",
 		},
 	}
 
@@ -76,6 +92,16 @@ func TestSchedulerMetadataAccountProjectsUpstreamBillingProbe(t *testing.T) {
 	require.Equal(t, "2026-07-13T10:00:00Z", filtered["received_at"])
 	require.Equal(t, "2026-07-13T11:00:00Z", filtered["fresh_until"])
 	require.Equal(t, "2026-07-13T10:30:00Z", filtered["next_probe_at"])
+	require.Equal(t, "ok", filtered["model_probe_status"])
+	require.Equal(t, "gpt-5.6-sol", filtered["model_probe_model"])
+	require.Equal(t, "responses", filtered["model_probe_endpoint"])
+	require.Equal(t, int64(1430), filtered["model_probe_latency_ms"])
+	require.Equal(t, "2026-07-29T10:00:00Z", filtered["model_probe_last_attempt_at"])
+	require.Equal(t, "2026-07-29T10:10:00Z", filtered["model_probe_fresh_until"])
+	require.Equal(t, "2026-07-29T10:05:00Z", filtered["model_probe_next_at"])
+	require.Equal(t, 0, filtered["model_probe_failure_count"])
+	require.Equal(t, true, metadata.Extra[service.PoolAutoPriorityEnabledExtraKey])
+	require.True(t, metadata.IsPoolMode())
 	require.NotContains(t, filtered, "http_status")
 	require.NotContains(t, filtered, "last_error")
 	filteredData, ok := filtered["data"].(map[string]any)

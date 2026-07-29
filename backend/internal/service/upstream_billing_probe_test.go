@@ -1103,13 +1103,27 @@ func TestBillingProbeAndPoolAutoPriorityFlagsAreIndependent(t *testing.T) {
 	})
 }
 
-func TestSelectUpstreamHealthProbeModelPrefersGPT56(t *testing.T) {
+func TestSelectUpstreamHealthProbeModelPrefersGPT56Sol(t *testing.T) {
 	account := &Account{
 		Credentials: map[string]any{
 			"model_mapping": map[string]any{
 				"codex-auto-review": "codex-auto-review",
 				"gpt-5.5":           "gpt-5.5-upstream",
+				"gpt-5.6-sol":       "gpt-5.6-sol-upstream",
 				"gpt-5.6-terra":     "gpt-5.6-terra-upstream",
+			},
+		},
+	}
+
+	require.Equal(t, "gpt-5.6-sol-upstream", selectUpstreamHealthProbeModel(account))
+}
+
+func TestSelectUpstreamHealthProbeModelFallsBackToGPT56Terra(t *testing.T) {
+	account := &Account{
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"gpt-5.5":       "gpt-5.5-upstream",
+				"gpt-5.6-terra": "gpt-5.6-terra-upstream",
 			},
 		},
 	}

@@ -790,12 +790,16 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	if len(eligible) == 0 {
 		return nil, compactBlocked
 	}
+	probeRanks, probeRanked := s.openAIProbeAutoPriorityRanks(ctx, eligible)
 	rateOrder := openAILegacyUpstreamRateOrder{}
 	if preferLowUpstreamRate {
 		rateOrder = newOpenAILegacyUpstreamRateOrder(eligible, time.Now(), s.openAIOAuthSchedulingRateMultiplier(ctx))
 	}
 	sort.SliceStable(eligible, func(i, j int) bool {
 		a, b := eligible[i], eligible[j]
+		if probeRanked && probeRanks[a.ID] != probeRanks[b.ID] {
+			return probeRanks[a.ID] < probeRanks[b.ID]
+		}
 		if requireCompact && compactTiers[a.ID] != compactTiers[b.ID] {
 			return compactTiers[a.ID] > compactTiers[b.ID]
 		}
@@ -1060,12 +1064,13 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		selectionOrder := make([]accountWithLoad, 0, len(available))
 		if requireCompact {
 			appendTier := func(out []accountWithLoad, tier int) []accountWithLoad {
+				tierItems := make([]accountWithLoad, 0, len(available))
 				for _, item := range available {
 					if openAICompactSupportTier(item.account) == tier {
-						out = append(out, item)
+						tierItems = append(tierItems, item)
 					}
 				}
-				return out
+				return append(out, s.orderOpenAIAccountLoadsByProbePriority(ctx, tierItems)...)
 			}
 			selectionOrder = appendTier(selectionOrder, 2)
 			selectionOrder = appendTier(selectionOrder, 1)
@@ -1073,7 +1078,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			// 已升级为 1/2（探测刚跑完，cache 尚未刷新），仍可正常命中。
 			selectionOrder = appendTier(selectionOrder, 0)
 		} else {
-			selectionOrder = append(selectionOrder, available...)
+			selectionOrder = append(selectionOrder, s.orderOpenAIAccountLoadsByProbePriority(ctx, available)...)
 		}
 
 		for _, item := range selectionOrder {
@@ -1115,6 +1120,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		if requireCompact {
 			ordered = prioritizeOpenAICompactAccounts(ordered)
 		}
+		ordered = s.orderOpenAIAccountsByProbePriority(ctx, ordered)
 		for _, acc := range ordered {
 			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, platform, requestedModel, false, requiredCapability)
 			if fresh == nil {
@@ -1165,6 +1171,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	if requireCompact {
 		candidates = prioritizeOpenAICompactAccounts(candidates)
 	}
+	candidates = s.orderOpenAIAccountsByProbePriority(ctx, candidates)
 	for _, acc := range candidates {
 		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, platform, requestedModel, false, requiredCapability)
 		if fresh == nil {
@@ -1373,4 +1380,66 @@ func (s *OpenAIGatewayService) schedulingConfig() config.GatewaySchedulingConfig
 		LoadBatchEnabled:         true,
 		SlotCleanupInterval:      30 * time.Second,
 	}
+}
+
+func (s *OpenAIGatewayService) poolAutoPriorityGloballyEnabled(ctx context.Context) bool {
+	if s == nil || s.settingService == nil {
+		return true
+	}
+	now := time.Now()
+	checkedAt := s.poolAutoPriorityCheckedAt.Load()
+	if checkedAt > 0 && now.Sub(time.Unix(0, checkedAt)) < poolAutoPrioritySettingsCacheTTL {
+		return s.poolAutoPriorityEnabled.Load()
+	}
+	settings, err := s.settingService.GetPoolAutoPrioritySettings(ctx)
+	if err != nil || settings == nil {
+		if checkedAt == 0 {
+			return true
+		}
+		return s.poolAutoPriorityEnabled.Load()
+	}
+	s.poolAutoPriorityEnabled.Store(settings.Enabled)
+	s.poolAutoPriorityCheckedAt.Store(now.UnixNano())
+	return settings.Enabled
+}
+
+func (s *OpenAIGatewayService) openAIProbeAutoPriorityRanks(ctx context.Context, accounts []*Account) (map[int64]int, bool) {
+	if !s.poolAutoPriorityGloballyEnabled(ctx) {
+		return nil, false
+	}
+	return probeAutoPriorityRanks(accounts, time.Now())
+}
+
+func (s *OpenAIGatewayService) orderOpenAIAccountsByProbePriority(ctx context.Context, accounts []*Account) []*Account {
+	if len(accounts) <= 1 {
+		return accounts
+	}
+	ranks, ok := s.openAIProbeAutoPriorityRanks(ctx, accounts)
+	if !ok {
+		return accounts
+	}
+	ordered := append([]*Account(nil), accounts...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ranks[ordered[i].ID] < ranks[ordered[j].ID]
+	})
+	return ordered
+}
+
+func (s *OpenAIGatewayService) orderOpenAIAccountLoadsByProbePriority(ctx context.Context, accounts []accountWithLoad) []accountWithLoad {
+	if len(accounts) <= 1 {
+		return accounts
+	}
+	accountRefs := make([]*Account, 0, len(accounts))
+	for _, candidate := range accounts {
+		accountRefs = append(accountRefs, candidate.account)
+	}
+	ranks, ok := s.openAIProbeAutoPriorityRanks(ctx, accountRefs)
+	if !ok {
+		return accounts
+	}
+	ordered := append([]accountWithLoad(nil), accounts...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ranks[ordered[i].account.ID] < ranks[ordered[j].account.ID]
+	})
+	return ordered
 }
