@@ -46,6 +46,8 @@ const (
 	poolAutoPriorityDefaultIntervalMinutes     = 5
 	poolAutoPriorityMinIntervalMinutes         = 5
 	poolAutoPriorityMaxIntervalMinutes         = 60
+	upstreamModelProbeHistoryLimit             = 12
+	upstreamModelProbeMetricsWindow            = time.Hour
 )
 
 // UpstreamBillingProbeMaxBatchSize limits one manual batch and one runner cycle.
@@ -82,30 +84,48 @@ type PoolAutoPrioritySettings struct {
 	IntervalMinutes int  `json:"interval_minutes"`
 }
 
+// UpstreamModelProbeSample keeps the bounded evidence used by pool auto-priority.
+// ErrorType contains a sanitized internal category rather than an upstream body.
+type UpstreamModelProbeSample struct {
+	Status      string    `json:"status"`
+	LatencyMS   int64     `json:"latency_ms,omitempty"`
+	HTTPStatus  int       `json:"http_status,omitempty"`
+	ErrorType   string    `json:"error_type,omitempty"`
+	AttemptedAt time.Time `json:"attempted_at"`
+}
+
 // UpstreamBillingProbeSnapshot is persisted in accounts.extra. Data is kept as
 // a sanitized map so future response fields do not require a database change.
 type UpstreamBillingProbeSnapshot struct {
-	Status                  string         `json:"status"`
-	BillingProbeAttempted   bool           `json:"billing_probe_attempted,omitempty"`
-	Data                    map[string]any `json:"data,omitempty"`
-	ReceivedAt              *time.Time     `json:"received_at,omitempty"`
-	FreshUntil              *time.Time     `json:"fresh_until,omitempty"`
-	LastAttemptAt           time.Time      `json:"last_attempt_at"`
-	NextProbeAt             time.Time      `json:"next_probe_at"`
-	FailureCount            int            `json:"failure_count,omitempty"`
-	HTTPStatus              int            `json:"http_status,omitempty"`
-	LatencyMS               int64          `json:"latency_ms,omitempty"`
-	ModelProbeStatus        string         `json:"model_probe_status,omitempty"`
-	ModelProbeModel         string         `json:"model_probe_model,omitempty"`
-	ModelProbeEndpoint      string         `json:"model_probe_endpoint,omitempty"`
-	ModelProbeLatencyMS     int64          `json:"model_probe_latency_ms,omitempty"`
-	ModelProbeHTTPStatus    int            `json:"model_probe_http_status,omitempty"`
-	ModelProbeLastError     string         `json:"model_probe_last_error,omitempty"`
-	ModelProbeLastAttemptAt *time.Time     `json:"model_probe_last_attempt_at,omitempty"`
-	ModelProbeFreshUntil    *time.Time     `json:"model_probe_fresh_until,omitempty"`
-	ModelProbeNextAt        *time.Time     `json:"model_probe_next_at,omitempty"`
-	ModelProbeFailureCount  int            `json:"model_probe_failure_count,omitempty"`
-	LastError               string         `json:"last_error,omitempty"`
+	Status                  string                     `json:"status"`
+	BillingProbeAttempted   bool                       `json:"billing_probe_attempted,omitempty"`
+	Data                    map[string]any             `json:"data,omitempty"`
+	ReceivedAt              *time.Time                 `json:"received_at,omitempty"`
+	FreshUntil              *time.Time                 `json:"fresh_until,omitempty"`
+	LastAttemptAt           time.Time                  `json:"last_attempt_at"`
+	NextProbeAt             time.Time                  `json:"next_probe_at"`
+	FailureCount            int                        `json:"failure_count,omitempty"`
+	HTTPStatus              int                        `json:"http_status,omitempty"`
+	LatencyMS               int64                      `json:"latency_ms,omitempty"`
+	ModelProbeStatus        string                     `json:"model_probe_status,omitempty"`
+	ModelProbeModel         string                     `json:"model_probe_model,omitempty"`
+	ModelProbeEndpoint      string                     `json:"model_probe_endpoint,omitempty"`
+	ModelProbeLatencyMS     int64                      `json:"model_probe_latency_ms,omitempty"`
+	ModelProbeHTTPStatus    int                        `json:"model_probe_http_status,omitempty"`
+	ModelProbeLastError     string                     `json:"model_probe_last_error,omitempty"`
+	ModelProbeLastAttemptAt *time.Time                 `json:"model_probe_last_attempt_at,omitempty"`
+	ModelProbeFreshUntil    *time.Time                 `json:"model_probe_fresh_until,omitempty"`
+	ModelProbeNextAt        *time.Time                 `json:"model_probe_next_at,omitempty"`
+	ModelProbeFailureCount  int                        `json:"model_probe_failure_count,omitempty"`
+	ModelProbeHistory       []UpstreamModelProbeSample `json:"model_probe_history,omitempty"`
+	ModelProbeSampleCount   int                        `json:"model_probe_sample_count,omitempty"`
+	ModelProbeSuccessCount  int                        `json:"model_probe_success_count,omitempty"`
+	ModelProbeSuccessRate   float64                    `json:"model_probe_success_rate,omitempty"`
+	ModelProbeP50LatencyMS  int64                      `json:"model_probe_p50_latency_ms,omitempty"`
+	ModelProbeP95LatencyMS  int64                      `json:"model_probe_p95_latency_ms,omitempty"`
+	ModelProbeConsecutiveOK int                        `json:"model_probe_consecutive_ok,omitempty"`
+	ModelProbeConsecutiveNG int                        `json:"model_probe_consecutive_ng,omitempty"`
+	LastError               string                     `json:"last_error,omitempty"`
 }
 
 // UpstreamBillingProbeResult is returned by manual probe endpoints.
@@ -700,6 +720,16 @@ type upstreamModelProbeResult struct {
 	LastError  string
 }
 
+type upstreamModelProbeMetrics struct {
+	SampleCount          int
+	SuccessCount         int
+	SuccessRate          float64
+	P50LatencyMS         int64
+	P95LatencyMS         int64
+	ConsecutiveSuccesses int
+	ConsecutiveFailures  int
+}
+
 func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, account *Account, intervalMinutes int, includeBilling, includeModel bool) (*UpstreamBillingProbeSnapshot, error) {
 	now := s.currentTime().UTC()
 	if s.accountTestService == nil || s.accountTestService.httpUpstream == nil {
@@ -929,9 +959,16 @@ func applyUpstreamModelProbe(snapshot *UpstreamBillingProbeSnapshot, result *ups
 }
 
 func applyScheduledUpstreamModelProbe(snapshot *UpstreamBillingProbeSnapshot, account *Account, result *upstreamModelProbeResult, now time.Time, intervalMinutes int, retryAfterDuration time.Duration) {
-	if snapshot == nil || result == nil {
+	if snapshot == nil {
 		return
 	}
+	previous := decodeUpstreamBillingProbeSnapshot(account.Extra)
+	inheritUpstreamModelProbeSnapshot(snapshot, previous)
+	if result == nil {
+		applyUpstreamModelProbeMetrics(snapshot, now)
+		return
+	}
+	appendUpstreamModelProbeSample(snapshot, result, now)
 	applyUpstreamModelProbe(snapshot, result)
 	snapshot.ModelProbeLastAttemptAt = probeTimePtr(now)
 	failureCount := 0
@@ -945,6 +982,166 @@ func applyScheduledUpstreamModelProbe(snapshot *UpstreamBillingProbeSnapshot, ac
 	}
 	snapshot.ModelProbeFailureCount = failureCount
 	snapshot.ModelProbeNextAt = probeTimePtr(now.Add(delay))
+	applyUpstreamModelProbeMetrics(snapshot, now)
+}
+
+func inheritUpstreamModelProbeSnapshot(snapshot, previous *UpstreamBillingProbeSnapshot) {
+	if snapshot == nil || previous == nil || snapshot.ModelProbeStatus != "" ||
+		snapshot.ModelProbeLastAttemptAt != nil || len(snapshot.ModelProbeHistory) > 0 {
+		return
+	}
+	snapshot.ModelProbeStatus = previous.ModelProbeStatus
+	snapshot.ModelProbeModel = previous.ModelProbeModel
+	snapshot.ModelProbeEndpoint = previous.ModelProbeEndpoint
+	snapshot.ModelProbeLatencyMS = previous.ModelProbeLatencyMS
+	snapshot.ModelProbeHTTPStatus = previous.ModelProbeHTTPStatus
+	snapshot.ModelProbeLastError = previous.ModelProbeLastError
+	snapshot.ModelProbeLastAttemptAt = cloneProbeTimePtr(previous.ModelProbeLastAttemptAt)
+	snapshot.ModelProbeFreshUntil = cloneProbeTimePtr(previous.ModelProbeFreshUntil)
+	snapshot.ModelProbeNextAt = cloneProbeTimePtr(previous.ModelProbeNextAt)
+	snapshot.ModelProbeFailureCount = previous.ModelProbeFailureCount
+	snapshot.ModelProbeHistory = append([]UpstreamModelProbeSample(nil), previous.ModelProbeHistory...)
+	snapshot.ModelProbeSampleCount = previous.ModelProbeSampleCount
+	snapshot.ModelProbeSuccessCount = previous.ModelProbeSuccessCount
+	snapshot.ModelProbeSuccessRate = previous.ModelProbeSuccessRate
+	snapshot.ModelProbeP50LatencyMS = previous.ModelProbeP50LatencyMS
+	snapshot.ModelProbeP95LatencyMS = previous.ModelProbeP95LatencyMS
+	snapshot.ModelProbeConsecutiveOK = previous.ModelProbeConsecutiveOK
+	snapshot.ModelProbeConsecutiveNG = previous.ModelProbeConsecutiveNG
+}
+
+func appendUpstreamModelProbeSample(snapshot *UpstreamBillingProbeSnapshot, result *upstreamModelProbeResult, now time.Time) {
+	if snapshot == nil || result == nil {
+		return
+	}
+	history := append([]UpstreamModelProbeSample(nil), snapshot.ModelProbeHistory...)
+	if len(history) == 0 && snapshot.ModelProbeStatus != "" && snapshot.ModelProbeLastAttemptAt != nil {
+		history = append(history, UpstreamModelProbeSample{
+			Status:      snapshot.ModelProbeStatus,
+			LatencyMS:   snapshot.ModelProbeLatencyMS,
+			HTTPStatus:  snapshot.ModelProbeHTTPStatus,
+			ErrorType:   snapshot.ModelProbeLastError,
+			AttemptedAt: snapshot.ModelProbeLastAttemptAt.UTC(),
+		})
+	}
+	history = append(history, UpstreamModelProbeSample{
+		Status:      result.Status,
+		LatencyMS:   result.LatencyMS,
+		HTTPStatus:  result.HTTPStatus,
+		ErrorType:   result.LastError,
+		AttemptedAt: now.UTC(),
+	})
+	if len(history) > upstreamModelProbeHistoryLimit {
+		history = append([]UpstreamModelProbeSample(nil), history[len(history)-upstreamModelProbeHistoryLimit:]...)
+	}
+	snapshot.ModelProbeHistory = history
+}
+
+func applyUpstreamModelProbeMetrics(snapshot *UpstreamBillingProbeSnapshot, now time.Time) {
+	if snapshot == nil {
+		return
+	}
+	metrics := upstreamModelProbeWindowMetrics(snapshot, now)
+	snapshot.ModelProbeSampleCount = metrics.SampleCount
+	snapshot.ModelProbeSuccessCount = metrics.SuccessCount
+	snapshot.ModelProbeSuccessRate = metrics.SuccessRate
+	snapshot.ModelProbeP50LatencyMS = metrics.P50LatencyMS
+	snapshot.ModelProbeP95LatencyMS = metrics.P95LatencyMS
+	snapshot.ModelProbeConsecutiveOK = metrics.ConsecutiveSuccesses
+	snapshot.ModelProbeConsecutiveNG = metrics.ConsecutiveFailures
+}
+
+func upstreamModelProbeWindowMetrics(snapshot *UpstreamBillingProbeSnapshot, now time.Time) upstreamModelProbeMetrics {
+	if snapshot == nil {
+		return upstreamModelProbeMetrics{}
+	}
+	history := append([]UpstreamModelProbeSample(nil), snapshot.ModelProbeHistory...)
+	if len(history) == 0 && snapshot.ModelProbeStatus != "" && snapshot.ModelProbeLastAttemptAt != nil {
+		history = append(history, UpstreamModelProbeSample{
+			Status:      snapshot.ModelProbeStatus,
+			LatencyMS:   snapshot.ModelProbeLatencyMS,
+			HTTPStatus:  snapshot.ModelProbeHTTPStatus,
+			ErrorType:   snapshot.ModelProbeLastError,
+			AttemptedAt: snapshot.ModelProbeLastAttemptAt.UTC(),
+		})
+	}
+	windowStart := now.UTC().Add(-upstreamModelProbeMetricsWindow)
+	windowEnd := now.UTC()
+	recent := history[:0]
+	for _, sample := range history {
+		if sample.AttemptedAt.IsZero() || sample.AttemptedAt.Before(windowStart) || sample.AttemptedAt.After(windowEnd) {
+			continue
+		}
+		if sample.Status != UpstreamBillingProbeStatusOK &&
+			sample.Status != UpstreamBillingProbeStatusFailed &&
+			sample.Status != UpstreamBillingProbeStatusUnsupported {
+			continue
+		}
+		recent = append(recent, sample)
+	}
+	if len(recent) == 0 {
+		return upstreamModelProbeMetrics{}
+	}
+	sort.SliceStable(recent, func(i, j int) bool {
+		return recent[i].AttemptedAt.Before(recent[j].AttemptedAt)
+	})
+
+	metrics := upstreamModelProbeMetrics{SampleCount: len(recent)}
+	latencies := make([]int64, 0, len(recent))
+	for _, sample := range recent {
+		if sample.Status != UpstreamBillingProbeStatusOK {
+			continue
+		}
+		metrics.SuccessCount++
+		if sample.LatencyMS > 0 {
+			latencies = append(latencies, sample.LatencyMS)
+		}
+	}
+	metrics.SuccessRate = float64(metrics.SuccessCount) / float64(metrics.SampleCount)
+	for i := len(recent) - 1; i >= 0; i-- {
+		if recent[i].Status == UpstreamBillingProbeStatusOK {
+			if metrics.ConsecutiveFailures > 0 {
+				break
+			}
+			metrics.ConsecutiveSuccesses++
+			continue
+		}
+		if metrics.ConsecutiveSuccesses > 0 {
+			break
+		}
+		metrics.ConsecutiveFailures++
+	}
+	if len(latencies) > 0 {
+		sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+		metrics.P50LatencyMS = nearestRankLatency(latencies, 50)
+		metrics.P95LatencyMS = nearestRankLatency(latencies, 95)
+	}
+	return metrics
+}
+
+func nearestRankLatency(sortedLatencies []int64, percentile int) int64 {
+	if len(sortedLatencies) == 0 {
+		return 0
+	}
+	if percentile <= 0 {
+		return sortedLatencies[0]
+	}
+	if percentile >= 100 {
+		return sortedLatencies[len(sortedLatencies)-1]
+	}
+	index := (percentile*len(sortedLatencies) + 99) / 100
+	if index < 1 {
+		index = 1
+	}
+	return sortedLatencies[index-1]
+}
+
+func cloneProbeTimePtr(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	copyValue := *value
+	return &copyValue
 }
 
 func nextProbeFailureCount(account *Account) int {

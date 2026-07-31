@@ -499,6 +499,22 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
 	}
+	if s.service.poolAutoPriorityGloballyEnabled(ctx) {
+		if reason, metrics := accountProbeStickyEscapeReason(account, time.Now()); reason != "" {
+			_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+			slog.Info("sticky_probe_escape_triggered",
+				"account_id", accountID,
+				"reason", reason,
+				"sample_count", metrics.SampleCount,
+				"success_rate", metrics.SuccessRate,
+				"p50_ms", metrics.P50LatencyMS,
+				"p95_ms", metrics.P95LatencyMS,
+			)
+			// Returning escapedSticky=false lets load balancing bind the newly
+			// selected healthy account instead of preserving the stale binding.
+			return nil, false, nil
+		}
+	}
 	escapeCfg := s.service.openAIStickyEscapeConfig()
 	if reason, errorRate, ttft, shouldEscape := s.shouldEscapeStickyAccount(accountID, escapeCfg); shouldEscape {
 		slog.Info("sticky_escape_triggered",

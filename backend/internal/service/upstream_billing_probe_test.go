@@ -1103,6 +1103,62 @@ func TestBillingProbeAndPoolAutoPriorityFlagsAreIndependent(t *testing.T) {
 	})
 }
 
+func TestApplyScheduledUpstreamModelProbeMaintainsRollingHistoryAndMetrics(t *testing.T) {
+	now := time.Date(2026, time.July, 31, 12, 0, 0, 0, time.UTC)
+	history := make([]UpstreamModelProbeSample, 0, upstreamModelProbeHistoryLimit)
+	for i := 0; i < upstreamModelProbeHistoryLimit; i++ {
+		status := UpstreamBillingProbeStatusOK
+		latencyMS := int64(1000 + i*10)
+		if i == 9 {
+			latencyMS = 9000
+		}
+		if i == 10 {
+			status = UpstreamBillingProbeStatusFailed
+			latencyMS = 0
+		}
+		history = append(history, UpstreamModelProbeSample{
+			Status:      status,
+			LatencyMS:   latencyMS,
+			HTTPStatus:  http.StatusOK,
+			AttemptedAt: now.Add(-time.Duration(upstreamModelProbeHistoryLimit-i) * 5 * time.Minute),
+		})
+	}
+	previous := &UpstreamBillingProbeSnapshot{
+		Status:                  UpstreamBillingProbeStatusOK,
+		ModelProbeStatus:        UpstreamBillingProbeStatusOK,
+		ModelProbeLatencyMS:     history[len(history)-1].LatencyMS,
+		ModelProbeHTTPStatus:    http.StatusOK,
+		ModelProbeLastAttemptAt: probeTimePtr(history[len(history)-1].AttemptedAt),
+		ModelProbeHistory:       history,
+	}
+	account := &Account{Extra: map[string]any{UpstreamBillingProbeExtraKey: previous}}
+
+	// Billing-only persistence must not erase the model evidence.
+	billingOnly := &UpstreamBillingProbeSnapshot{Status: UpstreamBillingProbeStatusFailed}
+	applyScheduledUpstreamModelProbe(billingOnly, account, nil, now, 5, 0)
+	require.Len(t, billingOnly.ModelProbeHistory, upstreamModelProbeHistoryLimit)
+	require.Equal(t, history[len(history)-1].AttemptedAt, *billingOnly.ModelProbeLastAttemptAt)
+
+	updated := &UpstreamBillingProbeSnapshot{Status: UpstreamBillingProbeStatusOK}
+	applyScheduledUpstreamModelProbe(updated, account, &upstreamModelProbeResult{
+		Status:     UpstreamBillingProbeStatusOK,
+		Model:      "gpt-5.6-sol",
+		Endpoint:   "responses",
+		LatencyMS:  1200,
+		HTTPStatus: http.StatusOK,
+	}, now, 5, 0)
+
+	require.Len(t, updated.ModelProbeHistory, upstreamModelProbeHistoryLimit)
+	require.Equal(t, now.Add(-55*time.Minute), updated.ModelProbeHistory[0].AttemptedAt)
+	require.Equal(t, now, updated.ModelProbeHistory[len(updated.ModelProbeHistory)-1].AttemptedAt)
+	require.Equal(t, 12, updated.ModelProbeSampleCount)
+	require.Equal(t, 11, updated.ModelProbeSuccessCount)
+	require.InDelta(t, 11.0/12.0, updated.ModelProbeSuccessRate, 1e-9)
+	require.Equal(t, int64(9000), updated.ModelProbeP95LatencyMS)
+	require.Equal(t, 2, updated.ModelProbeConsecutiveOK)
+	require.Zero(t, updated.ModelProbeConsecutiveNG)
+}
+
 func TestSelectUpstreamHealthProbeModelPrefersGPT56Sol(t *testing.T) {
 	account := &Account{
 		Credentials: map[string]any{

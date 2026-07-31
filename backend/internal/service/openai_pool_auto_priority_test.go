@@ -102,3 +102,46 @@ func TestOpenAIAdvancedSchedulerRanksFailedProbeAfterHealthyProbe(t *testing.T) 
 	require.Equal(t, healthyManualBackup.ID, plan.selectionOrder[0].account.ID)
 	require.Equal(t, failedManualPrimary.ID, plan.selectionOrder[1].account.ID)
 }
+
+func TestOpenAIStickyFailedProbeIsClearedAndReboundToHealthyAccount(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(7400)
+	failedSticky := openAIPoolProbeTestAccount(7401, 0, UpstreamBillingProbeStatusFailed, 500)
+	healthy := openAIPoolProbeTestAccount(7402, 20, UpstreamBillingProbeStatusOK, 1400)
+	failedSticky.GroupIDs = []int64{groupID}
+	healthy.GroupIDs = []int64{groupID}
+
+	sessionHash := "pool_probe_escape"
+	cacheKey := "openai:" + sessionHash
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{cacheKey: failedSticky.ID}}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{failedSticky, healthy}},
+		cache:              cache,
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		sessionHash,
+		"gpt-5.6-sol",
+		nil,
+		OpenAIUpstreamTransportAny,
+		false,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, healthy.ID, selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.False(t, decision.StickySessionHit)
+	require.Positive(t, cache.deletedSessions[cacheKey])
+	require.Equal(t, healthy.ID, cache.sessionBindings[cacheKey])
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}

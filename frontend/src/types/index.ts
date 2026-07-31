@@ -970,6 +970,14 @@ export interface UpstreamBillingData {
 
 export type UpstreamBillingProbeStatus = 'ok' | 'unsupported' | 'failed'
 
+export interface UpstreamModelProbeSample {
+  status: UpstreamBillingProbeStatus
+  latency_ms?: number
+  http_status?: number
+  error_type?: string
+  attempted_at: string
+}
+
 export interface UpstreamBillingProbeSnapshot {
   status: UpstreamBillingProbeStatus
   billing_probe_attempted?: boolean
@@ -990,6 +998,14 @@ export interface UpstreamBillingProbeSnapshot {
   model_probe_fresh_until?: string
   model_probe_next_at?: string
   model_probe_failure_count?: number
+  model_probe_history?: UpstreamModelProbeSample[]
+  model_probe_sample_count?: number
+  model_probe_success_count?: number
+  model_probe_success_rate?: number
+  model_probe_p50_latency_ms?: number
+  model_probe_p95_latency_ms?: number
+  model_probe_consecutive_ok?: number
+  model_probe_consecutive_ng?: number
   last_error?: string
 }
 

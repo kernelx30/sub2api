@@ -1055,10 +1055,20 @@ func filterSchedulerUpstreamBillingProbe(value any) map[string]any {
 		"model_probe_model",
 		"model_probe_endpoint",
 		"model_probe_latency_ms",
+		"model_probe_http_status",
+		"model_probe_last_error",
 		"model_probe_last_attempt_at",
 		"model_probe_fresh_until",
 		"model_probe_next_at",
 		"model_probe_failure_count",
+		"model_probe_history",
+		"model_probe_sample_count",
+		"model_probe_success_count",
+		"model_probe_success_rate",
+		"model_probe_p50_latency_ms",
+		"model_probe_p95_latency_ms",
+		"model_probe_consecutive_ok",
+		"model_probe_consecutive_ng",
 	} {
 		if field, exists := source[key]; exists && field != nil {
 			filtered[key] = field

@@ -300,6 +300,41 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 			},
 		}
 	}
+	historyExtra := func(statuses []string, latencies []int64) map[string]any {
+		require.Len(t, latencies, len(statuses))
+		history := make([]UpstreamModelProbeSample, 0, len(statuses))
+		for i, status := range statuses {
+			httpStatus := http.StatusOK
+			errorType := ""
+			if status == UpstreamBillingProbeStatusFailed {
+				httpStatus = http.StatusForbidden
+				errorType = "http_error"
+			} else if status == UpstreamBillingProbeStatusUnsupported {
+				errorType = "responses_tool_unsupported"
+			}
+			history = append(history, UpstreamModelProbeSample{
+				Status:      status,
+				LatencyMS:   latencies[i],
+				HTTPStatus:  httpStatus,
+				ErrorType:   errorType,
+				AttemptedAt: now.Add(-time.Duration(len(statuses)-1-i) * 5 * time.Minute),
+			})
+		}
+		last := history[len(history)-1]
+		return map[string]any{
+			PoolAutoPriorityEnabledExtraKey: true,
+			UpstreamBillingProbeExtraKey: map[string]any{
+				"status":                      last.Status,
+				"model_probe_status":          last.Status,
+				"model_probe_latency_ms":      last.LatencyMS,
+				"model_probe_http_status":     last.HTTPStatus,
+				"model_probe_last_error":      last.ErrorType,
+				"model_probe_last_attempt_at": last.AttemptedAt,
+				"model_probe_fresh_until":     now.Add(10 * time.Minute),
+				"model_probe_history":         history,
+			},
+		}
+	}
 	poolAccount := func(id int64, priority int, extra map[string]any) *Account {
 		return &Account{ID: id, Type: AccountTypeAPIKey, Priority: priority, Credentials: map[string]any{"pool_mode": true}, Extra: extra}
 	}
@@ -444,6 +479,91 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 
 		require.Len(t, result, 1)
 		require.Equal(t, int64(2), result[0].account.ID)
+	})
+
+	t.Run("one lucky response does not outrank established history", func(t *testing.T) {
+		accounts := []accountWithLoad{
+			{account: poolAccount(1, 5, historyExtra(
+				[]string{"ok", "ok", "ok", "ok", "ok", "ok"},
+				[]int64{1800, 1850, 1900, 1750, 1800, 1850},
+			)), loadInfo: &AccountLoadInfo{}},
+			{account: poolAccount(2, 1, historyExtra(
+				[]string{"ok"},
+				[]int64{250},
+			)), loadInfo: &AccountLoadInfo{}},
+		}
+
+		result := filterByBestProbeAutoPriority(accounts, now)
+
+		require.Len(t, result, 1)
+		require.Equal(t, int64(1), result[0].account.ID)
+	})
+
+	t.Run("p95 tail spike demotes an otherwise fast account", func(t *testing.T) {
+		accounts := []accountWithLoad{
+			{account: poolAccount(1, 5, historyExtra(
+				[]string{"ok", "ok", "ok", "ok", "ok", "ok"},
+				[]int64{1500, 1550, 1600, 1650, 1550, 1600},
+			)), loadInfo: &AccountLoadInfo{}},
+			{account: poolAccount(2, 1, historyExtra(
+				[]string{"ok", "ok", "ok", "ok", "ok", "ok"},
+				[]int64{600, 650, 700, 9000, 650, 700},
+			)), loadInfo: &AccountLoadInfo{}},
+		}
+
+		result := filterByBestProbeAutoPriority(accounts, now)
+
+		require.Len(t, result, 1)
+		require.Equal(t, int64(1), result[0].account.ID)
+	})
+
+	t.Run("every account receives a rank including failures and opt outs", func(t *testing.T) {
+		optingOut := snapshotExtra(UpstreamBillingProbeStatusOK, 100, 0, true)
+		optingOut[PoolAutoPriorityEnabledExtraKey] = false
+		accounts := []*Account{
+			poolAccount(1, 1, historyExtra([]string{"ok", "ok", "ok"}, []int64{900, 950, 1000})),
+			poolAccount(2, 1, nil),
+			poolAccount(3, 1, historyExtra([]string{"ok", "failed"}, []int64{900, 300})),
+			poolAccount(4, 1, historyExtra([]string{"unsupported"}, []int64{200})),
+			poolAccount(5, 1, optingOut),
+		}
+
+		ranks, ranked := probeAutoPriorityRanks(accounts, now)
+
+		require.True(t, ranked)
+		require.Len(t, ranks, len(accounts))
+		for _, account := range accounts {
+			_, ok := ranks[account.ID]
+			require.True(t, ok, "account %d is missing a rank", account.ID)
+		}
+		require.Less(t, ranks[1], ranks[2])
+		require.Less(t, ranks[2], ranks[3])
+		require.Less(t, ranks[3], ranks[4])
+	})
+
+	t.Run("sticky escape uses current failure rolling reliability and p95", func(t *testing.T) {
+		failed := poolAccount(1, 1, historyExtra(
+			[]string{"ok", "ok", "failed"},
+			[]int64{900, 950, 400},
+		))
+		reason, _ := accountProbeStickyEscapeReason(failed, now)
+		require.Equal(t, "model_probe_failed", reason)
+
+		unreliable := poolAccount(2, 1, historyExtra(
+			[]string{"failed", "ok", "failed", "ok"},
+			[]int64{300, 900, 400, 950},
+		))
+		reason, metrics := accountProbeStickyEscapeReason(unreliable, now)
+		require.Equal(t, "model_probe_success_rate", reason)
+		require.InDelta(t, 0.5, metrics.SuccessRate, 1e-9)
+
+		slowTail := poolAccount(3, 1, historyExtra(
+			[]string{"ok", "ok", "ok", "ok"},
+			[]int64{900, 950, 9000, 1000},
+		))
+		reason, metrics = accountProbeStickyEscapeReason(slowTail, now)
+		require.Equal(t, "model_probe_p95", reason)
+		require.Equal(t, int64(9000), metrics.P95LatencyMS)
 	})
 
 	t.Run("no probe signal keeps original set", func(t *testing.T) {

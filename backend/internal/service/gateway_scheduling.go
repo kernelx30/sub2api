@@ -1478,9 +1478,20 @@ func filterByMinPriority(accounts []accountWithLoad) []accountWithLoad {
 
 // probeAutoPriorityInfo is the runtime health/latency rank used before manual priority.
 type probeAutoPriorityInfo struct {
-	tier         int
-	latencyMS    int64
-	failureCount int
+	tier                 int
+	latencyMS            int64
+	p50LatencyMS         int64
+	p95LatencyMS         int64
+	sampleCount          int
+	successCount         int
+	consecutiveSuccesses int
+	consecutiveFailures  int
+	failureCount         int
+}
+
+type rankedProbeCandidate struct {
+	candidate accountWithLoad
+	info      probeAutoPriorityInfo
 }
 
 const (
@@ -1494,75 +1505,148 @@ const (
 const (
 	probeAutoPriorityMinLatencySlackMS = int64(200)
 	probeAutoPriorityStaleFallbackTTL  = 15 * time.Minute
+	probeAutoPriorityStableSampleCount = 3
+	probeAutoPriorityStickyMinSamples  = 4
+	probeAutoPriorityStickyMinSuccess  = 0.75
+	probeAutoPriorityStickyMaxP95MS    = int64(8000)
 )
 
 func filterByBestProbeAutoPriority(accounts []accountWithLoad, now time.Time) []accountWithLoad {
 	if len(accounts) <= 1 {
 		return accounts
 	}
-	infos := make([]probeAutoPriorityInfo, len(accounts))
-	signals := make([]bool, len(accounts))
-	hasSignal := false
-	bestTier := probeAutoPriorityTierUnsupported
-	for i, candidate := range accounts {
+	ranked := make([]rankedProbeCandidate, 0, len(accounts))
+	for _, candidate := range accounts {
 		info, signal := accountProbeAutoPriority(candidate.account, now)
-		infos[i] = info
-		signals[i] = signal
 		if signal {
-			hasSignal = true
-		}
-		if signal && info.tier < bestTier {
-			bestTier = info.tier
+			ranked = append(ranked, rankedProbeCandidate{candidate: candidate, info: info})
 		}
 	}
-	if !hasSignal {
+	if len(ranked) == 0 {
 		return accounts
 	}
 
-	result := make([]accountWithLoad, 0, len(accounts))
-	switch bestTier {
-	case probeAutoPriorityTierHealthy:
-		bestLatency := int64(0)
-		for _, info := range infos {
-			if info.tier == probeAutoPriorityTierHealthy && (bestLatency == 0 || info.latencyMS < bestLatency) {
-				bestLatency = info.latencyMS
-			}
-		}
-		latencySlack := bestLatency / 5
-		if latencySlack < probeAutoPriorityMinLatencySlackMS {
-			latencySlack = probeAutoPriorityMinLatencySlackMS
-		}
-		threshold := bestLatency + latencySlack
-		for i, candidate := range accounts {
-			info := infos[i]
-			if info.tier == probeAutoPriorityTierHealthy && info.latencyMS <= threshold {
-				result = append(result, candidate)
-			}
-		}
-	case probeAutoPriorityTierFailed:
-		bestFailureCount := 0
-		for _, info := range infos {
-			if info.tier == probeAutoPriorityTierFailed && (bestFailureCount == 0 || info.failureCount < bestFailureCount) {
-				bestFailureCount = info.failureCount
-			}
-		}
-		for i, candidate := range accounts {
-			info := infos[i]
-			if info.tier == probeAutoPriorityTierFailed && info.failureCount == bestFailureCount {
-				result = append(result, candidate)
-			}
-		}
-	default:
-		for i, candidate := range accounts {
-			if signals[i] && infos[i].tier == bestTier {
-				result = append(result, candidate)
-			}
+	bestTier := ranked[0].info.tier
+	for _, item := range ranked[1:] {
+		if item.info.tier < bestTier {
+			bestTier = item.info.tier
 		}
 	}
+	ranked = keepProbeCandidates(ranked, func(info probeAutoPriorityInfo) bool { return info.tier == bestTier })
+	if bestTier == probeAutoPriorityTierUnmeasured {
+		return unwrapProbeCandidates(ranked)
+	}
+
+	// A single lucky response is still warming up. Once any account has at
+	// least three recent samples, established evidence wins before latency.
+	if bestTier == probeAutoPriorityTierHealthy || bestTier == probeAutoPriorityTierHealthyUnknownLatency {
+		hasStable := false
+		for _, item := range ranked {
+			if item.info.sampleCount >= probeAutoPriorityStableSampleCount {
+				hasStable = true
+				break
+			}
+		}
+		if hasStable {
+			ranked = keepProbeCandidates(ranked, func(info probeAutoPriorityInfo) bool {
+				return info.sampleCount >= probeAutoPriorityStableSampleCount
+			})
+		}
+	}
+
+	bestRate := ranked[0].info
+	for _, item := range ranked[1:] {
+		if compareProbeSuccessRate(item.info, bestRate) > 0 {
+			bestRate = item.info
+		}
+	}
+	ranked = keepProbeCandidates(ranked, func(info probeAutoPriorityInfo) bool {
+		return compareProbeSuccessRate(info, bestRate) == 0
+	})
+
+	bestConsecutiveFailures := ranked[0].info.consecutiveFailures
+	for _, item := range ranked[1:] {
+		if item.info.consecutiveFailures < bestConsecutiveFailures {
+			bestConsecutiveFailures = item.info.consecutiveFailures
+		}
+	}
+	ranked = keepProbeCandidates(ranked, func(info probeAutoPriorityInfo) bool {
+		return info.consecutiveFailures == bestConsecutiveFailures
+	})
+
+	// Keep close accounts in the same cohort so load and LRU can still spread
+	// traffic. Large tail spikes remain visible through P95 and are demoted.
+	ranked = keepProbeLatencyCohort(ranked, func(info probeAutoPriorityInfo) int64 { return info.p95LatencyMS })
+	ranked = keepProbeLatencyCohort(ranked, func(info probeAutoPriorityInfo) int64 { return info.p50LatencyMS })
+	ranked = keepProbeLatencyCohort(ranked, func(info probeAutoPriorityInfo) int64 { return info.latencyMS })
+
+	result := unwrapProbeCandidates(ranked)
 	if len(result) == 0 {
 		return accounts
 	}
 	return result
+}
+
+func keepProbeCandidates(candidates []rankedProbeCandidate, keep func(probeAutoPriorityInfo) bool) []rankedProbeCandidate {
+	result := make([]rankedProbeCandidate, 0, len(candidates))
+	for _, item := range candidates {
+		if keep(item.info) {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func keepProbeLatencyCohort(candidates []rankedProbeCandidate, latency func(probeAutoPriorityInfo) int64) []rankedProbeCandidate {
+	best := int64(0)
+	for _, item := range candidates {
+		value := latency(item.info)
+		if value > 0 && (best == 0 || value < best) {
+			best = value
+		}
+	}
+	if best == 0 {
+		return candidates
+	}
+	slack := best / 5
+	if slack < probeAutoPriorityMinLatencySlackMS {
+		slack = probeAutoPriorityMinLatencySlackMS
+	}
+	threshold := best + slack
+	return keepProbeCandidates(candidates, func(info probeAutoPriorityInfo) bool {
+		value := latency(info)
+		return value > 0 && value <= threshold
+	})
+}
+
+func unwrapProbeCandidates(candidates []rankedProbeCandidate) []accountWithLoad {
+	result := make([]accountWithLoad, 0, len(candidates))
+	for _, item := range candidates {
+		result = append(result, item.candidate)
+	}
+	return result
+}
+
+func compareProbeSuccessRate(left, right probeAutoPriorityInfo) int {
+	if left.sampleCount <= 0 && right.sampleCount <= 0 {
+		return 0
+	}
+	if left.sampleCount <= 0 {
+		return -1
+	}
+	if right.sampleCount <= 0 {
+		return 1
+	}
+	leftRate := int64(left.successCount) * int64(right.sampleCount)
+	rightRate := int64(right.successCount) * int64(left.sampleCount)
+	switch {
+	case leftRate > rightRate:
+		return 1
+	case leftRate < rightRate:
+		return -1
+	default:
+		return 0
+	}
 }
 
 // probeAutoPriorityRanks converts the layered probe filter into stable cohort
@@ -1667,6 +1751,13 @@ func accountProbeAutoPriority(account *Account, now time.Time) (probeAutoPriorit
 	if snapshot.ModelProbeStatus == "" {
 		return info, true
 	}
+	metrics := upstreamModelProbeWindowMetrics(snapshot, now)
+	info.sampleCount = metrics.SampleCount
+	info.successCount = metrics.SuccessCount
+	info.p50LatencyMS = metrics.P50LatencyMS
+	info.p95LatencyMS = metrics.P95LatencyMS
+	info.consecutiveSuccesses = metrics.ConsecutiveSuccesses
+	info.consecutiveFailures = metrics.ConsecutiveFailures
 	switch snapshot.ModelProbeStatus {
 	case UpstreamBillingProbeStatusOK:
 		if !isModelProbeSnapshotFresh(snapshot, now) {
@@ -1675,6 +1766,9 @@ func accountProbeAutoPriority(account *Account, now time.Time) (probeAutoPriorit
 		info.latencyMS = snapshot.ModelProbeLatencyMS
 		if info.latencyMS <= 0 {
 			info.latencyMS = snapshot.LatencyMS
+		}
+		if info.latencyMS <= 0 {
+			info.latencyMS = info.p50LatencyMS
 		}
 		if info.latencyMS > 0 {
 			info.tier = probeAutoPriorityTierHealthy
@@ -1694,7 +1788,41 @@ func accountProbeAutoPriority(account *Account, now time.Time) (probeAutoPriorit
 	if info.failureCount <= 0 {
 		info.failureCount = 1
 	}
+	if info.consecutiveFailures <= 0 {
+		info.consecutiveFailures = info.failureCount
+	}
 	return info, true
+}
+
+func accountProbeStickyEscapeReason(account *Account, now time.Time) (string, upstreamModelProbeMetrics) {
+	metrics := upstreamModelProbeMetrics{}
+	if account == nil || !poolAutoPriorityEnabled(account) {
+		return "", metrics
+	}
+	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
+	if snapshot == nil || snapshot.ModelProbeStatus == "" {
+		return "", metrics
+	}
+	metrics = upstreamModelProbeWindowMetrics(snapshot, now)
+	switch snapshot.ModelProbeStatus {
+	case UpstreamBillingProbeStatusFailed:
+		return "model_probe_failed", metrics
+	case UpstreamBillingProbeStatusUnsupported:
+		return "model_probe_unsupported", metrics
+	case UpstreamBillingProbeStatusOK:
+		if !isModelProbeSnapshotFresh(snapshot, now) {
+			return "", metrics
+		}
+		if metrics.SampleCount >= probeAutoPriorityStickyMinSamples &&
+			metrics.SuccessRate < probeAutoPriorityStickyMinSuccess {
+			return "model_probe_success_rate", metrics
+		}
+		if metrics.SuccessCount >= probeAutoPriorityStableSampleCount &&
+			metrics.P95LatencyMS > probeAutoPriorityStickyMaxP95MS {
+			return "model_probe_p95", metrics
+		}
+	}
+	return "", metrics
 }
 
 func isModelProbeSnapshotFresh(snapshot *UpstreamBillingProbeSnapshot, now time.Time) bool {

@@ -47,10 +47,23 @@ func TestSchedulerMetadataAccountProjectsUpstreamBillingProbe(t *testing.T) {
 		"model_probe_model":           "gpt-5.6-sol",
 		"model_probe_endpoint":        "responses",
 		"model_probe_latency_ms":      int64(1430),
+		"model_probe_http_status":     200,
+		"model_probe_last_error":      "",
 		"model_probe_last_attempt_at": "2026-07-29T10:00:00Z",
 		"model_probe_fresh_until":     "2026-07-29T10:10:00Z",
 		"model_probe_next_at":         "2026-07-29T10:05:00Z",
 		"model_probe_failure_count":   0,
+		"model_probe_history": []any{
+			map[string]any{"status": "failed", "http_status": 403, "error_type": "http_error", "attempted_at": "2026-07-29T09:55:00Z"},
+			map[string]any{"status": "ok", "latency_ms": 1430, "http_status": 200, "attempted_at": "2026-07-29T10:00:00Z"},
+		},
+		"model_probe_sample_count":   2,
+		"model_probe_success_count":  1,
+		"model_probe_success_rate":   0.5,
+		"model_probe_p50_latency_ms": int64(1430),
+		"model_probe_p95_latency_ms": int64(1430),
+		"model_probe_consecutive_ok": 1,
+		"model_probe_consecutive_ng": 0,
 		"data": map[string]any{
 			"billing_scope":             "token",
 			"resolved_rate_multiplier":  0.03,
@@ -96,10 +109,20 @@ func TestSchedulerMetadataAccountProjectsUpstreamBillingProbe(t *testing.T) {
 	require.Equal(t, "gpt-5.6-sol", filtered["model_probe_model"])
 	require.Equal(t, "responses", filtered["model_probe_endpoint"])
 	require.Equal(t, int64(1430), filtered["model_probe_latency_ms"])
+	require.Equal(t, 200, filtered["model_probe_http_status"])
+	require.Equal(t, "", filtered["model_probe_last_error"])
 	require.Equal(t, "2026-07-29T10:00:00Z", filtered["model_probe_last_attempt_at"])
 	require.Equal(t, "2026-07-29T10:10:00Z", filtered["model_probe_fresh_until"])
 	require.Equal(t, "2026-07-29T10:05:00Z", filtered["model_probe_next_at"])
 	require.Equal(t, 0, filtered["model_probe_failure_count"])
+	require.Len(t, filtered["model_probe_history"], 2)
+	require.Equal(t, 2, filtered["model_probe_sample_count"])
+	require.Equal(t, 1, filtered["model_probe_success_count"])
+	require.Equal(t, 0.5, filtered["model_probe_success_rate"])
+	require.Equal(t, int64(1430), filtered["model_probe_p50_latency_ms"])
+	require.Equal(t, int64(1430), filtered["model_probe_p95_latency_ms"])
+	require.Equal(t, 1, filtered["model_probe_consecutive_ok"])
+	require.Equal(t, 0, filtered["model_probe_consecutive_ng"])
 	require.Equal(t, true, metadata.Extra[service.PoolAutoPriorityEnabledExtraKey])
 	require.True(t, metadata.IsPoolMode())
 	require.NotContains(t, filtered, "http_status")
