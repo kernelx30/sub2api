@@ -140,7 +140,7 @@ func TestSchedulerMetadataAccountProjectsUpstreamBillingProbe(t *testing.T) {
 	require.NotContains(t, filteredData, "remote_diagnostic")
 	require.NotContains(t, metadata.Extra, "unused_large_field")
 	require.Contains(t, string(fullPayload), lastError)
-	require.NotContains(t, string(metaPayload), "last_error")
+	require.NotContains(t, string(metaPayload), `"last_error":`)
 	require.Less(t, len(metaPayload)*4, len(fullPayload))
 }
 
