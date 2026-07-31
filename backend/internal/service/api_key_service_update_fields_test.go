@@ -120,6 +120,67 @@ func TestAPIKeyUpdate_DeclaresStatusWhenReactivated(t *testing.T) {
 	require.Equal(t, []APIKeyUpdateFields{{Quota: true, Status: true}}, repo.updateFields)
 }
 
+// Fork-specific API Key controls must participate in the same field mask. Otherwise
+// narrowing updates would either drop the requested change or reintroduce whole-row writes.
+func TestAPIKeyUpdate_DeclaresForkControlColumns(t *testing.T) {
+	t.Run("optional instructions only", func(t *testing.T) {
+		enabled := true
+		svc, repo := newUpdateFieldsAPIKeyService(&APIKey{
+			ID: 1, UserID: 7, Key: "sk-test", Status: StatusActive,
+			Group: &Group{
+				Platform:                    PlatformOpenAI,
+				OptionalInstructionsEnabled: true,
+				OptionalInstructions:        "fixture",
+			},
+		})
+
+		_, err := svc.Update(context.Background(), 1, 7, UpdateAPIKeyRequest{
+			OptionalInstructionsEnabled: &enabled,
+		})
+		require.NoError(t, err)
+		require.Equal(t, []APIKeyUpdateFields{{OptionalInstructionsEnabled: true}}, repo.updateFields)
+	})
+
+	t.Run("fallback group explicit clear", func(t *testing.T) {
+		fallbackID := int64(9)
+		svc, repo := newUpdateFieldsAPIKeyService(&APIKey{
+			ID: 1, UserID: 7, Key: "sk-test", Status: StatusActive,
+			OpenAIAvailabilityFallbackGroupID: &fallbackID,
+		})
+
+		_, err := svc.Update(context.Background(), 1, 7, UpdateAPIKeyRequest{
+			OpenAIAvailabilityFallbackGroupIDSet: true,
+		})
+		require.NoError(t, err)
+		require.Equal(t, []APIKeyUpdateFields{{OpenAIAvailabilityFallbackGroupID: true}}, repo.updateFields)
+	})
+
+	t.Run("unbind primary clears dependent controls", func(t *testing.T) {
+		groupID := int64(5)
+		fallbackID := int64(9)
+		svc, repo := newUpdateFieldsAPIKeyService(&APIKey{
+			ID: 1, UserID: 7, Key: "sk-test", Status: StatusActive,
+			GroupID:                           &groupID,
+			OpenAIAvailabilityFallbackGroupID: &fallbackID,
+			OptionalInstructionsEnabled:       true,
+			Group: &Group{
+				ID:                          groupID,
+				Platform:                    PlatformOpenAI,
+				OptionalInstructionsEnabled: true,
+				OptionalInstructions:        "fixture",
+			},
+		})
+
+		_, err := svc.Update(context.Background(), 1, 7, UpdateAPIKeyRequest{GroupIDSet: true})
+		require.NoError(t, err)
+		require.Equal(t, []APIKeyUpdateFields{{
+			GroupID:                           true,
+			OpenAIAvailabilityFallbackGroupID: true,
+			OptionalInstructionsEnabled:       true,
+		}}, repo.updateFields)
+	})
+}
+
 // 计费热路径把 Key 标记为配额耗尽时只写 status，
 // 否则会把刚原子递增的 quota_used 按快照覆盖掉。
 func TestUpdateQuotaUsed_ExhaustedMarkOnlyDeclaresStatus(t *testing.T) {
