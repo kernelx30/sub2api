@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -1309,6 +1310,23 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			eventType := strings.TrimSpace(gjson.Get(trimmedData, "type").String())
 			if eventType == "response.failed" {
 				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
+				if account != nil && account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey &&
+					isOpenAIUpstreamCapacityShedEvent(dataBytes) {
+					canonicalModel := strings.TrimSpace(mappedModel)
+					if canonicalModel == "" {
+						canonicalModel = canonicalOpenAIAccountSchedulingModel(account, originalModel)
+					}
+					decision := s.recordOpenAIAccountModelTransientFailure(account, canonicalModel, time.Now())
+					if decision.FailureStreak > 0 {
+						slog.Warn("openai_stream_capacity_transient_state",
+							"account_id", account.ID,
+							"model", openAIAccountModelTransientModel(canonicalModel),
+							"failure_streak", decision.FailureStreak,
+							"cooldown_ms", decision.Cooldown.Milliseconds(),
+							"block_scope", "account_model",
+						)
+					}
+				}
 				// response.failed 自带上游已消耗的 usage（input token 通常已扣）；必须先解析
 				// 再打 cyber 标记，否则 mark 记到的是解析前的 0，导致流式 cyber 按 0 token 计费
 				// 而漏记真实用量。对齐 WS V2 / Chat 流式路径（均先解析 usage 再 Mark）。

@@ -802,6 +802,23 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
 	}
+	if s.poolAutoPriorityGloballyEnabled(ctx) {
+		if accounts, listErr := s.listSchedulableAccounts(ctx, groupID, platform); listErr == nil {
+			reason, metrics := s.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, OpenAIAccountScheduleRequest{
+				GroupID:            groupID,
+				Platform:           platform,
+				RequestedModel:     requestedModel,
+				ExcludedIDs:        excludedIDs,
+				RequireCompact:     requireCompact,
+				RequiredCapability: requiredCapability,
+			}, nil)
+			if reason != "" {
+				_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+				logOpenAIStickyProbeEscape(account.ID, reason, metrics)
+				return nil
+			}
+		}
+	}
 
 	// 刷新会话 TTL 并返回账号
 	// Refresh session TTL and return account
@@ -1017,6 +1034,16 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 					} else if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+					} else if reason, metrics := s.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, OpenAIAccountScheduleRequest{
+						GroupID:            groupID,
+						Platform:           platform,
+						RequestedModel:     requestedModel,
+						ExcludedIDs:        excludedIDs,
+						RequireCompact:     requireCompact,
+						RequiredCapability: requiredCapability,
+					}, nil); reason != "" {
+						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						logOpenAIStickyProbeEscape(account.ID, reason, metrics)
 					} else {
 						result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 						if err == nil && result != nil && result.Acquired {
@@ -1574,6 +1601,74 @@ func (s *OpenAIGatewayService) openAIProbeAutoPriorityRanks(ctx context.Context,
 		return nil, false
 	}
 	return probeAutoPriorityRanks(accounts, time.Now())
+}
+
+func (s *OpenAIGatewayService) openAIStickyProbeEscapeReasonForCandidates(
+	ctx context.Context,
+	account *Account,
+	accounts []Account,
+	req OpenAIAccountScheduleRequest,
+	extraEligible func(*Account) bool,
+) (string, upstreamModelProbeMetrics) {
+	if s == nil || account == nil || !s.poolAutoPriorityGloballyEnabled(ctx) {
+		return "", upstreamModelProbeMetrics{}
+	}
+
+	platform := normalizeOpenAICompatiblePlatform(req.Platform)
+	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, req.GroupID)
+	parentCache := make(map[int64]*Account)
+	parentLookup := func(id int64) *Account {
+		if parent, ok := parentCache[id]; ok {
+			return parent
+		}
+		if s.accountRepo == nil {
+			return nil
+		}
+		parent, _ := s.accountRepo.GetByID(ctx, id)
+		parentCache[id] = parent
+		return parent
+	}
+
+	candidates := make([]*Account, 0, len(accounts))
+	for i := range accounts {
+		candidate := &accounts[i]
+		if candidate.ID == account.ID {
+			candidate = account
+		}
+		if req.ExcludedIDs != nil {
+			if _, excluded := req.ExcludedIDs[candidate.ID]; excluded {
+				continue
+			}
+		}
+		if !s.openAIAccountMatchesSchedulingGroup(candidate, req.GroupID) ||
+			!isOpenAICompatibleAccountEligibleForRequest(ctx, candidate, platform, req.RequestedModel, req.RequireCompact, req.RequiredCapability) ||
+			s.isOpenAIAccountRequestRuntimeBlocked(candidate, req.RequestedModel) ||
+			s.isOpenAIAccountBlockedBySchedulingThreshold(ctx, candidate) ||
+			s.isOpenAIProxyStreamQuarantined(ctx, candidate) ||
+			!parentHealthyForShadow(candidate, parentLookup) {
+			continue
+		}
+		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *req.GroupID, candidate, req.RequestedModel, req.RequireCompact) {
+			continue
+		}
+		if extraEligible != nil && !extraEligible(candidate) {
+			continue
+		}
+		candidates = append(candidates, candidate)
+	}
+
+	return accountProbeStickyEscapeReasonWithinPool(account, candidates, time.Now())
+}
+
+func logOpenAIStickyProbeEscape(accountID int64, reason string, metrics upstreamModelProbeMetrics) {
+	slog.Info("sticky_probe_escape_triggered",
+		"account_id", accountID,
+		"reason", reason,
+		"sample_count", metrics.SampleCount,
+		"success_rate", metrics.SuccessRate,
+		"p50_ms", metrics.P50LatencyMS,
+		"p95_ms", metrics.P95LatencyMS,
+	)
 }
 
 func (s *OpenAIGatewayService) orderOpenAIAccountsByProbePriority(ctx context.Context, accounts []*Account) []*Account {

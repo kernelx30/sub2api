@@ -178,8 +178,13 @@ func (u *upstreamBillingProbeHTTPStub) Do(req *http.Request, proxyURL string, ac
 		u.modelCalls.Add(1)
 		return &http.Response{
 			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader("{\"id\":\"resp_probe\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"name\":\"probe_ping\",\"arguments\":\"{\\\"ok\\\":true}\"}]}")),
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body: io.NopCloser(strings.NewReader(
+				"event: response.created\n" +
+					"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_probe\"}}\n\n" +
+					"event: response.output_text.delta\n" +
+					"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
+			)),
 		}, nil
 	}
 	u.calls.Add(1)
@@ -1545,4 +1550,33 @@ func TestProbePoolModeRecordsModelHealthAndLatency(t *testing.T) {
 	require.Greater(t, snapshot.ModelProbeLatencyMS, int64(0))
 	require.Equal(t, int64(1), upstream.modelCalls.Load())
 	require.Equal(t, int64(1), upstream.calls.Load())
+}
+
+func TestReadUpstreamModelProbeFirstOutputResponsesIgnoresPreamble(t *testing.T) {
+	body := strings.NewReader(
+		"event: response.created\n" +
+			"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_probe\"}}\n\n" +
+			"event: response.output_text.delta\n" +
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
+	)
+
+	require.Empty(t, readUpstreamModelProbeFirstOutput(body, true))
+}
+
+func TestReadUpstreamModelProbeFirstOutputChatIgnoresRoleChunk(t *testing.T) {
+	body := strings.NewReader(
+		"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n",
+	)
+
+	require.Empty(t, readUpstreamModelProbeFirstOutput(body, false))
+}
+
+func TestReadUpstreamModelProbeFirstOutputRejectsStreamFailure(t *testing.T) {
+	body := strings.NewReader(
+		"event: error\n" +
+			"data: {\"type\":\"error\",\"error\":{\"code\":\"server_is_overloaded\"}}\n\n",
+	)
+
+	require.Equal(t, "stream_error", readUpstreamModelProbeFirstOutput(body, true))
 }

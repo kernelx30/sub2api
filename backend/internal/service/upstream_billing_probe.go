@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -24,6 +25,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/google/uuid"
+	"github.com/tidwall/gjson"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 )
@@ -954,17 +956,15 @@ func (s *UpstreamBillingProbeService) probeUpstreamModel(
 	var payload []byte
 	if useResponses {
 		result.Endpoint = "responses"
-		payload = openaiResponsesProbePayload(result.Model)
+		payload, _ = json.Marshal(createOpenAITestPayload(result.Model, false))
 	} else {
 		result.Endpoint = "chat_completions"
 		payload, _ = json.Marshal(createOpenAIChatCompletionsTestPayload(result.Model, "hi"))
 	}
 
 	probeURL := buildOpenAIResponsesURL(normalizedBaseURL)
-	accept := "application/json"
 	if !useResponses {
 		probeURL = buildOpenAIChatCompletionsURL(normalizedBaseURL)
-		accept = "text/event-stream"
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, upstreamBillingProbeRequestTimeout)
 	defer cancel()
@@ -976,7 +976,7 @@ func (s *UpstreamBillingProbeService) probeUpstreamModel(
 	reqCtx := WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI)
 	req = req.WithContext(WithHTTPUpstreamRedirectsDisabled(reqCtx))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", accept)
+	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	if useResponses {
 		applyOpenAICodexProbeHeaders(req.Header)
@@ -996,38 +996,123 @@ func (s *UpstreamBillingProbeService) probeUpstreamModel(
 		return result
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, responsesProbeMaxBodyBytes+1))
-	result.LatencyMS = probeLatencyMS(started)
 	result.HTTPStatus = resp.StatusCode
-	if readErr != nil {
-		result.LastError = "response_read_failed"
-		return result
-	}
-	if len(body) > responsesProbeMaxBodyBytes {
-		result.LastError = "response_too_large"
-		return result
-	}
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+		result.LatencyMS = probeLatencyMS(started)
 		result.Status = UpstreamBillingProbeStatusUnsupported
 		result.LastError = "unsupported"
 		return result
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		result.LatencyMS = probeLatencyMS(started)
 		result.LastError = "http_error"
 		return result
 	}
-	if useResponses && !decideResponsesProbeSupport(resp.StatusCode, body) {
-		result.Status = UpstreamBillingProbeStatusUnsupported
-		result.LastError = "responses_tool_unsupported"
+	if readError := readUpstreamModelProbeFirstOutput(resp.Body, useResponses); readError != "" {
+		result.LatencyMS = probeLatencyMS(started)
+		result.LastError = readError
 		return result
 	}
-	if len(body) == 0 {
-		result.LastError = "empty_response"
-		return result
-	}
+	result.LatencyMS = probeLatencyMS(started)
 	result.Status = UpstreamBillingProbeStatusOK
 	result.LastError = ""
 	return result
+}
+
+// readUpstreamModelProbeFirstOutput measures the same user-visible boundary as
+// gateway TTFT: preamble frames do not count, and the probe returns as soon as
+// the first text/tool delta arrives instead of waiting for the whole response.
+func readUpstreamModelProbeFirstOutput(body io.Reader, useResponses bool) string {
+	if body == nil {
+		return "empty_response"
+	}
+
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 4096), responsesProbeMaxBodyBytes)
+	eventType := ""
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			eventType = ""
+			continue
+		}
+		if strings.HasPrefix(line, "event:") {
+			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
+
+		payload := line
+		if strings.HasPrefix(payload, "data:") {
+			payload = strings.TrimSpace(strings.TrimPrefix(payload, "data:"))
+		}
+		if payload == "" {
+			continue
+		}
+		if payload == "[DONE]" {
+			return "empty_response"
+		}
+		if !gjson.Valid(payload) {
+			continue
+		}
+
+		payloadBytes := []byte(payload)
+		payloadType := strings.TrimSpace(gjson.GetBytes(payloadBytes, "type").String())
+		if payloadType == "" {
+			payloadType = eventType
+		}
+		if payloadType == "error" || payloadType == "response.failed" || gjson.GetBytes(payloadBytes, "error").Exists() {
+			return "stream_error"
+		}
+		if upstreamModelProbePayloadHasVisibleOutput(payloadBytes, payloadType, useResponses) {
+			return ""
+		}
+		if payloadType == "response.completed" || payloadType == "response.done" {
+			return "empty_response"
+		}
+		for _, choice := range gjson.GetBytes(payloadBytes, "choices").Array() {
+			if strings.TrimSpace(choice.Get("finish_reason").String()) != "" {
+				return "empty_response"
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return "response_too_large"
+		}
+		return "response_read_failed"
+	}
+	return "empty_response"
+}
+
+func upstreamModelProbePayloadHasVisibleOutput(payload []byte, eventType string, useResponses bool) bool {
+	if useResponses {
+		if openAIStreamDataStartsVisibleOutput(string(payload), eventType) {
+			return true
+		}
+		if strings.TrimSpace(gjson.GetBytes(payload, "output_text").String()) != "" {
+			return true
+		}
+		for _, item := range gjson.GetBytes(payload, "output").Array() {
+			if openAIStreamItemHasVisibleOutput(item) {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, choice := range gjson.GetBytes(payload, "choices").Array() {
+		for _, path := range []string{
+			"delta.content",
+			"delta.reasoning_content",
+			"delta.reasoning",
+			"message.content",
+		} {
+			if strings.TrimSpace(choice.Get(path).String()) != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func selectUpstreamHealthProbeModel(account *Account) string {

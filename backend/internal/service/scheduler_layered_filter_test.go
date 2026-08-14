@@ -511,6 +511,42 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 		require.Equal(t, int64(1), result[0].account.ID)
 	})
 
+	t.Run("ninety one percent fast account outranks one hundred percent slow account", func(t *testing.T) {
+		accounts := []accountWithLoad{
+			{account: poolAccount(1, 5, historyExtra(
+				[]string{"failed", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"},
+				[]int64{250, 2800, 2900, 3000, 3100, 2950, 3050, 2850, 3000, 3150, 2900},
+			)), loadInfo: &AccountLoadInfo{}},
+			{account: poolAccount(2, 1, historyExtra(
+				[]string{"ok", "ok", "ok", "ok", "ok", "ok"},
+				[]int64{6900, 7000, 7100, 7200, 7050, 6950},
+			)), loadInfo: &AccountLoadInfo{}},
+		}
+
+		result := filterByBestProbeAutoPriority(accounts, now)
+
+		require.Len(t, result, 1)
+		require.Equal(t, int64(1), result[0].account.ID)
+	})
+
+	t.Run("fast account below health floor stays behind reliable account", func(t *testing.T) {
+		accounts := []accountWithLoad{
+			{account: poolAccount(1, 1, historyExtra(
+				[]string{"failed", "failed", "failed", "ok"},
+				[]int64{200, 250, 300, 500},
+			)), loadInfo: &AccountLoadInfo{}},
+			{account: poolAccount(2, 5, historyExtra(
+				[]string{"ok", "ok", "ok", "ok"},
+				[]int64{2900, 3000, 3100, 3050},
+			)), loadInfo: &AccountLoadInfo{}},
+		}
+
+		result := filterByBestProbeAutoPriority(accounts, now)
+
+		require.Len(t, result, 1)
+		require.Equal(t, int64(2), result[0].account.ID)
+	})
+
 	t.Run("p50 speed wins before a modestly better p95", func(t *testing.T) {
 		accounts := []accountWithLoad{
 			{account: poolAccount(1, 5, historyExtra(
@@ -612,6 +648,24 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 		reason, metrics = accountProbeStickyEscapeReason(slowTail, now)
 		require.Equal(t, "model_probe_p95", reason)
 		require.Equal(t, int64(9000), metrics.P95LatencyMS)
+	})
+
+	t.Run("sticky escape releases an account in a slower probe cohort", func(t *testing.T) {
+		fast := poolAccount(1, 9, historyExtra(
+			[]string{"ok", "ok", "ok", "ok"},
+			[]int64{900, 950, 1000, 1050},
+		))
+		slow := poolAccount(2, 1, historyExtra(
+			[]string{"ok", "ok", "ok", "ok"},
+			[]int64{4500, 4700, 4900, 5000},
+		))
+
+		reason, metrics := accountProbeStickyEscapeReasonWithinPool(slow, []*Account{slow, fast}, now)
+
+		require.Equal(t, "model_probe_slower_cohort", reason)
+		require.Equal(t, int64(4700), metrics.P50LatencyMS)
+		reason, _ = accountProbeStickyEscapeReasonWithinPool(fast, []*Account{slow, fast}, now)
+		require.Empty(t, reason)
 	})
 
 	t.Run("no probe signal keeps original set", func(t *testing.T) {

@@ -1613,15 +1613,28 @@ func filterByBestProbeAutoPriority(accounts []accountWithLoad, now time.Time) []
 		}
 	}
 
-	bestRate := ranked[0].info
-	for _, item := range ranked[1:] {
-		if compareProbeSuccessRate(item.info, bestRate) > 0 {
-			bestRate = item.info
-		}
-	}
-	ranked = keepProbeCandidates(ranked, func(info probeAutoPriorityInfo) bool {
-		return compareProbeSuccessRate(info, bestRate) == 0
+	// Reliability is a health gate, not a primary sort key. Once an account has
+	// enough successful samples to stay above the floor, a 100% account must not
+	// outrank a materially faster 91% account solely because of one old failure.
+	reliable := keepProbeCandidates(ranked, func(info probeAutoPriorityInfo) bool {
+		return info.sampleCount > 0 &&
+			float64(info.successCount)/float64(info.sampleCount) >= probeAutoPriorityStickyMinSuccess
 	})
+	if len(reliable) > 0 {
+		ranked = reliable
+	} else {
+		// If every remaining account is below the floor, keep the best available
+		// reliability cohort so a degraded pool still has deterministic fallback.
+		bestRate := ranked[0].info
+		for _, item := range ranked[1:] {
+			if compareProbeSuccessRate(item.info, bestRate) > 0 {
+				bestRate = item.info
+			}
+		}
+		ranked = keepProbeCandidates(ranked, func(info probeAutoPriorityInfo) bool {
+			return compareProbeSuccessRate(info, bestRate) == 0
+		})
+	}
 
 	bestConsecutiveFailures := ranked[0].info.consecutiveFailures
 	for _, item := range ranked[1:] {
@@ -1891,6 +1904,44 @@ func accountProbeStickyEscapeReason(account *Account, now time.Time) (string, up
 		if metrics.SuccessCount >= probeAutoPriorityStableSampleCount &&
 			metrics.P95LatencyMS > probeAutoPriorityMaxP95MS {
 			return "model_probe_p95", metrics
+		}
+	}
+	return "", metrics
+}
+
+func accountProbeStickyEscapeReasonWithinPool(account *Account, candidates []*Account, now time.Time) (string, upstreamModelProbeMetrics) {
+	reason, metrics := accountProbeStickyEscapeReason(account, now)
+	if reason != "" || account == nil || !poolAutoPriorityEnabled(account) || len(candidates) == 0 {
+		return reason, metrics
+	}
+
+	rankedAccounts := make([]*Account, 0, len(candidates)+1)
+	currentIncluded := false
+	for _, candidate := range candidates {
+		if candidate == nil {
+			continue
+		}
+		if candidate.ID == account.ID {
+			candidate = account
+			currentIncluded = true
+		}
+		rankedAccounts = append(rankedAccounts, candidate)
+	}
+	if !currentIncluded {
+		rankedAccounts = append(rankedAccounts, account)
+	}
+
+	ranks, ranked := probeAutoPriorityRanks(rankedAccounts, now)
+	currentRank, currentRanked := ranks[account.ID]
+	if !ranked || !currentRanked {
+		return "", metrics
+	}
+	for _, candidate := range rankedAccounts {
+		if candidate == nil || candidate.ID == account.ID {
+			continue
+		}
+		if candidateRank, ok := ranks[candidate.ID]; ok && candidateRank < currentRank {
+			return "model_probe_slower_cohort", metrics
 		}
 	}
 	return "", metrics

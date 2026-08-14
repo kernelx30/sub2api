@@ -147,6 +147,52 @@ func TestOpenAIStreamCapacityShedErrorFramePrecedingFailedStillFailsOver(t *test
 // 流中途（已有真实输出）降载时无法再 failover，此时必须把降载码改写为客户端
 // 可重试的 server_error 再转发——Codex 对 server_is_overloaded/slow_down 判致命
 // 并终止会话，对其余错误码执行内置退避重试。消息原样保留。
+func TestOpenAIStreamRepeatedCapacityShedStartsModelCooldown(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{
+		Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
+	}}
+	account := &Account{
+		ID:          17,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{"pool_mode": true},
+	}
+	newResponse := func() *http.Response {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+				"event: response.created",
+				`data: {"type":"response.created","response":{"id":"resp_1"}}`,
+				"",
+				"event: response.failed",
+				`data: {"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"server_is_overloaded","message":"Please retry later."}}}`,
+				"",
+			}, "\n"))),
+			Header: http.Header{"X-Request-Id": []string{"rid-overloaded"}},
+		}
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+		_, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), newResponse(), c, account, time.Now(), "gpt-5.5", "gpt-5.5")
+		require.Error(t, err)
+		var failoverErr *UpstreamFailoverError
+		require.ErrorAs(t, err, &failoverErr)
+		require.True(t, failoverErr.RequestScopedTransient)
+		if attempt == 1 {
+			require.False(t, svc.isOpenAIAccountModelRuntimeBlocked(account, "gpt-5.5"))
+		}
+	}
+
+	require.True(t, svc.isOpenAIAccountModelRuntimeBlocked(account, "gpt-5.5"))
+}
+
 func TestOpenAIStreamCapacityShedAfterOutputRewritesCodeForClient(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
