@@ -173,20 +173,23 @@ type UpstreamBillingProbeResult struct {
 }
 
 type upstreamBillingProbeResponse struct {
-	Object                  string   `json:"object"`
-	SchemaVersion           int      `json:"schema_version"`
-	BillingScope            string   `json:"billing_scope"`
-	GroupRateMultiplier     *float64 `json:"group_rate_multiplier"`
-	UserRateMultiplier      *float64 `json:"user_rate_multiplier"`
-	ResolvedRateMultiplier  *float64 `json:"resolved_rate_multiplier"`
-	PeakRateEnabled         *bool    `json:"peak_rate_enabled"`
-	PeakStart               *string  `json:"peak_start"`
-	PeakEnd                 *string  `json:"peak_end"`
-	PeakRateMultiplier      *float64 `json:"peak_rate_multiplier"`
-	AppliedPeakMultiplier   *float64 `json:"applied_peak_multiplier"`
-	EffectiveRateMultiplier *float64 `json:"effective_rate_multiplier"`
-	Timezone                *string  `json:"timezone"`
-	ObservedAt              string   `json:"observed_at"`
+	Object                    string   `json:"object"`
+	SchemaVersion             int      `json:"schema_version"`
+	BillingScope              string   `json:"billing_scope"`
+	AvailableBalance          *float64 `json:"available_balance"`
+	AvailableBalanceSource    *string  `json:"available_balance_source"`
+	AvailableBalanceUnlimited *bool    `json:"available_balance_unlimited"`
+	GroupRateMultiplier       *float64 `json:"group_rate_multiplier"`
+	UserRateMultiplier        *float64 `json:"user_rate_multiplier"`
+	ResolvedRateMultiplier    *float64 `json:"resolved_rate_multiplier"`
+	PeakRateEnabled           *bool    `json:"peak_rate_enabled"`
+	PeakStart                 *string  `json:"peak_start"`
+	PeakEnd                   *string  `json:"peak_end"`
+	PeakRateMultiplier        *float64 `json:"peak_rate_multiplier"`
+	AppliedPeakMultiplier     *float64 `json:"applied_peak_multiplier"`
+	EffectiveRateMultiplier   *float64 `json:"effective_rate_multiplier"`
+	Timezone                  *string  `json:"timezone"`
+	ObservedAt                string   `json:"observed_at"`
 }
 
 // GetUpstreamBillingProbeSettings returns defaults when the setting is absent.
@@ -1430,6 +1433,23 @@ func parseUpstreamBillingProbeResponse(body []byte) (map[string]any, error) {
 		"peak_rate_enabled":         *response.PeakRateEnabled,
 		"effective_rate_multiplier": *response.EffectiveRateMultiplier,
 		"observed_at":               observedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if response.AvailableBalanceSource != nil {
+		if strings.TrimSpace(*response.AvailableBalanceSource) != "api_key_quota" {
+			return nil, fmt.Errorf("invalid available balance source")
+		}
+		if response.AvailableBalance != nil {
+			if *response.AvailableBalance < 0 || math.IsNaN(*response.AvailableBalance) || math.IsInf(*response.AvailableBalance, 0) {
+				return nil, fmt.Errorf("invalid available balance")
+			}
+			data["available_balance"] = *response.AvailableBalance
+		}
+		if response.AvailableBalanceUnlimited != nil {
+			data["available_balance_unlimited"] = *response.AvailableBalanceUnlimited
+		}
+		if response.AvailableBalance != nil || response.AvailableBalanceUnlimited != nil {
+			data["available_balance_source"] = "api_key_quota"
+		}
 	}
 	if response.UserRateMultiplier != nil {
 		data["user_rate_multiplier"] = *response.UserRateMultiplier

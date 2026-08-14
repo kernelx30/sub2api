@@ -24,6 +24,7 @@ import type {
   UpstreamBillingProbeResult,
   UpstreamBillingProbeSettings,
   PoolAutoPrioritySettings,
+  PoolAutoPriorityRankingResponse,
   OllamaCloudUsageSettings,
   OllamaCloudUsageState
 } from '@/types'
@@ -932,6 +933,17 @@ export async function getPoolAutoPrioritySettings(): Promise<PoolAutoPrioritySet
   return data
 }
 
+export async function getPoolAutoPriorityRanking(
+  groupId: number,
+  limit: number = 10
+): Promise<PoolAutoPriorityRankingResponse> {
+  const { data } = await apiClient.get<PoolAutoPriorityRankingResponse>(
+    '/admin/accounts/pool-auto-priority/ranking',
+    { params: { group_id: groupId, limit } }
+  )
+  return data
+}
+
 export async function updatePoolAutoPrioritySettings(
   settings: PoolAutoPrioritySettings
 ): Promise<PoolAutoPrioritySettings> {
@@ -1056,6 +1068,7 @@ export const accountsAPI = {
   updateUpstreamBillingProbeSettings,
   setUpstreamBillingProbeEnabled,
   getPoolAutoPrioritySettings,
+  getPoolAutoPriorityRanking,
   updatePoolAutoPrioritySettings,
   setPoolAutoPriorityEnabled,
   probeUpstreamBilling,

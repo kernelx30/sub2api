@@ -1030,6 +1030,9 @@ export interface UpstreamBillingData {
   object: 'sub2api.key_billing'
   schema_version: 1
   billing_scope: 'token'
+  available_balance?: number
+  available_balance_source?: 'api_key_quota'
+  available_balance_unlimited?: boolean
   group_rate_multiplier: number
   user_rate_multiplier?: number
   resolved_rate_multiplier: number
@@ -1095,6 +1098,41 @@ export interface UpstreamBillingProbeSettings {
 export interface PoolAutoPrioritySettings {
   enabled: boolean
   interval_minutes: number
+}
+
+export type PoolAutoPriorityProbeStatus = 'ok' | 'stale' | 'unmeasured' | 'failed' | 'unsupported'
+
+export interface PoolAutoPriorityRankingEntry {
+  rank: number | null
+  cohort_rank: number | null
+  account_id: number
+  account_name: string
+  group_id: number
+  group_name?: string
+  manual_priority: number
+  schedulable: boolean
+  probe_status: PoolAutoPriorityProbeStatus
+  probe_model?: string
+  sample_count: number
+  success_rate: number
+  p50_latency_ms: number
+  p95_latency_ms: number
+  latest_latency_ms: number
+  consecutive_failures: number
+  last_probe_at?: string
+  next_probe_at?: string
+  available_balance?: number
+  balance_unlimited: boolean
+  balance_source?: 'upstream_api_key_quota' | 'local_account_quota'
+}
+
+export interface PoolAutoPriorityRankingResponse {
+  enabled: boolean
+  interval_minutes: number
+  group_id: number
+  generated_at: string
+  total: number
+  items: PoolAutoPriorityRankingEntry[]
 }
 
 export interface UpstreamBillingProbeResult {

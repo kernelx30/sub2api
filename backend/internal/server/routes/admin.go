@@ -353,6 +353,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.PUT("/upstream-billing-probe/settings", h.Admin.Account.UpdateUpstreamBillingProbeSettings)
 		accounts.POST("/upstream-billing-probe/batch", h.Admin.Account.ProbeUpstreamBillingBatch)
 		accounts.GET("/pool-auto-priority/settings", h.Admin.Account.GetPoolAutoPrioritySettings)
+		accounts.GET("/pool-auto-priority/ranking", h.Admin.Account.GetPoolAutoPriorityRanking)
 		accounts.PUT("/pool-auto-priority/settings", h.Admin.Account.UpdatePoolAutoPrioritySettings)
 		accounts.GET("/ollama-cloud-usage/settings", h.Admin.Account.GetOllamaCloudUsageSettings)
 		accounts.PUT("/ollama-cloud-usage/settings", h.Admin.Account.UpdateOllamaCloudUsageSettings)
