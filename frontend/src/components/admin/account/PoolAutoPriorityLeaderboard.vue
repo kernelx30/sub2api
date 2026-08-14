@@ -1,7 +1,7 @@
 <template>
   <section
     v-if="groupOptions.length > 0"
-    class="mb-3 border-y border-gray-200 bg-gray-50/70 dark:border-dark-700 dark:bg-dark-900/30"
+    class="overflow-hidden rounded-lg border border-gray-200 bg-gray-50/70 shadow-sm dark:border-dark-700 dark:bg-dark-900/30"
     data-testid="pool-auto-priority-leaderboard"
   >
     <div class="flex flex-wrap items-center justify-between gap-3 px-3 py-2.5">
@@ -136,8 +136,12 @@
       </table>
     </div>
 
-    <div v-if="ranking?.generated_at" class="border-t border-gray-200 px-3 py-1.5 text-right text-[10px] text-gray-400 dark:border-dark-700 dark:text-dark-500">
-      {{ t('admin.accounts.poolRanking.cachedAt', { time: formatRelativeTime(ranking.generated_at) }) }}
+    <div
+      v-if="ranking?.generated_at"
+      class="flex flex-wrap items-center justify-between gap-2 border-t border-gray-200 px-3 py-2 text-[10px] text-gray-400 dark:border-dark-700 dark:text-dark-500"
+    >
+      <span>{{ t('admin.accounts.poolRanking.displayed', { count: entries.length, total: ranking.total }) }}</span>
+      <span>{{ t('admin.accounts.poolRanking.cachedAt', { time: formatRelativeTime(ranking.generated_at) }) }}</span>
     </div>
   </section>
 </template>
@@ -202,7 +206,7 @@ async function loadRanking(): Promise<void> {
   loading.value = true
   error.value = false
   try {
-    const result = await adminAPI.accounts.getPoolAutoPriorityRanking(groupId, 10)
+    const result = await adminAPI.accounts.getPoolAutoPriorityRanking(groupId, 50)
     if (sequence !== requestSequence) return
     ranking.value = result
     entries.value = result.items

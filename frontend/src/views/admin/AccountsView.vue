@@ -175,11 +175,6 @@
         </div>
       </template>
       <template #table>
-        <PoolAutoPriorityLeaderboard
-          :groups="groups"
-          :selected-group="params.group"
-          @updated="handlePoolAutoPriorityRankingUpdated"
-        />
         <AccountBulkActionsBar
           :selected-ids="selIds"
           :total-results="pagination.total"
@@ -387,31 +382,6 @@
           <template #cell-priority="{ value }">
             <span class="text-sm text-gray-700 dark:text-gray-300">{{ value }}</span>
           </template>
-          <template #cell-auto_priority_rank="{ row }">
-            <div
-              v-if="getPoolAutoPriorityRanking(row.id)?.rank != null"
-              class="flex min-w-[5rem] items-center gap-1.5"
-              :title="poolAutoPriorityRankTitle(row.id)"
-            >
-              <span class="inline-flex h-6 min-w-6 items-center justify-center rounded bg-amber-100 px-1.5 font-mono text-xs font-semibold text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
-                #{{ getPoolAutoPriorityRanking(row.id)?.rank }}
-              </span>
-              <span class="font-mono text-[11px] text-gray-500 dark:text-dark-400">
-                {{ formatPoolAutoPriorityLatency(getPoolAutoPriorityRanking(row.id)?.p50_latency_ms) }}
-              </span>
-            </div>
-            <span v-else class="text-sm text-gray-400 dark:text-dark-500">-</span>
-          </template>
-          <template #cell-available_balance="{ row }">
-            <span
-              v-if="getPoolAutoPriorityRanking(row.id)"
-              class="font-mono text-sm text-gray-700 dark:text-gray-300"
-              :title="poolAutoPriorityBalanceTitle(row.id)"
-            >
-              {{ formatPoolAutoPriorityBalance(getPoolAutoPriorityRanking(row.id)) }}
-            </span>
-            <span v-else class="text-sm text-gray-400 dark:text-dark-500">-</span>
-          </template>
           <template #header-scheduler_score="{ column }">
             <div class="flex items-center">
               <span>{{ column.label }}</span>
@@ -538,7 +508,6 @@ import { CreateAccountModal, EditAccountModal, BulkEditAccountModal, SyncFromCrs
 import AccountTableActions from '@/components/admin/account/AccountTableActions.vue'
 import AccountTableFilters from '@/components/admin/account/AccountTableFilters.vue'
 import AccountBulkActionsBar from '@/components/admin/account/AccountBulkActionsBar.vue'
-import PoolAutoPriorityLeaderboard from '@/components/admin/account/PoolAutoPriorityLeaderboard.vue'
 import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
 import ImportDataModal from '@/components/admin/account/ImportDataModal.vue'
 import ReAuthAccountModal from '@/components/admin/account/ReAuthAccountModal.vue'
@@ -564,7 +533,7 @@ import { extractApiErrorMessage } from '@/utils/apiError'
 import { sanitizeUrl } from '@/utils/url'
 import { getFloatingPanelPosition } from '@/utils/floatingPanel'
 import { formatMultiplier } from '@/utils/formatters'
-import type { Account, AccountPlatform, AccountSchedulerGroupScore, AccountType, AccountUsageInfo, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel, UpstreamBillingProbeSnapshot, PoolAutoPriorityRankingEntry } from '@/types'
+import type { Account, AccountPlatform, AccountSchedulerGroupScore, AccountType, AccountUsageInfo, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel, UpstreamBillingProbeSnapshot } from '@/types'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -645,7 +614,6 @@ const exportingData = ref(false)
 const probingUpstreamBilling = reactive(new Set<number>())
 const upstreamBillingProbeGloballyEnabled = ref<boolean | undefined>(undefined)
 const poolAutoPriorityGloballyEnabled = ref<boolean | undefined>(undefined)
-const poolAutoPriorityRankingByAccountId = ref<Map<number, PoolAutoPriorityRankingEntry>>(new Map())
 const upstreamBillingNow = ref(Date.now())
 let lastUpstreamBillingSortRefreshMinute = -1
 useIntervalFn(() => { upstreamBillingNow.value = Date.now() }, 60_000)
@@ -1729,51 +1697,6 @@ function getAntigravityTierClass(row: any): string {
   }
 }
 
-function handlePoolAutoPriorityRankingUpdated(entries: PoolAutoPriorityRankingEntry[]): void {
-  poolAutoPriorityRankingByAccountId.value = new Map(entries.map(entry => [entry.account_id, entry]))
-}
-
-function getPoolAutoPriorityRanking(accountId: number): PoolAutoPriorityRankingEntry | undefined {
-  return poolAutoPriorityRankingByAccountId.value.get(accountId)
-}
-
-function formatPoolAutoPriorityLatency(value: number | undefined): string {
-  return value != null && value > 0 ? `${Math.round(value)} ms` : '-'
-}
-
-function formatPoolAutoPriorityBalance(entry: PoolAutoPriorityRankingEntry | undefined): string {
-  if (!entry) return '-'
-  if (entry.balance_unlimited) {
-    return entry.balance_source === 'local_account_quota'
-      ? t('admin.accounts.poolRanking.localUnlimited')
-      : t('admin.accounts.poolRanking.unlimited')
-  }
-  if (entry.available_balance == null) return '-'
-  return `$${entry.available_balance.toFixed(entry.available_balance < 10 ? 2 : 1)}`
-}
-
-function poolAutoPriorityRankTitle(accountId: number): string {
-  const entry = getPoolAutoPriorityRanking(accountId)
-  if (!entry) return ''
-  return t('admin.accounts.poolRanking.rankCellHint', {
-    rank: entry.rank ?? '-',
-    p50: formatPoolAutoPriorityLatency(entry.p50_latency_ms),
-    success: entry.sample_count > 0 ? `${Math.round(entry.success_rate * 100)}%` : '-'
-  })
-}
-
-function poolAutoPriorityBalanceTitle(accountId: number): string {
-  const entry = getPoolAutoPriorityRanking(accountId)
-  if (!entry) return ''
-  if (entry.balance_source === 'upstream_api_key_quota') {
-    return t('admin.accounts.poolRanking.upstreamBalance')
-  }
-  if (entry.balance_source === 'local_account_quota') {
-    return t('admin.accounts.poolRanking.localBalance')
-  }
-  return t('admin.accounts.poolRanking.unknownBalance')
-}
-
 // All available columns
 const allColumns = computed(() => {
   const c = [
@@ -1792,8 +1715,6 @@ const allColumns = computed(() => {
   c.push({ key: 'usage', label: t('admin.accounts.columns.usageWindows'), sortable: false })
   c.push(
     { key: 'proxy', label: t('admin.accounts.columns.proxy'), sortable: false },
-    { key: 'auto_priority_rank', label: t('admin.accounts.columns.autoPriorityRank'), sortable: false },
-    { key: 'available_balance', label: t('admin.accounts.columns.availableBalance'), sortable: false },
     { key: 'priority', label: t('admin.accounts.columns.priority'), sortable: true },
     { key: 'scheduler_score', label: t('admin.accounts.columns.schedulerScore'), sortable: false },
     { key: 'rate_multiplier', label: t('admin.accounts.columns.billingRateMultiplier'), sortable: true },

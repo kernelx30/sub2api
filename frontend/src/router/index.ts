@@ -526,6 +526,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/account-ranking',
+    name: 'AdminAccountRanking',
+    component: () => import('@/views/admin/AccountRankingView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Account Ranking',
+      titleKey: 'admin.accounts.poolRanking.title',
+      descriptionKey: 'admin.accounts.poolRanking.pageDescription'
+    }
+  },
+  {
     path: '/admin/announcements',
     name: 'AdminAnnouncements',
     component: () => import('@/views/admin/AnnouncementsView.vue'),

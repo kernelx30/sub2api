@@ -135,7 +135,7 @@ describe('PoolAutoPriorityLeaderboard', () => {
     wrapper = mountLeaderboard()
     await flushPromises()
 
-    expect(getPoolAutoPriorityRanking).toHaveBeenCalledWith(1, 10)
+    expect(getPoolAutoPriorityRanking).toHaveBeenCalledWith(1, 50)
     const rows = wrapper.findAll('[data-testid^="pool-ranking-row-"]')
     expect(rows.map(row => row.attributes('data-testid'))).toEqual([
       'pool-ranking-row-7',
@@ -168,12 +168,12 @@ describe('PoolAutoPriorityLeaderboard', () => {
     await wrapper.get('[data-testid="pool-ranking-group-select"]').setValue('2')
     await flushPromises()
 
-    expect(getPoolAutoPriorityRanking).toHaveBeenNthCalledWith(1, 1, 10)
-    expect(getPoolAutoPriorityRanking).toHaveBeenNthCalledWith(2, 2, 10)
+    expect(getPoolAutoPriorityRanking).toHaveBeenNthCalledWith(1, 1, 50)
+    expect(getPoolAutoPriorityRanking).toHaveBeenNthCalledWith(2, 2, 50)
 
     await vi.advanceTimersByTimeAsync(60_000)
     await flushPromises()
 
-    expect(getPoolAutoPriorityRanking).toHaveBeenNthCalledWith(3, 2, 10)
+    expect(getPoolAutoPriorityRanking).toHaveBeenNthCalledWith(3, 2, 50)
   })
 })

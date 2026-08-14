@@ -935,7 +935,7 @@ export async function getPoolAutoPrioritySettings(): Promise<PoolAutoPrioritySet
 
 export async function getPoolAutoPriorityRanking(
   groupId: number,
-  limit: number = 10
+  limit: number = 50
 ): Promise<PoolAutoPriorityRankingResponse> {
   const { data } = await apiClient.get<PoolAutoPriorityRankingResponse>(
     '/admin/accounts/pool-auto-priority/ranking',
