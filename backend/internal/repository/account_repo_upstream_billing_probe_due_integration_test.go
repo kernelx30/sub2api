@@ -197,7 +197,7 @@ func TestListDueUpstreamBillingProbeAccountsIncludesAllAPIKeyPlatforms(t *testin
 	`, []any{service.AccountTypeAPIKey}, &disabledID)
 	require.NoError(t, err)
 
-	accounts, err := repo.ListDueUpstreamBillingProbeAccounts(ctx, now, 20)
+	accounts, err := repo.ListDueUpstreamBillingProbeAccounts(ctx, now, true, true, 20)
 	require.NoError(t, err)
 	require.Len(t, accounts, 3)
 	require.Equal(t, openaiDue, accounts[0].ID)

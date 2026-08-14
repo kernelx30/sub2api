@@ -420,8 +420,8 @@ type PublicSettings struct {
 	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
 
 	MySubscriptionsEnabled bool `json:"my_subscriptions_enabled"`
-	ModelPlazaEnabled     bool `json:"model_plaza_enabled"`
-	ModelPlazaRequireAuth bool `json:"model_plaza_require_auth"`
+	ModelPlazaEnabled      bool `json:"model_plaza_enabled"`
+	ModelPlazaRequireAuth  bool `json:"model_plaza_require_auth"`
 
 	AffiliateEnabled bool `json:"affiliate_enabled"`
 
