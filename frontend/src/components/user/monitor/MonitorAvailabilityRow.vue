@@ -1,9 +1,9 @@
 <template>
-  <div class="mt-3 flex w-full min-w-0 self-stretch items-end justify-between gap-3">
-    <div class="min-w-0 truncate text-[11px] uppercase tracking-widest text-gray-400">
+  <div class="mt-3 flex items-end justify-between">
+    <div class="text-[11px] uppercase tracking-widest text-gray-400">
       {{ windowLabel }}
     </div>
-    <div class="flex shrink-0 items-baseline gap-0.5">
+    <div class="flex items-baseline gap-0.5">
       <span
         class="text-3xl font-bold tabular-nums leading-none"
         :style="colorStyle"

@@ -1,19 +1,19 @@
 <template>
-  <div class="mt-4 w-full min-w-0 self-stretch border-t border-gray-100 pt-3 dark:border-dark-700/60">
+  <div class="mt-4 pt-3 border-t border-gray-100 dark:border-dark-700/60">
     <div
-      class="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-[10px] font-semibold uppercase tracking-widest text-gray-400"
+      class="flex justify-between text-[10px] font-semibold uppercase tracking-widest text-gray-400 mb-2"
     >
-      <span>{{ t('monitorCommon.historyOneHour') }}</span>
-      <span class="ml-auto whitespace-nowrap tabular-nums">{{ t('monitorCommon.nextUpdateIn', { n: countdownSeconds }) }}</span>
+      <span>{{ t('monitorCommon.history60pts', { n: length }) }}</span>
+      <span class="tabular-nums">{{ t('monitorCommon.nextUpdateIn', { n: countdownSeconds }) }}</span>
     </div>
 
     <div
       v-if="maintenance"
-      class="flex h-6 w-full items-center justify-center rounded border border-dashed border-gray-300 dark:border-dark-600 text-[10px] uppercase tracking-widest text-gray-400 sm:h-5"
+      class="flex h-5 w-full items-center justify-center rounded border border-dashed border-gray-300 dark:border-dark-600 text-[10px] uppercase tracking-widest text-gray-400"
     >
       {{ t('monitorCommon.maintenancePaused') }}
     </div>
-    <div v-else class="flex h-6 w-full min-w-0 items-end gap-[2px] sm:h-5">
+    <div v-else class="flex items-end gap-[2px] h-5 w-full">
       <div
         v-for="(bar, idx) in displayBars"
         :key="idx"

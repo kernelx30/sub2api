@@ -2,12 +2,12 @@
   <div>
     <div
       v-if="loading && items.length === 0"
-      class="grid min-w-0 grid-cols-1 gap-3 sm:gap-5 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
+      class="grid gap-5 grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
     >
       <div
         v-for="i in 6"
         :key="i"
-        class="min-w-0 rounded-2xl p-4 sm:min-h-[280px] sm:p-5 bg-white/70 dark:bg-dark-800/60 border border-gray-200/80 dark:border-dark-700/70 animate-pulse"
+        class="p-5 rounded-2xl min-h-[280px] bg-white/70 dark:bg-dark-800/60 border border-gray-200/80 dark:border-dark-700/70 animate-pulse"
       >
         <div class="flex items-start gap-3">
           <div class="w-9 h-9 rounded-xl bg-gray-200 dark:bg-dark-700"></div>
@@ -33,13 +33,14 @@
 
     <div
       v-else
-      class="grid min-w-0 grid-cols-1 gap-3 sm:gap-5 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
+      class="grid gap-5 grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
     >
       <MonitorCard
         v-for="item in items"
         :key="item.id"
         :item="item"
-        :availability-value="item.availability_1h ?? null"
+        :window="window"
+        :availability-value="resolveAvailability(item)"
         :countdown-seconds="countdownSeconds"
         @click="emit('cardClick', item)"
       />
@@ -49,14 +50,16 @@
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import type { UserMonitorView } from '@/api/channelMonitor'
+import type { UserMonitorView, UserMonitorDetail } from '@/api/channelMonitor'
 import EmptyState from '@/components/common/EmptyState.vue'
 import MonitorCard from './MonitorCard.vue'
 
-defineProps<{
+const props = defineProps<{
   items: UserMonitorView[]
+  window: '7d' | '15d' | '30d'
   countdownSeconds: number
   loading: boolean
+  detailCache: Record<number, UserMonitorDetail>
 }>()
 
 const emit = defineEmits<{
@@ -64,4 +67,15 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+
+function resolveAvailability(item: UserMonitorView): number | null {
+  if (props.window === '7d') {
+    return item.availability_7d ?? null
+  }
+  const detail = props.detailCache[item.id]
+  if (!detail) return null
+  const primary = detail.models.find(m => m.model === item.primary_model)
+  if (!primary) return null
+  return props.window === '15d' ? primary.availability_15d ?? null : primary.availability_30d ?? null
+}
 </script>

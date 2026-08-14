@@ -50,12 +50,13 @@ export function useAutoRefresh(options: UseAutoRefreshOptions) {
     if (shouldPause?.()) return
     if (fetching.value) return
 
+    if (countdown.value <= 0) {
+      countdown.value = intervalSeconds.value
+      fetching.value = true
+      try { await onRefresh() } finally { fetching.value = false }
+      return
+    }
     countdown.value -= 1
-    if (countdown.value > 0) return
-
-    countdown.value = intervalSeconds.value
-    fetching.value = true
-    try { await onRefresh() } finally { fetching.value = false }
   }
 
   function start() {

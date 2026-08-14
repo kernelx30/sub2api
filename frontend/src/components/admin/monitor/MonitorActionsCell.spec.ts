@@ -28,7 +28,7 @@ function makeMonitor(overrides: Partial<ChannelMonitor> = {}): ChannelMonitor {
     updated_at: '2026-07-16T00:00:00Z',
     primary_status: '',
     primary_latency_ms: null,
-    availability_1h: 0,
+    availability_7d: 0,
     extra_models_status: [],
     template_id: null,
     extra_headers: {},
