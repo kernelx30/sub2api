@@ -3,7 +3,7 @@
     <div
       class="flex justify-between text-[10px] font-semibold uppercase tracking-widest text-gray-400 mb-2"
     >
-      <span>{{ t('monitorCommon.history60pts', { n: length }) }}</span>
+      <span>{{ t('monitorCommon.historyOneHour') }}</span>
       <span class="tabular-nums">{{ t('monitorCommon.nextUpdateIn', { n: countdownSeconds }) }}</span>
     </div>
 

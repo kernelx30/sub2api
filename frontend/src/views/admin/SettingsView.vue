@@ -7082,23 +7082,6 @@
                 </p>
               </div>
 
-              <div v-if="form.channel_monitor_mode === 'v1'">
-                <label class="input-label">
-                  {{ t('admin.settings.features.channelMonitor.defaultInterval') }}
-                  <span class="text-red-500">*</span>
-                </label>
-                <input
-                  v-model.number="form.channel_monitor_default_interval_seconds"
-                  type="number"
-                  min="15"
-                  max="3600"
-                  class="input"
-                />
-                <p class="mt-1 text-xs text-gray-400">
-                  {{ t('admin.settings.features.channelMonitor.defaultIntervalHint') }}
-                </p>
-              </div>
-
               <div v-if="form.channel_monitor_mode === 'v2'" class="flex items-start justify-between gap-4">
                 <div class="min-w-0">
                   <p class="text-sm font-medium text-gray-900 dark:text-white">

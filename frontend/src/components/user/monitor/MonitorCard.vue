@@ -94,7 +94,6 @@ const PROVIDER_TINT: Record<string, string> = {
 
 const props = defineProps<{
   item: UserMonitorView
-  window: '7d' | '15d' | '30d'
   availabilityValue: number | null
   countdownSeconds: number
 }>()
@@ -116,10 +115,9 @@ const providerTintClass = computed(() =>
   PROVIDER_TINT[props.item.provider] ?? 'text-gray-500 dark:text-gray-300'
 )
 
-const availabilityLabel = computed(() => {
-  const win = t(`channelStatus.windowTab.${props.window}`)
-  return `${t('monitorCommon.availabilityPrefix')} · ${win}`
-})
+const availabilityLabel = computed(() =>
+  `${t('monitorCommon.availabilityPrefix')} · ${t('channelStatus.windowLabel')}`
+)
 
 const extraModelsCountLabel = computed(() => {
   const count = props.item.extra_models?.length ?? 0

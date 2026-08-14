@@ -472,7 +472,7 @@ export default {
     // Channel Monitor
     channelMonitor: {
       title: 'Channel Monitor',
-      description: 'Monitor channel availability, latency and status',
+      description: 'Check channels every 60 seconds and report availability and latency for the last hour',
       searchPlaceholder: 'Search monitor name...',
       allProviders: 'All Providers',
       allStatus: 'All Status',
@@ -502,7 +502,7 @@ export default {
         name: 'Name',
         provider: 'Provider',
         primaryModel: 'Primary Model',
-        availability7d: '7d Availability',
+        availability1h: '1h Availability',
         latency: 'Latency (ms)',
         enabled: 'Enabled',
         actions: 'Actions'
@@ -532,10 +532,6 @@ export default {
         extraModelsPlaceholder: 'Press Enter to add extra model',
         groupName: 'Group Name',
         groupNamePlaceholder: 'Optional, used to group rows in user view',
-        intervalSeconds: 'Interval (seconds)',
-        intervalSecondsHint: 'Range: 15 - 3600 seconds',
-        jitterSeconds: 'Random Jitter (± seconds)',
-        jitterSecondsHint: 'Each check fires at interval ± a random offset within this value; 0 means fixed interval. Interval minus jitter must be ≥ 15s',
         enabled: 'Enable monitor',
         kindRequired: 'Please select a provider'
       },

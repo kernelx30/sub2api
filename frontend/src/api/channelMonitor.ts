@@ -30,7 +30,7 @@ export interface UserMonitorView {
   primary_status: MonitorStatus
   primary_latency_ms: number | null
   primary_ping_latency_ms: number | null
-  availability_7d: number
+  availability_1h: number
   extra_models: UserMonitorExtraModel[]
   timeline: MonitorTimelinePoint[]
 }
@@ -43,10 +43,8 @@ export interface UserMonitorModelDetail {
   model: string
   latest_status: MonitorStatus
   latest_latency_ms: number | null
-  availability_7d: number
-  availability_15d: number
-  availability_30d: number
-  avg_latency_7d_ms: number | null
+  availability_1h: number
+  avg_latency_1h_ms: number | null
 }
 
 export interface UserMonitorDetail {
@@ -68,7 +66,7 @@ export async function list(options?: { signal?: AbortSignal }): Promise<UserMoni
 }
 
 /**
- * Get detailed status (multi-window availability + latency) for a single monitor.
+ * Get detailed status for the fixed one-hour availability window.
  */
 export async function status(id: number): Promise<UserMonitorDetail> {
   const { data } = await apiClient.get<UserMonitorDetail>(`/channel-monitors/${id}/status`)

@@ -472,7 +472,7 @@ export default {
     // Channel Monitor
     channelMonitor: {
       title: '渠道监控',
-      description: '监测各渠道的可用性、延迟和状态',
+      description: '每 60 秒检测渠道，并展示最近 1 小时的可用性和延迟',
       searchPlaceholder: '搜索监控名称...',
       allProviders: '全部供应商',
       allStatus: '全部状态',
@@ -502,7 +502,7 @@ export default {
         name: '名称',
         provider: '供应商',
         primaryModel: '主模型',
-        availability7d: '7 天可用率',
+        availability1h: '1 小时可用率',
         latency: '延迟 (ms)',
         enabled: '启用',
         actions: '操作'
@@ -532,10 +532,6 @@ export default {
         extraModelsPlaceholder: '回车添加附加模型',
         groupName: '分组名称',
         groupNamePlaceholder: '可选，用于在用户视图中聚合显示',
-        intervalSeconds: '检测间隔 (秒)',
-        intervalSecondsHint: '范围：15 - 3600 秒',
-        jitterSeconds: '随机抖动 (± 秒)',
-        jitterSecondsHint: '每次检测在间隔基础上正负随机偏移该秒数，0 表示固定间隔；需满足 间隔 - 抖动 ≥ 15 秒',
         enabled: '启用监控',
         kindRequired: '请选择供应商'
       },
