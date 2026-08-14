@@ -351,10 +351,22 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 		require.Equal(t, int64(2), result[0].account.ID)
 	})
 
-	t.Run("close healthy latency keeps both candidates for manual tie breakers", func(t *testing.T) {
+	t.Run("fifteen percent slower account no longer shares fastest cohort", func(t *testing.T) {
 		accounts := []accountWithLoad{
 			{account: poolAccount(1, 1, snapshotExtra(UpstreamBillingProbeStatusOK, 1000, 0, true)), loadInfo: &AccountLoadInfo{}},
 			{account: poolAccount(2, 2, snapshotExtra(UpstreamBillingProbeStatusOK, 1150, 0, true)), loadInfo: &AccountLoadInfo{}},
+		}
+
+		result := filterByBestProbeAutoPriority(accounts, now)
+
+		require.Len(t, result, 1)
+		require.Equal(t, int64(1), result[0].account.ID)
+	})
+
+	t.Run("latencies within ten percent share fastest cohort", func(t *testing.T) {
+		accounts := []accountWithLoad{
+			{account: poolAccount(1, 1, snapshotExtra(UpstreamBillingProbeStatusOK, 1000, 0, true)), loadInfo: &AccountLoadInfo{}},
+			{account: poolAccount(2, 2, snapshotExtra(UpstreamBillingProbeStatusOK, 1090, 0, true)), loadInfo: &AccountLoadInfo{}},
 		}
 
 		result := filterByBestProbeAutoPriority(accounts, now)
@@ -499,6 +511,24 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 		require.Equal(t, int64(1), result[0].account.ID)
 	})
 
+	t.Run("p50 speed wins before a modestly better p95", func(t *testing.T) {
+		accounts := []accountWithLoad{
+			{account: poolAccount(1, 5, historyExtra(
+				[]string{"ok", "ok", "ok", "ok", "ok", "ok"},
+				[]int64{900, 950, 1000, 1050, 1100, 1700},
+			)), loadInfo: &AccountLoadInfo{}},
+			{account: poolAccount(2, 1, historyExtra(
+				[]string{"ok", "ok", "ok", "ok", "ok", "ok"},
+				[]int64{1150, 1200, 1250, 1300, 1350, 1500},
+			)), loadInfo: &AccountLoadInfo{}},
+		}
+
+		result := filterByBestProbeAutoPriority(accounts, now)
+
+		require.Len(t, result, 1)
+		require.Equal(t, int64(1), result[0].account.ID)
+	})
+
 	t.Run("p95 tail spike demotes an otherwise fast account", func(t *testing.T) {
 		accounts := []accountWithLoad{
 			{account: poolAccount(1, 5, historyExtra(
@@ -515,6 +545,24 @@ func TestFilterByBestProbeAutoPriority(t *testing.T) {
 
 		require.Len(t, result, 1)
 		require.Equal(t, int64(1), result[0].account.ID)
+	})
+
+	t.Run("current failure immediately demotes previously fast history", func(t *testing.T) {
+		accounts := []accountWithLoad{
+			{account: poolAccount(1, 1, historyExtra(
+				[]string{"ok", "ok", "ok", "failed"},
+				[]int64{400, 450, 500, 100},
+			)), loadInfo: &AccountLoadInfo{}},
+			{account: poolAccount(2, 9, historyExtra(
+				[]string{"ok", "ok", "ok", "ok"},
+				[]int64{1800, 1900, 2000, 2100},
+			)), loadInfo: &AccountLoadInfo{}},
+		}
+
+		result := filterByBestProbeAutoPriority(accounts, now)
+
+		require.Len(t, result, 1)
+		require.Equal(t, int64(2), result[0].account.ID)
 	})
 
 	t.Run("every account receives a rank including failures and opt outs", func(t *testing.T) {
