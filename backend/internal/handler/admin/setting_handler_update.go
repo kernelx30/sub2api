@@ -2358,9 +2358,9 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		AvailableChannelsEnabled: updatedSettings.AvailableChannelsEnabled,
 
 		MySubscriptionsEnabled: updatedSettings.MySubscriptionsEnabled,
-		ModelPlazaEnabled:     updatedSettings.ModelPlazaEnabled,
-		ModelPlazaRequireAuth: updatedSettings.ModelPlazaRequireAuth,
-		ModelPlazaDescription: updatedSettings.ModelPlazaDescription,
+		ModelPlazaEnabled:      updatedSettings.ModelPlazaEnabled,
+		ModelPlazaRequireAuth:  updatedSettings.ModelPlazaRequireAuth,
+		ModelPlazaDescription:  updatedSettings.ModelPlazaDescription,
 
 		AffiliateEnabled: updatedSettings.AffiliateEnabled,
 
