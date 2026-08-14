@@ -884,7 +884,10 @@ func TestUpstreamBillingProbeUnsupportedAndAccountToggle(t *testing.T) {
 		Header:     http.Header{},
 		Body:       io.NopCloser(strings.NewReader("not found")),
 	}}
-	svc := newUpstreamBillingProbeTestService(repo, upstream, &upstreamBillingProbeSettingRepo{})
+	settingsRepo := &upstreamBillingProbeSettingRepo{values: map[string]string{
+		SettingKeyUpstreamBillingProbeSettings: `{"enabled":true,"interval_minutes":30}`,
+	}}
+	svc := newUpstreamBillingProbeTestService(repo, upstream, settingsRepo)
 	fixedNow := time.Date(2026, time.July, 13, 2, 0, 0, 0, time.UTC)
 	svc.now = func() time.Time { return fixedNow }
 
@@ -895,14 +898,12 @@ func TestUpstreamBillingProbeUnsupportedAndAccountToggle(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, UpstreamBillingProbeStatusUnsupported, snapshot.Status)
 	require.Equal(t, "unsupported", snapshot.LastError)
-	require.Equal(t, fixedNow.Add(time.Minute), snapshot.NextProbeAt)
 	require.False(t, snapshot.NextProbeAt.Before(fixedNow.Add(192*time.Minute)))
 	require.False(t, snapshot.NextProbeAt.After(fixedNow.Add(288*time.Minute)))
 
 	snapshot, err = svc.ProbeAccount(context.Background(), account.ID)
 	require.NoError(t, err)
 	require.Equal(t, 2, snapshot.FailureCount)
-	require.Equal(t, fixedNow.Add(2*time.Minute), snapshot.NextProbeAt)
 	require.False(t, snapshot.NextProbeAt.Before(fixedNow.Add(192*time.Minute)))
 	require.False(t, snapshot.NextProbeAt.After(fixedNow.Add(288*time.Minute)))
 	require.NoError(t, svc.SetAccountEnabled(context.Background(), account.ID, false))

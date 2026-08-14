@@ -735,6 +735,7 @@ func lockAndMergeAccountProbeExtra(
 			extra[service.UpstreamBillingRateSyncEnabledExtraKey] = rateSyncEnabled
 		}
 	}
+	probeExplicitlyDisabled := probeEnabledPresent && !probeEnabled
 	if identityUnchanged && (!probeExplicitlyDisabled || poolAutoPriorityActive) {
 		if snapshot, ok, err := decodeAccountExtraJSON(currentSnapshot); err != nil {
 			return nil, err
@@ -2692,6 +2693,9 @@ func (r *accountRepository) updateUpstreamBillingProbeSnapshotInTx(
 		expectedPoolAutoPriorityEnabled = account.Extra[service.PoolAutoPriorityEnabledExtraKey]
 	}
 	expectedPoolAutoPriorityEnabledJSON, err := json.Marshal(expectedPoolAutoPriorityEnabled)
+	if err != nil {
+		return err
+	}
 	var expectedRateSyncEnabled any
 	if account.Extra != nil {
 		expectedRateSyncEnabled = account.Extra[service.UpstreamBillingRateSyncEnabledExtraKey]

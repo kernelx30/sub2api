@@ -822,7 +822,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, result)
 		usageAPIKey := currentState.apiKey
 		usageSubscription := currentState.subscription
-		usageChannelMapping := channelMapping
 		quotaPlatform := service.QuotaPlatform(c.Request.Context(), usageAPIKey)
 		sessionID := service.ExtractClientSessionID(c)
 

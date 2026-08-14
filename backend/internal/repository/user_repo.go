@@ -926,7 +926,6 @@ func (r *userRepository) DeductAvailableBalance(ctx context.Context, id int64, a
 	return deducted, rows.Err()
 }
 
->>>>>>> upstream/main
 // AdjustBalance 原子地把 delta 累加到余额上，结果为负时整条语句不生效。
 // 相比"读余额 → 算新值 → 整行写回"，这里把读与写压进同一条 UPDATE，
 // 并发的计费扣款不会被旧快照覆盖。

@@ -1324,12 +1324,6 @@ describe("admin SettingsView payment visible method controls", () => {
       interval_minutes: 10,
     });
 
-  it("loads and saves configurable Grok cross-client model mapping", async () => {
-    getSettings.mockResolvedValueOnce({
-      ...baseSettingsResponse,
-      grok_default_text_model: "grok-4.1-fast",
-      grok_cross_client_model_map_enabled: true,
-    });
     const wrapper = mountView();
 
     await flushPromises();
@@ -1355,6 +1349,19 @@ describe("admin SettingsView payment visible method controls", () => {
     });
     expect(updateUpstreamBillingProbeSettings).not.toHaveBeenCalled();
     expect(showSuccess).toHaveBeenCalledWith("池模式自动测速排序设置已保存");
+  });
+
+  it("loads and saves configurable Grok cross-client model mapping", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      grok_default_text_model: "grok-4.1-fast",
+      grok_cross_client_model_map_enabled: true,
+    });
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openGatewayTab(wrapper);
+
     const modelInput = wrapper.get('[data-testid="grok-default-text-model"]');
     const mappingToggle = wrapper.get(
       '[data-testid="grok-cross-client-model-map-toggle"]',

@@ -570,6 +570,8 @@ func TestUpdateAccountRejectsSyncWithExplicitlyDisabledProbe(t *testing.T) {
 
 	require.Error(t, err)
 	require.Empty(t, repo.updates[accountID])
+}
+
 func TestUpdateAccountExplicitProbeDisableUsesDedicatedExtraUpdate(t *testing.T) {
 	accountID := int64(113)
 	repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{

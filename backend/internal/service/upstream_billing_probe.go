@@ -162,7 +162,7 @@ type UpstreamBillingProbeSnapshot struct {
 	// sync and the declared value passed the write-back range check, so the
 	// stored snapshot always answers "did this probe move the account rate, and
 	// to what" without a separate history table.
-	SyncedRateMultiplier *float64 `json:"synced_rate_multiplier,omitempty`
+	SyncedRateMultiplier *float64 `json:"synced_rate_multiplier,omitempty"`
 }
 
 // UpstreamBillingProbeResult is returned by manual probe endpoints.
@@ -521,9 +521,26 @@ func (s *UpstreamBillingProbeService) listDueAccounts(ctx context.Context, now t
 	if lister, ok := s.accountRepo.(upstreamBillingProbeDueAccountLister); ok {
 		return lister.ListDueUpstreamBillingProbeAccounts(ctx, now, includeBilling, includePoolPriority, upstreamBillingProbeMaxPerCycle)
 	}
-	// Non-production repositories and older adapters load OpenAI accounts, then
-	// RunDue applies the same explicit-switch-or-pool-mode eligibility rule.
-	return s.accountRepo.ListByPlatform(ctx, PlatformOpenAI)
+	// Non-production repositories and older adapters do not expose the optimized
+	// due-query interface. Load every supported API-key platform and let RunDue
+	// apply the same explicit-switch-or-pool-mode eligibility rule.
+	platforms := []string{PlatformOpenAI, PlatformAnthropic, PlatformGemini, PlatformAntigravity, PlatformGrok}
+	accounts := make([]Account, 0)
+	seen := make(map[int64]struct{})
+	for _, platform := range platforms {
+		platformAccounts, err := s.accountRepo.ListByPlatform(ctx, platform)
+		if err != nil {
+			return nil, err
+		}
+		for i := range platformAccounts {
+			if _, ok := seen[platformAccounts[i].ID]; ok {
+				continue
+			}
+			seen[platformAccounts[i].ID] = struct{}{}
+			accounts = append(accounts, platformAccounts[i])
+		}
+	}
+	return accounts, nil
 }
 
 func (s *UpstreamBillingProbeService) getSettings(ctx context.Context) (*UpstreamBillingProbeSettings, error) {
@@ -791,7 +808,7 @@ func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, ac
 		// 填成官方默认域，且提供 us-east-1.api.x.ai 等官方区域预设）⇒
 		// 必无 /v1/sub2api/billing；不发请求，直接记 unsupported，避免
 		// 拿账号 Key 周期性请求官方域的不存在路径。
-		return s.persistProbeFailure(ctx, account, intervalMinutes, now, 0, "unsupported", 0)
+		return s.persistProbeFailure(ctx, account, intervalMinutes, now, 0, "unsupported", 0, nil)
 	}
 	normalizedBaseURL, err := s.accountTestService.validateUpstreamBaseURL(baseURL)
 	if err != nil {
@@ -882,8 +899,38 @@ func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, ac
 	if snapshot.ModelProbeNextAt != nil && snapshot.ModelProbeNextAt.Before(snapshot.NextProbeAt) {
 		snapshot.NextProbeAt = *snapshot.ModelProbeNextAt
 	}
-	if err := s.updateSnapshot(ctx, account, snapshot); err != nil {
+	// Account-level range and precision only matter when a write-back is
+	// requested. A successful discovery remains successful even when an
+	// unusable declaration is rejected for automatic synchronization.
+	var syncRate *float64
+	previousRate := account.BillingRateMultiplier()
+	if upstreamBillingRateSyncEnabled(account) {
+		if value, valid := upstreamBillingProbeSyncRate(data); valid {
+			syncRate = &value
+			snapshot.SyncedRateMultiplier = &value
+		} else {
+			declared, _ := resolveAccountExtraNumber(data, "resolved_rate_multiplier")
+			slog.Warn("upstream_billing_rate_sync_rejected",
+				"source", "upstream_billing_probe",
+				"account_id", account.ID,
+				"declared_resolved_rate_multiplier", declared,
+				"max_rate_multiplier", upstreamBillingRateSyncMaxMultiplier,
+				"current_rate_multiplier", previousRate,
+			)
+		}
+	}
+	if err := s.updateSnapshot(ctx, account, snapshot, syncRate); err != nil {
 		return nil, err
+	}
+	if syncRate != nil {
+		// The background write-back uses repository SQL instead of the admin
+		// route, so record the otherwise unaudited change in structured logs.
+		slog.Info("upstream_billing_rate_sync_applied",
+			"source", "upstream_billing_probe",
+			"account_id", account.ID,
+			"old_rate_multiplier", previousRate,
+			"new_rate_multiplier", *syncRate,
+		)
 	}
 	return snapshot, nil
 }
@@ -1275,38 +1322,8 @@ func (s *UpstreamBillingProbeService) persistModelOnlyProbe(
 		snapshot.FailureCount = snapshot.ModelProbeFailureCount
 		snapshot.LastError = modelProbe.LastError
 	}
-	// 账号级值域与精度只在真要写回时才有影响：只观察上游声明、未开启同步的
-	// 账号不因声明值不适配 accounts.rate_multiplier 而被记成探测失败并进入
-	// 指数退避——探测本身成功了，原始声明照常存进快照供展示。
-	var syncRate *float64
-	previousRate := account.BillingRateMultiplier()
-	if upstreamBillingRateSyncEnabled(account) {
-		if value, valid := upstreamBillingProbeSyncRate(data); valid {
-			syncRate = &value
-			snapshot.SyncedRateMultiplier = &value
-		} else {
-			declared, _ := resolveAccountExtraNumber(data, "resolved_rate_multiplier")
-			slog.Warn("upstream_billing_rate_sync_rejected",
-				"source", "upstream_billing_probe",
-				"account_id", account.ID,
-				"declared_resolved_rate_multiplier", declared,
-				"max_rate_multiplier", upstreamBillingRateSyncMaxMultiplier,
-				"current_rate_multiplier", previousRate,
-			)
-		}
-	}
-	if err := s.updateSnapshot(ctx, account, snapshot, syncRate); err != nil {
+	if err := s.updateSnapshot(ctx, account, snapshot, nil); err != nil {
 		return nil, err
-	}
-	if syncRate != nil {
-		// 写回是后台任务的裸 SQL，不经过管理端路由，因此不会产生 audit_logs 行。
-		// old_rate_multiplier 是本次探测开始时读到的值（写回的 CAS 不比对该列）。
-		slog.Info("upstream_billing_rate_sync_applied",
-			"source", "upstream_billing_probe",
-			"account_id", account.ID,
-			"old_rate_multiplier", previousRate,
-			"new_rate_multiplier", *syncRate,
-		)
 	}
 	return snapshot, nil
 }
@@ -1324,7 +1341,7 @@ func (s *UpstreamBillingProbeService) persistProbeFailure(
 	previous := decodeUpstreamBillingProbeSnapshot(account.Extra)
 	failureCount := nextProbeFailureCount(account)
 	status := UpstreamBillingProbeStatusFailed
-	delay := nextProbeDelay(intervalMinutes, retryAfterDuration)
+	delay := nextProbeFailureDelay(intervalMinutes, failureCount, retryAfterDuration)
 	if reason == "unsupported" {
 		status = UpstreamBillingProbeStatusUnsupported
 		delay = unsupportedProbeDelay(intervalMinutes, retryAfterDuration)
@@ -1333,7 +1350,7 @@ func (s *UpstreamBillingProbeService) persistProbeFailure(
 		Status:                status,
 		BillingProbeAttempted: true,
 		LastAttemptAt:         now,
-		NextProbeAt:           now.Add(nextProbeFailureDelay(intervalMinutes, failureCount, retryAfterDuration)),
+		NextProbeAt:           now.Add(delay),
 		FailureCount:          failureCount,
 		HTTPStatus:            statusCode,
 		LastError:             reason,

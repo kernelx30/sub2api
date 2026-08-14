@@ -1170,11 +1170,11 @@ func init() {
 	// group.DefaultAllowLive holds the default value on creation for the allow_live field.
 	group.DefaultAllowLive = groupDescAllowLive.Default.(bool)
 	// groupDescOptionalInstructionsEnabled is the schema descriptor for optional_instructions_enabled field.
-	groupDescOptionalInstructionsEnabled := groupFields[41].Descriptor()
+	groupDescOptionalInstructionsEnabled := groupFields[48].Descriptor()
 	// group.DefaultOptionalInstructionsEnabled holds the default value on creation for the optional_instructions_enabled field.
 	group.DefaultOptionalInstructionsEnabled = groupDescOptionalInstructionsEnabled.Default.(bool)
 	// groupDescOptionalInstructions is the schema descriptor for optional_instructions field.
-	groupDescOptionalInstructions := groupFields[42].Descriptor()
+	groupDescOptionalInstructions := groupFields[49].Descriptor()
 	// group.DefaultOptionalInstructions holds the default value on creation for the optional_instructions field.
 	group.DefaultOptionalInstructions = groupDescOptionalInstructions.Default.(string)
 	// group.OptionalInstructionsValidator is a validator for the "optional_instructions" field. It is called by the builders before save.

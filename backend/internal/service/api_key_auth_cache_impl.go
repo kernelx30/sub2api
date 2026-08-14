@@ -14,8 +14,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 19 // v19: include the API-key OpenAI fallback group
-const apiKeyAuthSnapshotVersion = 19 // v19: group search/audio/video_model_prices billing fields (force refresh of pre-fix snapshots)
+const apiKeyAuthSnapshotVersion = 20 // v20: include fallback-group and search/audio/video pricing fields
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int

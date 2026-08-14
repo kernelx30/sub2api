@@ -1485,11 +1485,6 @@ func (_u *GroupUpdate) check() error {
 			return &ValidationError{Name: "subscription_type", err: fmt.Errorf(`ent: validator failed for field "Group.subscription_type": %w`, err)}
 		}
 	}
-	if v, ok := _u.mutation.OptionalInstructions(); ok {
-		if err := group.OptionalInstructionsValidator(v); err != nil {
-			return &ValidationError{Name: "optional_instructions", err: fmt.Errorf(`ent: validator failed for field "Group.optional_instructions": %w`, err)}
-		}
-	}
 	if v, ok := _u.mutation.SearchPricePer1k(); ok {
 		if err := group.SearchPricePer1kValidator(v); err != nil {
 			return &ValidationError{Name: "search_price_per_1k", err: fmt.Errorf(`ent: validator failed for field "Group.search_price_per_1k": %w`, err)}
@@ -1508,6 +1503,11 @@ func (_u *GroupUpdate) check() error {
 	if v, ok := _u.mutation.AudioSttPricePerHour(); ok {
 		if err := group.AudioSttPricePerHourValidator(v); err != nil {
 			return &ValidationError{Name: "audio_stt_price_per_hour", err: fmt.Errorf(`ent: validator failed for field "Group.audio_stt_price_per_hour": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.OptionalInstructions(); ok {
+		if err := group.OptionalInstructionsValidator(v); err != nil {
+			return &ValidationError{Name: "optional_instructions", err: fmt.Errorf(`ent: validator failed for field "Group.optional_instructions": %w`, err)}
 		}
 	}
 	if v, ok := _u.mutation.DefaultMappedModel(); ok {
@@ -3658,11 +3658,6 @@ func (_u *GroupUpdateOne) check() error {
 			return &ValidationError{Name: "subscription_type", err: fmt.Errorf(`ent: validator failed for field "Group.subscription_type": %w`, err)}
 		}
 	}
-	if v, ok := _u.mutation.OptionalInstructions(); ok {
-		if err := group.OptionalInstructionsValidator(v); err != nil {
-			return &ValidationError{Name: "optional_instructions", err: fmt.Errorf(`ent: validator failed for field "Group.optional_instructions": %w`, err)}
-		}
-	}
 	if v, ok := _u.mutation.SearchPricePer1k(); ok {
 		if err := group.SearchPricePer1kValidator(v); err != nil {
 			return &ValidationError{Name: "search_price_per_1k", err: fmt.Errorf(`ent: validator failed for field "Group.search_price_per_1k": %w`, err)}
@@ -3681,6 +3676,11 @@ func (_u *GroupUpdateOne) check() error {
 	if v, ok := _u.mutation.AudioSttPricePerHour(); ok {
 		if err := group.AudioSttPricePerHourValidator(v); err != nil {
 			return &ValidationError{Name: "audio_stt_price_per_hour", err: fmt.Errorf(`ent: validator failed for field "Group.audio_stt_price_per_hour": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.OptionalInstructions(); ok {
+		if err := group.OptionalInstructionsValidator(v); err != nil {
+			return &ValidationError{Name: "optional_instructions", err: fmt.Errorf(`ent: validator failed for field "Group.optional_instructions": %w`, err)}
 		}
 	}
 	if v, ok := _u.mutation.DefaultMappedModel(); ok {
