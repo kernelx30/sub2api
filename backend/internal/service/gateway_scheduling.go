@@ -1503,12 +1503,12 @@ const (
 )
 
 const (
-	probeAutoPriorityMinLatencySlackMS = int64(200)
+	probeAutoPriorityMinLatencySlackMS = int64(100)
 	probeAutoPriorityStaleFallbackTTL  = 15 * time.Minute
 	probeAutoPriorityStableSampleCount = 3
 	probeAutoPriorityStickyMinSamples  = 4
 	probeAutoPriorityStickyMinSuccess  = 0.75
-	probeAutoPriorityStickyMaxP95MS    = int64(8000)
+	probeAutoPriorityMaxP95MS          = int64(8000)
 )
 
 func filterByBestProbeAutoPriority(accounts []accountWithLoad, now time.Time) []accountWithLoad {
@@ -1574,10 +1574,12 @@ func filterByBestProbeAutoPriority(accounts []accountWithLoad, now time.Time) []
 		return info.consecutiveFailures == bestConsecutiveFailures
 	})
 
-	// Keep close accounts in the same cohort so load and LRU can still spread
-	// traffic. Large tail spikes remain visible through P95 and are demoted.
-	ranked = keepProbeLatencyCohort(ranked, func(info probeAutoPriorityInfo) int64 { return info.p95LatencyMS })
+	// Reject severe tail latency when at least one healthy alternative remains,
+	// then prefer typical response speed. P95 still breaks ties inside the
+	// fastest P50 cohort without letting a consistently slower account share it.
+	ranked = keepProbeP95WithinLimit(ranked)
 	ranked = keepProbeLatencyCohort(ranked, func(info probeAutoPriorityInfo) int64 { return info.p50LatencyMS })
+	ranked = keepProbeLatencyCohort(ranked, func(info probeAutoPriorityInfo) int64 { return info.p95LatencyMS })
 	ranked = keepProbeLatencyCohort(ranked, func(info probeAutoPriorityInfo) int64 { return info.latencyMS })
 
 	result := unwrapProbeCandidates(ranked)
@@ -1597,6 +1599,16 @@ func keepProbeCandidates(candidates []rankedProbeCandidate, keep func(probeAutoP
 	return result
 }
 
+func keepProbeP95WithinLimit(candidates []rankedProbeCandidate) []rankedProbeCandidate {
+	result := keepProbeCandidates(candidates, func(info probeAutoPriorityInfo) bool {
+		return info.p95LatencyMS > 0 && info.p95LatencyMS <= probeAutoPriorityMaxP95MS
+	})
+	if len(result) == 0 {
+		return candidates
+	}
+	return result
+}
+
 func keepProbeLatencyCohort(candidates []rankedProbeCandidate, latency func(probeAutoPriorityInfo) int64) []rankedProbeCandidate {
 	best := int64(0)
 	for _, item := range candidates {
@@ -1608,7 +1620,7 @@ func keepProbeLatencyCohort(candidates []rankedProbeCandidate, latency func(prob
 	if best == 0 {
 		return candidates
 	}
-	slack := best / 5
+	slack := best / 10
 	if slack < probeAutoPriorityMinLatencySlackMS {
 		slack = probeAutoPriorityMinLatencySlackMS
 	}
@@ -1818,7 +1830,7 @@ func accountProbeStickyEscapeReason(account *Account, now time.Time) (string, up
 			return "model_probe_success_rate", metrics
 		}
 		if metrics.SuccessCount >= probeAutoPriorityStableSampleCount &&
-			metrics.P95LatencyMS > probeAutoPriorityStickyMaxP95MS {
+			metrics.P95LatencyMS > probeAutoPriorityMaxP95MS {
 			return "model_probe_p95", metrics
 		}
 	}
