@@ -2725,6 +2725,27 @@ func TestDefaultOpenAIAccountScheduler_ShouldEscapeStickyAccount_ThresholdBounda
 	require.InDelta(t, 15000, observedTTFT, 1e-9)
 }
 
+func TestDefaultOpenAIAccountScheduler_ShouldEscapeStickyAccount_UsesOutcomeFreshnessForErrors(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	now := time.Now()
+	stats.reportAt(21502, false, nil, now, "gpt-5.6-sol")
+	stats.reportAt(21503, false, nil, now.Add(-openAIRealTrafficSlowEvidenceTTL-time.Second), "gpt-5.6-sol")
+	scheduler := &defaultOpenAIAccountScheduler{stats: stats}
+	cfg := openAIStickyEscapeConfig{enabled: true, ttftMs: 15000, errorRate: 0.1}
+
+	reason, errorRate, observedTTFT, shouldEscape := scheduler.shouldEscapeStickyAccount(21502, cfg)
+	require.True(t, shouldEscape)
+	require.Equal(t, "error_rate", reason)
+	require.InDelta(t, 0.2, errorRate, 1e-9)
+	require.Zero(t, observedTTFT)
+
+	reason, errorRate, observedTTFT, shouldEscape = scheduler.shouldEscapeStickyAccount(21503, cfg)
+	require.False(t, shouldEscape)
+	require.Empty(t, reason)
+	require.InDelta(t, 0.2, errorRate, 1e-9)
+	require.Zero(t, observedTTFT)
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionSticky_ForceHTTP(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(1010)

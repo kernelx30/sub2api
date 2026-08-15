@@ -589,6 +589,7 @@ func provideCleanup(
 			}},
 			{"OpenAIWSPool", func() error {
 				if openAIGateway != nil {
+					openAIGateway.StopOpenAIAccountRuntimePersistence()
 					openAIGateway.CloseOpenAIWSPool()
 				}
 				return nil

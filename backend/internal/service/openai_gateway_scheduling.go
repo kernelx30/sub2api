@@ -845,7 +845,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	if s.poolAutoPriorityGloballyEnabled(ctx) {
 		if poolAutoPriorityEnabled(account) {
 			realTTFTState := s.openAIRealTrafficTTFTState(account, time.Now())
-			if realTTFTState.RecentFailure || (!sessionExplicit && realTTFTState.Degraded) {
+			if realTTFTState.RecentFailure || (!sessionExplicit && realTTFTState.UsesRuntime && realTTFTState.Degraded) {
 				_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 				logOpenAIStickyRealTTFTEscape(account.ID, realTTFTState)
 				return nil
@@ -1085,7 +1085,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 					} else if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
-					} else if realTTFTState := s.openAIRealTrafficTTFTState(account, time.Now()); s.poolAutoPriorityGloballyEnabled(ctx) && poolAutoPriorityEnabled(account) && (realTTFTState.RecentFailure || (!sessionExplicit && realTTFTState.Degraded)) {
+					} else if realTTFTState := s.openAIRealTrafficTTFTState(account, time.Now()); s.poolAutoPriorityGloballyEnabled(ctx) && poolAutoPriorityEnabled(account) && (realTTFTState.RecentFailure || (!sessionExplicit && realTTFTState.UsesRuntime && realTTFTState.Degraded)) {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 						logOpenAIStickyRealTTFTEscape(account.ID, realTTFTState)
 					} else if reason, metrics := s.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, OpenAIAccountScheduleRequest{
@@ -1688,6 +1688,7 @@ func (s *OpenAIGatewayService) openAIEffectiveAutoPriorityRanking(
 		if account == nil {
 			continue
 		}
+		s.refreshOpenAIAccountRuntimeStats(stats, account)
 		state := openAIRealTrafficTTFTState{}
 		if poolAutoPriorityEnabled(account) {
 			state = openAIRealTrafficTTFTStateFromStats(stats, account, now)
@@ -1705,7 +1706,7 @@ func (s *OpenAIGatewayService) openAIEffectiveAutoPriorityRanking(
 		})
 	}
 	for i := range candidates {
-		if candidates[i].state.RecentFailure || (candidates[i].state.Mature && candidates[i].state.Degraded) {
+		if candidates[i].state.RecentFailure || (candidates[i].state.UsesRuntime && candidates[i].state.Degraded) {
 			candidates[i].probeTier = probeAutoPriorityTierFailed
 			continue
 		}
@@ -1713,7 +1714,7 @@ func (s *OpenAIGatewayService) openAIEffectiveAutoPriorityRanking(
 		// real request shape. Treat it as a healthy ranking signal even when the
 		// lightweight probe is currently failed or unsupported; otherwise a stale
 		// probe can keep a 60-90s account ahead of a much faster working account.
-		if candidates[i].state.Mature {
+		if candidates[i].state.UsesRuntime {
 			candidates[i].probeTier = probeAutoPriorityTierHealthy
 		}
 	}
@@ -1742,7 +1743,7 @@ func (s *OpenAIGatewayService) openAIEffectiveAutoPriorityRanking(
 	usedRealTraffic := false
 	for rank, candidate := range candidates {
 		effectiveRanks[candidate.account.ID] = rank
-		if candidate.state.Mature || candidate.state.RecentFailure || candidate.probeRank != rank {
+		if candidate.state.UsesRuntime || candidate.state.RecentFailure || candidate.probeRank != rank {
 			usedRealTraffic = true
 		}
 	}

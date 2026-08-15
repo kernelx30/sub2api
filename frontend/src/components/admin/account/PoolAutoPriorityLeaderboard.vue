@@ -127,7 +127,7 @@
               <td class="px-3 py-2.5" data-testid="pool-ranking-runtime-ttft">
                 <div class="font-mono">{{ formatLatency(entry.runtime_ttft_ms) }}</div>
                 <div class="mt-0.5 text-[10px] text-gray-400 dark:text-dark-500">
-                  {{ rankingSourceLabel(entry) }}<span v-if="entry.runtime_sample_count > 0"> / {{ entry.runtime_sample_count }}</span>
+                  {{ rankingSourceLabel(entry) }}<span v-if="entry.runtime_updated_at"> · {{ formatRelativeTime(entry.runtime_updated_at) }}</span><span v-if="entry.runtime_sample_count > 0"> / {{ entry.runtime_sample_count }}</span>
                 </div>
               </td>
               <td class="px-3 py-2.5 font-mono">{{ formatSuccess(entry) }}</td>

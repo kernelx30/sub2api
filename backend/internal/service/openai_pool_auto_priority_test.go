@@ -298,12 +298,12 @@ func TestOpenAIGatewayLoadAwareSelectionComparesRuntimeTTFTWithProbeFallback(t *
 	ranking := svc.BuildPoolAutoPriorityRanking([]*Account{&accounts[0], &accounts[1]}, time.Now())
 	require.Len(t, ranking, 2)
 	require.Equal(t, probeBackupWithoutRuntime.ID, ranking[0].AccountID)
-	require.Equal(t, PoolAutoPriorityRankingSourceRealTraffic, ranking[0].RankingSource)
+	require.Equal(t, PoolAutoPriorityRankingSourceProbe, ranking[0].RankingSource)
 	require.False(t, ranking[0].RuntimeMature)
 	selection.ReleaseFunc()
 }
 
-func TestOpenAIEffectiveRankingHoldsDownRecentRuntimeFailureForFullTTL(t *testing.T) {
+func TestOpenAIEffectiveRankingRecoversAfterFreshRuntimeSuccess(t *testing.T) {
 	probeWinner := openAIPoolProbeTestAccount(7163, 0, UpstreamBillingProbeStatusOK, 1200)
 	probeBackup := openAIPoolProbeTestAccount(7164, 20, UpstreamBillingProbeStatusOK, 2400)
 	accounts := []Account{probeWinner, probeBackup}
@@ -316,7 +316,9 @@ func TestOpenAIEffectiveRankingHoldsDownRecentRuntimeFailureForFullTTL(t *testin
 
 	require.Len(t, ranking, 2)
 	require.Equal(t, probeBackup.ID, ranking[0].AccountID)
-	require.Equal(t, PoolAutoPriorityRankingSourceRealTraffic, ranking[0].RankingSource)
+	require.Equal(t, PoolAutoPriorityRankingSourceProbe, ranking[0].RankingSource)
+	require.Equal(t, probeWinner.ID, ranking[1].AccountID)
+	require.Equal(t, PoolAutoPriorityRankingSourceRealTraffic, ranking[1].RankingSource)
 	failedState := openAIRealTrafficTTFTStateFromStats(stats, &probeWinner, now)
 	require.True(t, failedState.RecentFailure)
 	require.True(t, failedState.Degraded)
@@ -332,12 +334,7 @@ func TestOpenAIEffectiveRankingHoldsDownRecentRuntimeFailureForFullTTL(t *testin
 	require.Equal(t, probeBackup.ID, plan.selectionOrder[0].account.ID)
 
 	stats.reportAt(probeWinner.ID, true, intPtrForTest(900), now.Add(time.Second), "gpt-5.6-sol")
-	heldDown := svc.BuildPoolAutoPriorityRanking([]*Account{&accounts[0], &accounts[1]}, now.Add(time.Second))
-	require.Len(t, heldDown, 2)
-	require.Equal(t, probeBackup.ID, heldDown[0].AccountID)
-	require.True(t, openAIRealTrafficTTFTStateFromStats(stats, &probeWinner, now.Add(time.Second)).RecentFailure)
-
-	recoveredAt := now.Add(openAIRealTrafficFailurePenaltyTTL + time.Second)
+	recoveredAt := now.Add(time.Second)
 	recovered := svc.BuildPoolAutoPriorityRanking([]*Account{&accounts[0], &accounts[1]}, recoveredAt)
 	require.Len(t, recovered, 2)
 	require.Equal(t, probeWinner.ID, recovered[0].AccountID)
@@ -482,6 +479,30 @@ func TestOpenAIEffectiveRankingKeepsRealLatencyAfterNewerHealthyProbe(t *testing
 	ranking := svc.BuildPoolAutoPriorityRanking([]*Account{&probeWinnerButRuntimeSlow, &productionWinner}, time.Now())
 	require.Len(t, ranking, 2)
 	require.Equal(t, productionWinner.ID, ranking[0].AccountID)
+	require.Equal(t, PoolAutoPriorityRankingSourceProbe, ranking[0].RankingSource)
+	require.Equal(t, PoolAutoPriorityRankingSourceRealTraffic, ranking[1].RankingSource)
+}
+
+func TestOpenAIEffectiveRankingFallsBackToAggregateRuntimeForMappedModel(t *testing.T) {
+	account := openAIPoolProbeTestAccount(7415, 0, UpstreamBillingProbeStatusOK, 3000)
+	backup := openAIPoolProbeTestAccount(7416, 20, UpstreamBillingProbeStatusOK, 6000)
+	stats := newOpenAIAccountRuntimeStats()
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		// The probe model is gpt-5.6-sol, while this account's real requests
+		// were mapped to another upstream model. The account aggregate is still
+		// valid evidence for the generic pool ranking.
+		stats.report(account.ID, true, intPtrForTest(500), "gpt-5.5")
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
+
+	state := openAIRealTrafficTTFTStateFromStats(stats, &account, time.Now())
+	require.True(t, state.Mature)
+	require.Equal(t, int64(openAIPoolProbeRuntimeSamples), state.SampleCount)
+	require.Equal(t, 500.0, state.TTFTMS)
+
+	ranking := svc.BuildPoolAutoPriorityRanking([]*Account{&account, &backup}, time.Now())
+	require.Len(t, ranking, 2)
+	require.Equal(t, account.ID, ranking[0].AccountID)
 	require.Equal(t, PoolAutoPriorityRankingSourceRealTraffic, ranking[0].RankingSource)
 }
 
@@ -506,7 +527,8 @@ func TestOpenAIEffectiveRankingDemotesHighRuntimeErrorRateAfterFailureHoldDown(t
 	ranking := svc.BuildPoolAutoPriorityRanking([]*Account{&probeWinner, &probeBackup}, now)
 	require.Len(t, ranking, 2)
 	require.Equal(t, probeBackup.ID, ranking[0].AccountID)
-	require.Equal(t, PoolAutoPriorityRankingSourceRealTraffic, ranking[0].RankingSource)
+	require.Equal(t, PoolAutoPriorityRankingSourceProbe, ranking[0].RankingSource)
+	require.Equal(t, PoolAutoPriorityRankingSourceRealTraffic, ranking[1].RankingSource)
 }
 
 func TestOpenAIEffectiveRankingDoesNotPromoteFailedProbeFromUnreliableRuntime(t *testing.T) {
@@ -527,7 +549,97 @@ func TestOpenAIEffectiveRankingDoesNotPromoteFailedProbeFromUnreliableRuntime(t 
 	ranking := svc.BuildPoolAutoPriorityRanking([]*Account{&failedProbe, &healthyProbe}, time.Now())
 	require.Len(t, ranking, 2)
 	require.Equal(t, healthyProbe.ID, ranking[0].AccountID)
-	require.Equal(t, PoolAutoPriorityRankingSourceRealTraffic, ranking[0].RankingSource)
+	require.Equal(t, PoolAutoPriorityRankingSourceProbe, ranking[0].RankingSource)
+	require.Equal(t, PoolAutoPriorityRankingSourceRealTraffic, ranking[1].RankingSource)
+}
+
+func TestOpenAIEffectiveRankingKeepsStaleSlowRuntimeEvidence(t *testing.T) {
+	probeWinnerButSlow := openAIPoolProbeTestAccount(7435, 0, UpstreamBillingProbeStatusOK, 1000)
+	probeBackup := openAIPoolProbeTestAccount(7436, 20, UpstreamBillingProbeStatusOK, 2200)
+	now := time.Now()
+	stats := newOpenAIAccountRuntimeStats()
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		stats.reportAt(probeWinnerButSlow.ID, true, intPtrForTest(30000), now.Add(-11*time.Minute), "gpt-5.6-sol")
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
+
+	state := openAIRealTrafficTTFTStateFromStats(stats, &probeWinnerButSlow, now)
+	require.False(t, state.Fresh)
+	require.False(t, state.Mature)
+	require.True(t, state.Degraded)
+	require.True(t, state.UsesRuntime)
+
+	ranking := svc.BuildPoolAutoPriorityRanking([]*Account{&probeWinnerButSlow, &probeBackup}, now)
+	require.Len(t, ranking, 2)
+	require.Equal(t, probeBackup.ID, ranking[0].AccountID)
+	require.Equal(t, PoolAutoPriorityRankingSourceProbe, ranking[0].RankingSource)
+	require.Equal(t, probeWinnerButSlow.ID, ranking[1].AccountID)
+	require.Equal(t, PoolAutoPriorityRankingSourceRealTraffic, ranking[1].RankingSource)
+}
+
+func TestOpenAIEffectiveRankingKeepsModeratelySlowRuntimeEvidence(t *testing.T) {
+	probeWinnerButSlow := openAIPoolProbeTestAccount(7439, 0, UpstreamBillingProbeStatusOK, 1000)
+	probeBackup := openAIPoolProbeTestAccount(7440, 20, UpstreamBillingProbeStatusOK, 2200)
+	now := time.Now()
+	stats := newOpenAIAccountRuntimeStats()
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		stats.reportAt(probeWinnerButSlow.ID, true, intPtrForTest(8000), now.Add(-11*time.Minute), "gpt-5.6-sol")
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
+
+	state := openAIRealTrafficTTFTStateFromStats(stats, &probeWinnerButSlow, now)
+	require.False(t, state.Fresh)
+	require.True(t, state.UsesRuntime)
+	require.Equal(t, 8000.0, state.TTFTMS)
+
+	ranking := svc.BuildPoolAutoPriorityRanking([]*Account{&probeWinnerButSlow, &probeBackup}, now)
+	require.Len(t, ranking, 2)
+	require.Equal(t, probeBackup.ID, ranking[0].AccountID)
+	require.Equal(t, probeWinnerButSlow.ID, ranking[1].AccountID)
+}
+
+func TestOpenAIEffectiveRankingExpiresOldSlowRuntimeEvidence(t *testing.T) {
+	probeWinner := openAIPoolProbeTestAccount(7437, 0, UpstreamBillingProbeStatusOK, 1000)
+	probeBackup := openAIPoolProbeTestAccount(7438, 20, UpstreamBillingProbeStatusOK, 2200)
+	now := time.Now()
+	stats := newOpenAIAccountRuntimeStats()
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		stats.reportAt(probeWinner.ID, true, intPtrForTest(30000), now.Add(-openAIRealTrafficSlowEvidenceTTL-time.Second), "gpt-5.6-sol")
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
+
+	state := openAIRealTrafficTTFTStateFromStats(stats, &probeWinner, now)
+	require.False(t, state.UsesRuntime)
+	ranking := svc.BuildPoolAutoPriorityRanking([]*Account{&probeWinner, &probeBackup}, now)
+	require.Len(t, ranking, 2)
+	require.Equal(t, probeWinner.ID, ranking[0].AccountID)
+	require.Equal(t, PoolAutoPriorityRankingSourceProbe, ranking[0].RankingSource)
+	require.Zero(t, ranking[0].RuntimeTTFTMS)
+	require.Zero(t, ranking[0].RuntimeSampleCount)
+	require.Nil(t, ranking[0].RuntimeUpdatedAt)
+}
+
+func TestOpenAIAccountLoadPlanIgnoresExpiredRuntimeScoreWithoutProbeRanking(t *testing.T) {
+	account := Account{ID: 7441, Priority: 10}
+	stats := newOpenAIAccountRuntimeStats()
+	observedAt := time.Now().Add(-openAIRealTrafficSlowEvidenceTTL - time.Second)
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		stats.reportAt(account.ID, false, intPtrForTest(30000), observedAt, "gpt-5.6-sol")
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
+	scheduler := &defaultOpenAIAccountScheduler{service: svc, stats: stats}
+
+	plan := scheduler.buildOpenAIAccountLoadPlan(
+		context.Background(),
+		OpenAIAccountScheduleRequest{},
+		[]*Account{&account},
+		map[int64]*AccountLoadInfo{account.ID: {AccountID: account.ID}},
+	)
+
+	require.Len(t, plan.candidates, 1)
+	require.False(t, plan.candidates[0].hasTTFT)
+	require.Zero(t, plan.candidates[0].ttft)
+	require.Zero(t, plan.candidates[0].errorRate)
 }
 
 func TestOpenAIGatewayLoadAwareSelectionMatchesDisplayedRankInsideProbeCohort(t *testing.T) {
@@ -734,6 +846,55 @@ func TestOpenAIStickyMixedRuntimeAndProbeTTFTIsClearedAndRebound(t *testing.T) {
 	require.False(t, decision.StickySessionHit)
 	require.Positive(t, cache.deletedSessions[cacheKey])
 	require.Equal(t, productionWinner.ID, cache.sessionBindings[cacheKey])
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIStickyIgnoresExpiredRuntimeTTFT(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(7470)
+	probeWinner := openAIPoolProbeTestAccount(7471, 0, UpstreamBillingProbeStatusOK, 1000)
+	probeBackup := openAIPoolProbeTestAccount(7472, 20, UpstreamBillingProbeStatusOK, 2200)
+	probeWinner.GroupIDs = []int64{groupID}
+	probeBackup.GroupIDs = []int64{groupID}
+
+	sessionHash := "expired_real_ttft_sticky"
+	cacheKey := "openai:" + sessionHash
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{cacheKey: probeWinner.ID}}
+	stats := newOpenAIAccountRuntimeStats()
+	observedAt := time.Now().Add(-openAIRealTrafficSlowEvidenceTTL - time.Second)
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		stats.reportAt(probeWinner.ID, true, intPtrForTest(30000), observedAt, "gpt-5.6-sol")
+	}
+	state := openAIRealTrafficTTFTStateFromStats(stats, &probeWinner, time.Now())
+	require.True(t, state.Degraded)
+	require.False(t, state.UsesRuntime)
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{probeWinner, probeBackup}},
+		cache:              cache,
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		openaiAccountStats: stats,
+	}
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		sessionHash,
+		"gpt-5.6-sol",
+		nil,
+		OpenAIUpstreamTransportAny,
+		false,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, probeWinner.ID, selection.Account.ID)
+	require.True(t, decision.StickySessionHit)
+	require.Zero(t, cache.deletedSessions[cacheKey])
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}

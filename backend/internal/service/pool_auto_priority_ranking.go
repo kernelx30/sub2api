@@ -97,19 +97,18 @@ func (s *OpenAIGatewayService) BuildPoolAutoPriorityRanking(accounts []*Account,
 		return result
 	}
 
-	ranks, states, usedRealTraffic, ranked := s.openAIEffectiveAutoPriorityRanking(accounts, now)
-	rankingSource := PoolAutoPriorityRankingSourceProbe
-	if usedRealTraffic {
-		rankingSource = PoolAutoPriorityRankingSourceRealTraffic
-	}
+	ranks, states, _, ranked := s.openAIEffectiveAutoPriorityRanking(accounts, now)
 	for i := range result {
 		state := states[result[i].AccountID]
-		result[i].RuntimeTTFTMS = state.TTFTMS
-		result[i].RuntimeSampleCount = state.SampleCount
-		result[i].RuntimeMature = state.Mature
-		result[i].RankingSource = rankingSource
-		if !state.UpdatedAt.IsZero() {
-			updatedAt := state.UpdatedAt.UTC()
+		result[i].RankingSource = PoolAutoPriorityRankingSourceProbe
+		if state.UsesRuntime || state.RecentFailure {
+			result[i].RankingSource = PoolAutoPriorityRankingSourceRealTraffic
+		}
+		if state.UsesRuntime {
+			result[i].RuntimeTTFTMS = state.TTFTMS
+			result[i].RuntimeSampleCount = state.SampleCount
+			result[i].RuntimeMature = state.Mature
+			updatedAt := state.TTFTUpdatedAt.UTC()
 			result[i].RuntimeUpdatedAt = &updatedAt
 		}
 	}

@@ -186,16 +186,22 @@ type openAIAccountRuntimeStats struct {
 }
 
 type openAIAccountRuntimeStat struct {
+	// mergeMu serializes report/hydrate updates for this stat. The atomics keep
+	// hot readers lock-free, while the mutex prevents an older event from
+	// updating EWMA after a newer event has already been accepted.
+	mergeMu           sync.Mutex
 	errorRateEWMABits atomic.Uint64
 	ttftEWMABits      atomic.Uint64
 	ttftSampleCount   atomic.Int64
 	ttftUpdatedAt     atomic.Int64
 	lastFailureAt     atomic.Int64
+	lastSuccessAt     atomic.Int64
 }
 
 const (
 	openAIRealTrafficTTFTMinSamples      = int64(3)
 	openAIRealTrafficTTFTFreshTTL        = 10 * time.Minute
+	openAIRealTrafficSlowEvidenceTTL     = 60 * time.Minute
 	openAIRealTrafficFailurePenaltyTTL   = 5 * time.Minute
 	openAIRealTrafficTTFTDegradedFloorMS = 12000.0
 	openAIRealTrafficTTFTProbeMultiplier = 2.0
@@ -259,8 +265,36 @@ func updateEWMAAtomic(target *atomic.Uint64, sample float64, alpha float64) {
 	}
 }
 
+func storeAtomicMax(target *atomic.Int64, value int64) {
+	if target == nil || value <= 0 {
+		return
+	}
+	for {
+		current := target.Load()
+		if value <= current || target.CompareAndSwap(current, value) {
+			return
+		}
+	}
+}
+
 func reportOpenAIAccountRuntimeStat(stat *openAIAccountRuntimeStat, success bool, firstTokenMs *int, observedAt time.Time) {
 	if stat == nil {
+		return
+	}
+	stat.mergeMu.Lock()
+	defer stat.mergeMu.Unlock()
+	if observedAt.IsZero() {
+		observedAt = time.Now()
+	}
+	observedAtUnixNano := observedAt.UnixNano()
+	latestEvent := stat.lastSuccessAt.Load()
+	if failureAt := stat.lastFailureAt.Load(); failureAt > latestEvent {
+		latestEvent = failureAt
+	}
+	// Reports can arrive after a failover attempt has already completed. Do not
+	// let an older attempt become the newest EWMA sample just because its
+	// goroutine reached this method later.
+	if observedAtUnixNano < latestEvent {
 		return
 	}
 	const alpha = 0.2
@@ -268,8 +302,9 @@ func reportOpenAIAccountRuntimeStat(stat *openAIAccountRuntimeStat, success bool
 	errorSample := 1.0
 	if success {
 		errorSample = 0.0
+		storeAtomicMax(&stat.lastSuccessAt, observedAtUnixNano)
 	} else {
-		stat.lastFailureAt.Store(observedAt.UnixNano())
+		storeAtomicMax(&stat.lastFailureAt, observedAtUnixNano)
 	}
 	updateEWMAAtomic(&stat.errorRateEWMABits, errorSample, alpha)
 
@@ -293,15 +328,20 @@ func reportOpenAIAccountRuntimeStat(stat *openAIAccountRuntimeStat, success bool
 		}
 	}
 	stat.ttftSampleCount.Add(1)
-	stat.ttftUpdatedAt.Store(observedAt.UnixNano())
+	storeAtomicMax(&stat.ttftUpdatedAt, observedAtUnixNano)
 }
 
 func openAIAccountRuntimeStatRecentFailure(stat *openAIAccountRuntimeStat, now time.Time) (bool, time.Time) {
 	if stat == nil {
 		return false, time.Time{}
 	}
+	stat.mergeMu.Lock()
+	defer stat.mergeMu.Unlock()
 	failedAtUnixNano := stat.lastFailureAt.Load()
 	if failedAtUnixNano <= 0 {
+		return false, time.Time{}
+	}
+	if stat.lastSuccessAt.Load() > failedAtUnixNano {
 		return false, time.Time{}
 	}
 	failedAt := time.Unix(0, failedAtUnixNano)
@@ -348,6 +388,30 @@ func (s *openAIAccountRuntimeStats) snapshotWithMeta(accountID int64) (errorRate
 	return snapshotOpenAIAccountRuntimeStat(stat)
 }
 
+func (s *openAIAccountRuntimeStats) latestEventAt(accountID int64) time.Time {
+	if s == nil || accountID <= 0 {
+		return time.Time{}
+	}
+	value, ok := s.accounts.Load(accountID)
+	if !ok {
+		return time.Time{}
+	}
+	stat, _ := value.(*openAIAccountRuntimeStat)
+	if stat == nil {
+		return time.Time{}
+	}
+	stat.mergeMu.Lock()
+	defer stat.mergeMu.Unlock()
+	latest := stat.lastFailureAt.Load()
+	if successAt := stat.lastSuccessAt.Load(); successAt > latest {
+		latest = successAt
+	}
+	if latest <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, latest)
+}
+
 func (s *openAIAccountRuntimeStats) snapshotModelWithMeta(accountID int64, model string) (errorRate float64, ttft float64, hasTTFT bool, sampleCount int64, updatedAt time.Time) {
 	if s == nil {
 		return 0, 0, false, 0, time.Time{}
@@ -368,6 +432,8 @@ func snapshotOpenAIAccountRuntimeStat(stat *openAIAccountRuntimeStat) (errorRate
 	if stat == nil {
 		return 0, 0, false, 0, time.Time{}
 	}
+	stat.mergeMu.Lock()
+	defer stat.mergeMu.Unlock()
 	errorRate = clamp01(math.Float64frombits(stat.errorRateEWMABits.Load()))
 	ttftValue := math.Float64frombits(stat.ttftEWMABits.Load())
 	if math.IsNaN(ttftValue) {
@@ -607,7 +673,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	if s.service.poolAutoPriorityGloballyEnabled(ctx) {
 		if poolAutoPriorityEnabled(account) {
 			realTTFTState := s.realTrafficTTFTState(account, time.Now())
-			if realTTFTState.RecentFailure || (!req.SessionExplicit && realTTFTState.Degraded) {
+			if realTTFTState.RecentFailure || (!req.SessionExplicit && realTTFTState.UsesRuntime && realTTFTState.Degraded) {
 				_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 				logOpenAIStickyRealTTFTEscape(accountID, realTTFTState)
 				return nil, false, nil
@@ -722,11 +788,16 @@ func (s *defaultOpenAIAccountScheduler) shouldEscapeStickyAccount(accountID int6
 	if !cfg.enabled || s == nil || s.stats == nil || accountID <= 0 {
 		return "", 0, 0, false
 	}
-	errorRate, ttft, hasTTFT := s.stats.snapshot(accountID)
-	if hasTTFT && ttft > cfg.ttftMs {
+	errorRate, ttft, hasTTFT, _, ttftUpdatedAt := s.stats.snapshotWithMeta(accountID)
+	ttftAge := time.Since(ttftUpdatedAt)
+	ttftFreshEnough := !ttftUpdatedAt.IsZero() && ttftAge >= 0 && ttftAge <= openAIRealTrafficSlowEvidenceTTL
+	if hasTTFT && ttftFreshEnough && ttft > cfg.ttftMs {
 		return "ttft", errorRate, ttft, true
 	}
-	if errorRate > cfg.errorRate {
+	errorUpdatedAt := s.stats.latestEventAt(accountID)
+	errorAge := time.Since(errorUpdatedAt)
+	errorFreshEnough := !errorUpdatedAt.IsZero() && errorAge >= 0 && errorAge <= openAIRealTrafficSlowEvidenceTTL
+	if errorFreshEnough && errorRate > cfg.errorRate {
 		return "error_rate", errorRate, ttft, true
 	}
 	return "", errorRate, ttft, false
@@ -737,15 +808,21 @@ type openAIRealTrafficTTFTState struct {
 	ThresholdMS   float64
 	SampleCount   int64
 	UpdatedAt     time.Time
+	TTFTUpdatedAt time.Time
 	Mature        bool
+	Fresh         bool
 	Degraded      bool
 	RecentFailure bool
+	UsesRuntime   bool
 	rankingTTFTMS float64
 }
 
 func (s *defaultOpenAIAccountScheduler) realTrafficTTFTState(account *Account, now time.Time) openAIRealTrafficTTFTState {
 	if s == nil {
 		return openAIRealTrafficTTFTState{}
+	}
+	if s.service != nil {
+		s.service.refreshOpenAIAccountRuntimeStats(s.stats, account)
 	}
 	return openAIRealTrafficTTFTStateFromStats(s.stats, account, now)
 }
@@ -764,6 +841,33 @@ func openAIRealTrafficTTFTStateFromStats(stats *openAIAccountRuntimeStats, accou
 	if snapshot == nil || snapshot.ModelProbeLastAttemptAt == nil {
 		return state
 	}
+
+	// Prefer model-scoped production samples when the probe model has enough
+	// evidence. If the actual request was mapped to a different model, fall back
+	// to the account aggregate rather than silently discarding all real traffic.
+	// A failed/unsupported probe does not get promoted by an unrelated model's
+	// aggregate; it still needs a matching successful sample to recover.
+	modelErrorRate, modelTTFT, modelHasTTFT, modelSampleCount, modelUpdatedAt :=
+		stats.snapshotModelWithMeta(account.ID, snapshot.ModelProbeModel)
+	accountErrorRate, accountTTFT, accountHasTTFT, accountSampleCount, accountUpdatedAt :=
+		stats.snapshotWithMeta(account.ID)
+	errorRate, ttft, hasTTFT, sampleCount, updatedAt :=
+		modelErrorRate, modelTTFT, modelHasTTFT, modelSampleCount, modelUpdatedAt
+	modelAge := now.Sub(modelUpdatedAt)
+	accountAge := now.Sub(accountUpdatedAt)
+	modelEligible := modelHasTTFT && modelSampleCount >= openAIRealTrafficTTFTMinSamples &&
+		!modelUpdatedAt.IsZero() && modelAge >= 0 && modelAge <= openAIRealTrafficSlowEvidenceTTL
+	accountEligible := accountHasTTFT && accountSampleCount >= openAIRealTrafficTTFTMinSamples &&
+		!accountUpdatedAt.IsZero() && accountAge >= 0 && accountAge <= openAIRealTrafficSlowEvidenceTTL
+	if !modelEligible && accountEligible {
+		probeInfo, probeSignal := accountProbeAutoPriority(account, now)
+		probeAllowsAggregate := !probeSignal ||
+			(probeInfo.tier != probeAutoPriorityTierFailed && probeInfo.tier != probeAutoPriorityTierUnsupported)
+		if probeAllowsAggregate {
+			errorRate, ttft, hasTTFT, sampleCount, updatedAt =
+				accountErrorRate, accountTTFT, accountHasTTFT, accountSampleCount, accountUpdatedAt
+		}
+	}
 	if key, ok := openAIAccountModelTransientKey(account.ID, snapshot.ModelProbeModel); ok {
 		if value, loaded := stats.models.Load(key); loaded {
 			stat, _ := value.(*openAIAccountRuntimeStat)
@@ -776,31 +880,40 @@ func openAIRealTrafficTTFTStateFromStats(stats *openAIAccountRuntimeStats, accou
 			}
 		}
 	}
-	var hasTTFT bool
-	errorRate, ttft, hasTTFT, sampleCount, updatedAt := stats.snapshotModelWithMeta(account.ID, snapshot.ModelProbeModel)
 	state.TTFTMS = ttft
 	state.SampleCount = sampleCount
+	if !updatedAt.IsZero() {
+		state.TTFTUpdatedAt = updatedAt
+	}
 	if updatedAt.After(state.UpdatedAt) {
 		state.UpdatedAt = updatedAt
-	}
-	if state.RecentFailure {
-		return state
 	}
 	if !hasTTFT || state.SampleCount < openAIRealTrafficTTFTMinSamples || updatedAt.IsZero() {
 		return state
 	}
-	if now.Sub(updatedAt) > openAIRealTrafficTTFTFreshTTL {
-		return state
-	}
+	state.ThresholdMS = openAIRealTrafficTTFTDegradedThreshold(account, now)
+	latencyDegraded := state.TTFTMS > state.ThresholdMS
+	errorDegraded := errorRate > openAIRealTrafficMaxErrorRate
+	state.Degraded = state.RecentFailure || latencyDegraded || errorDegraded
+	age := now.Sub(updatedAt)
+	state.Fresh = age >= 0 && age <= openAIRealTrafficTTFTFreshTTL
+	probeAllowsPromotion := true
 	if updatedAt.Before(*snapshot.ModelProbeLastAttemptAt) {
 		probeInfo, probeSignal := accountProbeAutoPriority(account, now)
 		if !probeSignal || probeInfo.tier != probeAutoPriorityTierHealthy {
-			return state
+			probeAllowsPromotion = false
 		}
 	}
-	state.Mature = true
-	state.ThresholdMS = openAIRealTrafficTTFTDegradedThreshold(account, now)
-	state.Degraded = state.TTFTMS > state.ThresholdMS || errorRate > openAIRealTrafficMaxErrorRate
+	state.Mature = state.Fresh && probeAllowsPromotion && !state.RecentFailure
+	// Fresh production samples are authoritative. Slow/error evidence remains a
+	// negative ranking signal for longer so an account cannot become rank one
+	// merely because it received no traffic for ten minutes and a tiny synthetic
+	// probe happened to be fast.
+	state.UsesRuntime = age >= 0 && age <= openAIRealTrafficSlowEvidenceTTL &&
+		(state.Degraded || (probeAllowsPromotion && !state.RecentFailure))
+	if !state.UsesRuntime {
+		return state
+	}
 	// Production TTFT is the authoritative latency signal once mature. Do not
 	// require a healthy probe baseline: probes can fail on their synthetic body
 	// while the same account is actively serving real traffic.
@@ -1070,7 +1183,19 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		}
 		errorRate, ttft, hasTTFT := 0.0, 0.0, false
 		if s.stats != nil {
-			errorRate, ttft, hasTTFT = s.stats.snapshot(account.ID)
+			var ttftUpdatedAt time.Time
+			errorRate, ttft, hasTTFT, _, ttftUpdatedAt = s.stats.snapshotWithMeta(account.ID)
+			now := time.Now()
+			ttftAge := now.Sub(ttftUpdatedAt)
+			if ttftUpdatedAt.IsZero() || ttftAge < 0 || ttftAge > openAIRealTrafficSlowEvidenceTTL {
+				ttft = 0
+				hasTTFT = false
+			}
+			errorUpdatedAt := s.stats.latestEventAt(account.ID)
+			errorAge := now.Sub(errorUpdatedAt)
+			if errorUpdatedAt.IsZero() || errorAge < 0 || errorAge > openAIRealTrafficSlowEvidenceTTL {
+				errorRate = 0
+			}
 		}
 		allCandidates = append(allCandidates, openAIAccountCandidateScore{
 			account:     account,
@@ -2331,7 +2456,9 @@ func (s *OpenAIGatewayService) getOpenAIAccountRuntimeStats() *openAIAccountRunt
 }
 
 func (s *OpenAIGatewayService) openAIRealTrafficTTFTState(account *Account, now time.Time) openAIRealTrafficTTFTState {
-	return openAIRealTrafficTTFTStateFromStats(s.getOpenAIAccountRuntimeStats(), account, now)
+	stats := s.getOpenAIAccountRuntimeStats()
+	s.refreshOpenAIAccountRuntimeStats(stats, account)
+	return openAIRealTrafficTTFTStateFromStats(stats, account, now)
 }
 
 func resetOpenAIAdvancedSchedulerSettingCacheForTest() {
@@ -2612,8 +2739,12 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(accountID int64
 	if success {
 		s.clearOpenAIAccountModelTransientState(accountID, normalizeOpenAIAccountModelTransientModel(model))
 	}
+	observedAt := time.Now()
 	if stats := s.getOpenAIAccountRuntimeStats(); stats != nil {
-		stats.report(accountID, success, firstTokenMs, model)
+		stats.reportAt(accountID, success, firstTokenMs, observedAt, model)
+	}
+	if s != nil && s.openaiRuntimePersistence != nil {
+		s.openaiRuntimePersistence.Report(accountID, model, success, firstTokenMs, observedAt)
 	}
 }
 

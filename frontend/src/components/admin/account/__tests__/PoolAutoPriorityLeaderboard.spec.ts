@@ -59,6 +59,7 @@ function rankingEntry(overrides: Partial<PoolAutoPriorityRankingEntry>): PoolAut
     balance_unlimited: false,
     runtime_ttft_ms: 1450,
     runtime_sample_count: 4,
+    runtime_updated_at: '2026-08-14T08:00:30Z',
     runtime_mature: true,
     ranking_source: 'real_traffic',
     ...overrides
@@ -154,6 +155,9 @@ describe('PoolAutoPriorityLeaderboard', () => {
     expect(rows[0].find('[data-testid="pool-ranking-runtime-ttft"]').text()).toContain('1450 ms')
     expect(rows[0].find('[data-testid="pool-ranking-runtime-ttft"]').text()).toContain(
       'admin.accounts.poolRanking.realTrafficSource'
+    )
+    expect(rows[0].find('[data-testid="pool-ranking-runtime-ttft"]').text()).toContain(
+      '2026-08-14T08:00:30Z'
     )
     expect(rows[2].find('[data-testid="pool-ranking-balance"]').text()).toBe('—')
     expect(wrapper.emitted('updated')?.at(-1)?.[0]).toEqual(entries)
