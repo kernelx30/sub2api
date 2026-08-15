@@ -403,6 +403,59 @@ func TestRunCheckForModel_OpenAIResponses_SkipsLeadingReasoningItem(t *testing.T
 	}
 }
 
+func TestReadMonitorOpenAIStream_ResponsesDoesNotDuplicateFinalSnapshots(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_monitor"}}`,
+		``,
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"2"}`,
+		``,
+		`event: response.output_text.done`,
+		`data: {"type":"response.output_text.done","text":"2"}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"2"}]}]}}`,
+		``,
+	}, "\n")
+
+	_, got, firstOutputAt, err := readMonitorOpenAIStream(strings.NewReader(stream), true)
+	if err != nil {
+		t.Fatalf("readMonitorOpenAIStream() error = %v", err)
+	}
+	if got != "2" {
+		t.Fatalf("readMonitorOpenAIStream() text = %q, want %q", got, "2")
+	}
+	if firstOutputAt.IsZero() {
+		t.Fatal("readMonitorOpenAIStream() should record first visible output")
+	}
+}
+
+func TestReadMonitorOpenAIStream_ResponsesFallsBackToFinalSnapshot(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.output_text.done`,
+		`data: {"type":"response.output_text.done","text":"42"}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"42"}]}]}}`,
+		``,
+	}, "\n")
+
+	_, got, _, err := readMonitorOpenAIStream(strings.NewReader(stream), true)
+	if err != nil {
+		t.Fatalf("readMonitorOpenAIStream() error = %v", err)
+	}
+	if got != "42" {
+		t.Fatalf("readMonitorOpenAIStream() text = %q, want %q", got, "42")
+	}
+}
+
+func TestValidateChallenge_DoesNotAcceptRepeatedDigitsAsExpectedAnswer(t *testing.T) {
+	if validateChallenge("222", "2") {
+		t.Fatal("validateChallenge() accepted a different integer containing the expected digit")
+	}
+}
+
 func TestRunCheckForModel_OpenAIResponsesReplaceMissingInstructionsFailsLocally(t *testing.T) {
 	h := &openAICaptureHandler{}
 	endpoint := setupFakeOpenAI(t, h)

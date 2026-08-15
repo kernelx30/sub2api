@@ -563,6 +563,7 @@ func readMonitorOpenAIStream(body io.Reader, responsesMode bool) ([]byte, string
 	scanner.Buffer(make([]byte, 4096), monitorResponseMaxBytes)
 	var raw bytes.Buffer
 	var text strings.Builder
+	var responsesFinalText string
 	eventType := ""
 	dataLines := make([]string, 0, 1)
 	var firstOutputAt time.Time
@@ -578,6 +579,11 @@ func readMonitorOpenAIStream(body io.Reader, responsesMode bool) ([]byte, string
 		}
 		if part := monitorOpenAIStreamText(data, eventType, responsesMode); part != "" {
 			_, _ = text.WriteString(part)
+		}
+		if responsesMode {
+			if finalText := monitorOpenAIStreamFinalText(data, eventType); strings.TrimSpace(finalText) != "" {
+				responsesFinalText = finalText
+			}
 		}
 		eventType = ""
 		dataLines = dataLines[:0]
@@ -607,7 +613,11 @@ func readMonitorOpenAIStream(body io.Reader, responsesMode bool) ([]byte, string
 	if err := scanner.Err(); err != nil {
 		return raw.Bytes(), text.String(), firstOutputAt, fmt.Errorf("read stream: %w", err)
 	}
-	return raw.Bytes(), text.String(), firstOutputAt, nil
+	streamText := text.String()
+	if responsesMode && streamText == "" {
+		streamText = responsesFinalText
+	}
+	return raw.Bytes(), streamText, firstOutputAt, nil
 }
 
 func monitorOpenAIStreamText(data, eventType string, responsesMode bool) string {
@@ -621,18 +631,15 @@ func monitorOpenAIStreamText(data, eventType string, responsesMode bool) string 
 		if payloadType == "" {
 			payloadType = strings.TrimSpace(eventType)
 		}
-		if strings.Contains(payloadType, "output_text") {
+		// Responses streams commonly repeat the same text in delta, done and
+		// completed events. Only deltas are incremental; final snapshots are
+		// handled separately as a fallback when an upstream emits no deltas.
+		if payloadType == "response.output_text.delta" {
 			if delta := gjson.GetBytes(payload, "delta"); delta.Type == gjson.String {
 				return delta.String()
 			}
-			if value := gjson.GetBytes(payload, "text"); value.Type == gjson.String {
-				return value.String()
-			}
 		}
-		if response := gjson.GetBytes(payload, "response"); response.Exists() {
-			return extractOpenAIResponsesText([]byte(response.Raw))
-		}
-		return extractOpenAIResponsesText(payload)
+		return ""
 	}
 
 	var parts []string
@@ -645,6 +652,31 @@ func monitorOpenAIStreamText(data, eventType string, responsesMode bool) string 
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+func monitorOpenAIStreamFinalText(data, eventType string) string {
+	trimmed := strings.TrimSpace(data)
+	if trimmed == "" || trimmed == "[DONE]" || !gjson.Valid(trimmed) {
+		return ""
+	}
+	payload := []byte(trimmed)
+	payloadType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+	if payloadType == "" {
+		payloadType = strings.TrimSpace(eventType)
+	}
+
+	if payloadType == "response.output_text.done" {
+		if value := gjson.GetBytes(payload, "text"); value.Type == gjson.String {
+			return value.String()
+		}
+	}
+	if payloadType != "response.completed" && payloadType != "response.done" {
+		return ""
+	}
+	if response := gjson.GetBytes(payload, "response"); response.Exists() {
+		return extractOpenAIResponsesText([]byte(response.Raw))
+	}
+	return extractOpenAIResponsesText(payload)
 }
 
 // joinURL 把 base origin 与 path 拼成完整 URL。
