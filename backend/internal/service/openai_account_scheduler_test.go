@@ -3168,6 +3168,9 @@ func TestOpenAIAccountRuntimeStats_ReportAndSnapshot(t *testing.T) {
 	require.True(t, hasTTFT)
 	require.InDelta(t, 0.36, errorRate, 1e-9)
 	require.InDelta(t, 120.0, ttft, 1e-9)
+	_, _, _, sampleCount, updatedAt := stats.snapshotWithMeta(1001)
+	require.Equal(t, int64(2), sampleCount)
+	require.False(t, updatedAt.IsZero())
 	require.Equal(t, 1, stats.size())
 }
 

@@ -184,7 +184,19 @@ type openAIAccountRuntimeStats struct {
 type openAIAccountRuntimeStat struct {
 	errorRateEWMABits atomic.Uint64
 	ttftEWMABits      atomic.Uint64
+	ttftSampleCount   atomic.Int64
+	ttftUpdatedAt     atomic.Int64
 }
+
+const (
+	openAIRealTrafficTTFTMinSamples       = int64(3)
+	openAIRealTrafficTTFTFreshTTL         = 10 * time.Minute
+	openAIRealTrafficTTFTDegradedFloorMS  = 12000.0
+	openAIRealTrafficTTFTProbeMultiplier  = 2.0
+	openAIRealTrafficTTFTMaxThresholdMS   = 30000.0
+	openAIRealTrafficTTFTCohortSlackRatio = 0.20
+	openAIRealTrafficTTFTCohortMinSlackMS = 1000.0
+)
 
 func newOpenAIAccountRuntimeStats() *openAIAccountRuntimeStats {
 	return &openAIAccountRuntimeStats{}
@@ -253,27 +265,38 @@ func (s *openAIAccountRuntimeStats) report(accountID int64, success bool, firstT
 				break
 			}
 		}
+		stat.ttftSampleCount.Add(1)
+		stat.ttftUpdatedAt.Store(time.Now().UnixNano())
 	}
 }
 
 func (s *openAIAccountRuntimeStats) snapshot(accountID int64) (errorRate float64, ttft float64, hasTTFT bool) {
+	errorRate, ttft, hasTTFT, _, _ = s.snapshotWithMeta(accountID)
+	return errorRate, ttft, hasTTFT
+}
+
+func (s *openAIAccountRuntimeStats) snapshotWithMeta(accountID int64) (errorRate float64, ttft float64, hasTTFT bool, sampleCount int64, updatedAt time.Time) {
 	if s == nil || accountID <= 0 {
-		return 0, 0, false
+		return 0, 0, false, 0, time.Time{}
 	}
 	value, ok := s.accounts.Load(accountID)
 	if !ok {
-		return 0, 0, false
+		return 0, 0, false, 0, time.Time{}
 	}
 	stat, _ := value.(*openAIAccountRuntimeStat)
 	if stat == nil {
-		return 0, 0, false
+		return 0, 0, false, 0, time.Time{}
 	}
 	errorRate = clamp01(math.Float64frombits(stat.errorRateEWMABits.Load()))
 	ttftValue := math.Float64frombits(stat.ttftEWMABits.Load())
 	if math.IsNaN(ttftValue) {
-		return errorRate, 0, false
+		return errorRate, 0, false, stat.ttftSampleCount.Load(), time.Time{}
 	}
-	return errorRate, ttftValue, true
+	updatedAtUnixNano := stat.ttftUpdatedAt.Load()
+	if updatedAtUnixNano > 0 {
+		updatedAt = time.Unix(0, updatedAtUnixNano)
+	}
+	return errorRate, ttftValue, true, stat.ttftSampleCount.Load(), updatedAt
 }
 
 func (s *openAIAccountRuntimeStats) size() int {
@@ -501,6 +524,19 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		return nil, false, nil
 	}
 	if s.service.poolAutoPriorityGloballyEnabled(ctx) {
+		if poolAutoPriorityEnabled(account) {
+			realTTFTState := s.realTrafficTTFTState(account, time.Now())
+			if realTTFTState.Degraded {
+				_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+				slog.Info("sticky_real_ttft_escape_triggered",
+					"account_id", accountID,
+					"sample_count", realTTFTState.SampleCount,
+					"ttft_ms", realTTFTState.TTFTMS,
+					"threshold_ms", realTTFTState.ThresholdMS,
+				)
+				return nil, false, nil
+			}
+		}
 		if accounts, listErr := s.service.listSchedulableAccounts(ctx, req.GroupID, req.Platform); listErr == nil {
 			reason, metrics := s.service.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, req, func(candidate *Account) bool {
 				return s.isAccountRequestCompatible(ctx, candidate, req) && s.isAccountTransportCompatible(candidate, req.RequiredTransport)
@@ -618,17 +654,76 @@ func (s *defaultOpenAIAccountScheduler) shouldEscapeStickyAccount(accountID int6
 	return "", errorRate, ttft, false
 }
 
+type openAIRealTrafficTTFTState struct {
+	TTFTMS      float64
+	ThresholdMS float64
+	SampleCount int64
+	UpdatedAt   time.Time
+	Mature      bool
+	Degraded    bool
+}
+
+func (s *defaultOpenAIAccountScheduler) realTrafficTTFTState(account *Account, now time.Time) openAIRealTrafficTTFTState {
+	if s == nil {
+		return openAIRealTrafficTTFTState{}
+	}
+	return openAIRealTrafficTTFTStateFromStats(s.stats, account, now)
+}
+
+func openAIRealTrafficTTFTStateFromStats(stats *openAIAccountRuntimeStats, account *Account, now time.Time) openAIRealTrafficTTFTState {
+	state := openAIRealTrafficTTFTState{}
+	if stats == nil || account == nil {
+		return state
+	}
+	var hasTTFT bool
+	_, state.TTFTMS, hasTTFT, state.SampleCount, state.UpdatedAt = stats.snapshotWithMeta(account.ID)
+	if !hasTTFT || state.SampleCount < openAIRealTrafficTTFTMinSamples || state.UpdatedAt.IsZero() {
+		return state
+	}
+	age := now.Sub(state.UpdatedAt)
+	if age > openAIRealTrafficTTFTFreshTTL {
+		return state
+	}
+	state.Mature = true
+	state.ThresholdMS = openAIRealTrafficTTFTDegradedThreshold(account, now)
+	state.Degraded = state.TTFTMS > state.ThresholdMS
+	return state
+}
+
+func openAIRealTrafficTTFTDegradedThreshold(account *Account, now time.Time) float64 {
+	threshold := openAIRealTrafficTTFTDegradedFloorMS
+	if info, signal := accountProbeAutoPriority(account, now); signal {
+		baselineMS := info.p95LatencyMS
+		if baselineMS <= 0 {
+			baselineMS = info.p50LatencyMS
+		}
+		if baselineMS <= 0 {
+			baselineMS = info.latencyMS
+		}
+		probeThreshold := float64(baselineMS) * openAIRealTrafficTTFTProbeMultiplier
+		if probeThreshold > threshold {
+			threshold = probeThreshold
+		}
+	}
+	if threshold > openAIRealTrafficTTFTMaxThresholdMS {
+		threshold = openAIRealTrafficTTFTMaxThresholdMS
+	}
+	return threshold
+}
+
 type openAIAccountCandidateScore struct {
-	account     *Account
-	loadInfo    *AccountLoadInfo
-	loadKnown   bool
-	score       float64
-	priority    int
-	errorRate   float64
-	ttft        float64
-	hasTTFT     bool
-	probeRank   int
-	probeRanked bool
+	account          *Account
+	loadInfo         *AccountLoadInfo
+	loadKnown        bool
+	score            float64
+	priority         int
+	errorRate        float64
+	ttft             float64
+	hasTTFT          bool
+	realTTFTMature   bool
+	realTTFTDegraded bool
+	probeRank        int
+	probeRanked      bool
 }
 
 type openAIAccountCandidateHeap []openAIAccountCandidateScore
@@ -663,6 +758,9 @@ func (h *openAIAccountCandidateHeap) Pop() any {
 }
 
 func isOpenAIAccountCandidateBetter(left openAIAccountCandidateScore, right openAIAccountCandidateScore) bool {
+	if comparison := compareOpenAIRealTrafficTTFT(left, right); comparison != 0 {
+		return comparison > 0
+	}
 	if left.probeRanked || right.probeRanked {
 		if left.probeRanked != right.probeRanked {
 			return left.probeRanked
@@ -684,6 +782,35 @@ func isOpenAIAccountCandidateBetter(left openAIAccountCandidateScore, right open
 		return left.loadInfo.WaitingCount < right.loadInfo.WaitingCount
 	}
 	return left.account.ID < right.account.ID
+}
+
+func compareOpenAIRealTrafficTTFT(left openAIAccountCandidateScore, right openAIAccountCandidateScore) int {
+	return compareOpenAIRealTrafficTTFTStates(
+		openAIRealTrafficTTFTState{TTFTMS: left.ttft, Mature: left.realTTFTMature, Degraded: left.realTTFTDegraded},
+		openAIRealTrafficTTFTState{TTFTMS: right.ttft, Mature: right.realTTFTMature, Degraded: right.realTTFTDegraded},
+	)
+}
+
+func compareOpenAIRealTrafficTTFTStates(left openAIRealTrafficTTFTState, right openAIRealTrafficTTFTState) int {
+	if left.Degraded != right.Degraded {
+		if left.Degraded {
+			return -1
+		}
+		return 1
+	}
+	if !left.Mature || !right.Mature || left.TTFTMS <= 0 || right.TTFTMS <= 0 {
+		return 0
+	}
+	best := math.Min(left.TTFTMS, right.TTFTMS)
+	slack := math.Max(openAIRealTrafficTTFTCohortMinSlackMS, best*openAIRealTrafficTTFTCohortSlackRatio)
+	switch {
+	case left.TTFTMS+slack < right.TTFTMS:
+		return 1
+	case right.TTFTMS+slack < left.TTFTMS:
+		return -1
+	default:
+		return 0
+	}
 }
 
 func selectTopKOpenAICandidates(candidates []openAIAccountCandidateScore, topK int) []openAIAccountCandidateScore {
@@ -838,6 +965,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 	loadMap map[int64]*AccountLoadInfo,
 ) openAIAccountLoadPlan {
 	probeRanks, probeRanked := s.service.openAIProbeAutoPriorityRanks(ctx, filtered)
+	runtimeNow := time.Now()
 	allCandidates := make([]openAIAccountCandidateScore, 0, len(filtered))
 	for _, account := range filtered {
 		loadInfo, loadKnown := loadMap[account.ID]
@@ -849,15 +977,21 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		if s.stats != nil {
 			errorRate, ttft, hasTTFT = s.stats.snapshot(account.ID)
 		}
+		realTTFTState := openAIRealTrafficTTFTState{}
+		if probeRanked && poolAutoPriorityEnabled(account) {
+			realTTFTState = s.realTrafficTTFTState(account, runtimeNow)
+		}
 		allCandidates = append(allCandidates, openAIAccountCandidateScore{
-			account:     account,
-			loadInfo:    loadInfo,
-			loadKnown:   loadKnown,
-			errorRate:   errorRate,
-			ttft:        ttft,
-			hasTTFT:     hasTTFT,
-			probeRank:   probeRanks[account.ID],
-			probeRanked: probeRanked,
+			account:          account,
+			loadInfo:         loadInfo,
+			loadKnown:        loadKnown,
+			errorRate:        errorRate,
+			ttft:             ttft,
+			hasTTFT:          hasTTFT,
+			realTTFTMature:   realTTFTState.Mature,
+			realTTFTDegraded: realTTFTState.Degraded,
+			probeRank:        probeRanks[account.ID],
+			probeRanked:      probeRanked,
 		})
 	}
 
@@ -1124,6 +1258,9 @@ func orderOpenAICandidatesByProbePriority(candidates []openAIAccountCandidateSco
 	ordered := append([]openAIAccountCandidateScore(nil), candidates...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		left, right := ordered[i], ordered[j]
+		if comparison := compareOpenAIRealTrafficTTFT(left, right); comparison != 0 {
+			return comparison > 0
+		}
 		if left.probeRanked != right.probeRanked {
 			return left.probeRanked
 		}
@@ -1139,6 +1276,9 @@ func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore) []open
 	ordered := append([]openAIAccountCandidateScore(nil), pool...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		a, b := ordered[i], ordered[j]
+		if comparison := compareOpenAIRealTrafficTTFT(a, b); comparison != 0 {
+			return comparison > 0
+		}
 		if a.probeRanked || b.probeRanked {
 			if a.probeRanked != b.probeRanked {
 				return a.probeRanked
@@ -2083,14 +2223,27 @@ func (s *OpenAIGatewayService) getOpenAIAccountScheduler(ctx context.Context) Op
 		return nil
 	}
 	s.openaiSchedulerOnce.Do(func() {
-		if s.openaiAccountStats == nil {
-			s.openaiAccountStats = newOpenAIAccountRuntimeStats()
-		}
 		if s.openaiScheduler == nil {
-			s.openaiScheduler = newDefaultOpenAIAccountScheduler(s, s.openaiAccountStats)
+			s.openaiScheduler = newDefaultOpenAIAccountScheduler(s, s.getOpenAIAccountRuntimeStats())
 		}
 	})
 	return s.openaiScheduler
+}
+
+func (s *OpenAIGatewayService) getOpenAIAccountRuntimeStats() *openAIAccountRuntimeStats {
+	if s == nil {
+		return nil
+	}
+	s.openaiAccountStatsOnce.Do(func() {
+		if s.openaiAccountStats == nil {
+			s.openaiAccountStats = newOpenAIAccountRuntimeStats()
+		}
+	})
+	return s.openaiAccountStats
+}
+
+func (s *OpenAIGatewayService) openAIRealTrafficTTFTState(account *Account, now time.Time) openAIRealTrafficTTFTState {
+	return openAIRealTrafficTTFTStateFromStats(s.getOpenAIAccountRuntimeStats(), account, now)
 }
 
 func resetOpenAIAdvancedSchedulerSettingCacheForTest() {
@@ -2364,11 +2517,9 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(accountID int64
 	if success {
 		s.clearOpenAIAccountModelTransientState(accountID, normalizeOpenAIAccountModelTransientModel(model))
 	}
-	scheduler := s.getOpenAIAccountScheduler(context.Background())
-	if scheduler == nil {
-		return
+	if stats := s.getOpenAIAccountRuntimeStats(); stats != nil {
+		stats.report(accountID, success, firstTokenMs)
 	}
-	scheduler.ReportResult(accountID, success, firstTokenMs)
 }
 
 func (s *OpenAIGatewayService) RecordOpenAIAccountSwitch() {

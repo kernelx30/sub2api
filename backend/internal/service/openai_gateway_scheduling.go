@@ -803,6 +803,14 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 		return nil
 	}
 	if s.poolAutoPriorityGloballyEnabled(ctx) {
+		if poolAutoPriorityEnabled(account) {
+			realTTFTState := s.openAIRealTrafficTTFTState(account, time.Now())
+			if realTTFTState.Degraded {
+				_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+				logOpenAIStickyRealTTFTEscape(account.ID, realTTFTState)
+				return nil
+			}
+		}
 		if accounts, listErr := s.listSchedulableAccounts(ctx, groupID, platform); listErr == nil {
 			reason, metrics := s.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, OpenAIAccountScheduleRequest{
 				GroupID:            groupID,
@@ -888,12 +896,24 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 		return nil, compactBlocked, filterStats
 	}
 	probeRanks, probeRanked := s.openAIProbeAutoPriorityRanks(ctx, eligible)
+	runtimeNow := time.Now()
+	realTTFTStates := make(map[int64]openAIRealTrafficTTFTState, len(eligible))
+	if probeRanked {
+		for _, account := range eligible {
+			if poolAutoPriorityEnabled(account) {
+				realTTFTStates[account.ID] = s.openAIRealTrafficTTFTState(account, runtimeNow)
+			}
+		}
+	}
 	rateOrder := openAILegacyUpstreamRateOrder{}
 	if preferLowUpstreamRate {
 		rateOrder = newOpenAILegacyUpstreamRateOrder(eligible, time.Now(), s.openAIOAuthSchedulingRateMultiplier(ctx))
 	}
 	sort.SliceStable(eligible, func(i, j int) bool {
 		a, b := eligible[i], eligible[j]
+		if comparison := compareOpenAIRealTrafficTTFTStates(realTTFTStates[a.ID], realTTFTStates[b.ID]); comparison != 0 {
+			return comparison > 0
+		}
 		if probeRanked && probeRanks[a.ID] != probeRanks[b.ID] {
 			return probeRanks[a.ID] < probeRanks[b.ID]
 		}
@@ -1034,6 +1054,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 					} else if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+					} else if realTTFTState := s.openAIRealTrafficTTFTState(account, time.Now()); s.poolAutoPriorityGloballyEnabled(ctx) && poolAutoPriorityEnabled(account) && realTTFTState.Degraded {
+						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						logOpenAIStickyRealTTFTEscape(account.ID, realTTFTState)
 					} else if reason, metrics := s.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, OpenAIAccountScheduleRequest{
 						GroupID:            groupID,
 						Platform:           platform,
@@ -1671,6 +1694,15 @@ func logOpenAIStickyProbeEscape(accountID int64, reason string, metrics upstream
 	)
 }
 
+func logOpenAIStickyRealTTFTEscape(accountID int64, state openAIRealTrafficTTFTState) {
+	slog.Info("sticky_real_ttft_escape_triggered",
+		"account_id", accountID,
+		"sample_count", state.SampleCount,
+		"ttft_ms", state.TTFTMS,
+		"threshold_ms", state.ThresholdMS,
+	)
+}
+
 func (s *OpenAIGatewayService) orderOpenAIAccountsByProbePriority(ctx context.Context, accounts []*Account) []*Account {
 	if len(accounts) <= 1 {
 		return accounts
@@ -1679,8 +1711,18 @@ func (s *OpenAIGatewayService) orderOpenAIAccountsByProbePriority(ctx context.Co
 	if !ok {
 		return accounts
 	}
+	now := time.Now()
+	realTTFTStates := make(map[int64]openAIRealTrafficTTFTState, len(accounts))
+	for _, account := range accounts {
+		if poolAutoPriorityEnabled(account) {
+			realTTFTStates[account.ID] = s.openAIRealTrafficTTFTState(account, now)
+		}
+	}
 	ordered := append([]*Account(nil), accounts...)
 	sort.SliceStable(ordered, func(i, j int) bool {
+		if comparison := compareOpenAIRealTrafficTTFTStates(realTTFTStates[ordered[i].ID], realTTFTStates[ordered[j].ID]); comparison != 0 {
+			return comparison > 0
+		}
 		return ranks[ordered[i].ID] < ranks[ordered[j].ID]
 	})
 	return ordered
@@ -1698,8 +1740,18 @@ func (s *OpenAIGatewayService) orderOpenAIAccountLoadsByProbePriority(ctx contex
 	if !ok {
 		return accounts
 	}
+	now := time.Now()
+	realTTFTStates := make(map[int64]openAIRealTrafficTTFTState, len(accounts))
+	for _, candidate := range accounts {
+		if poolAutoPriorityEnabled(candidate.account) {
+			realTTFTStates[candidate.account.ID] = s.openAIRealTrafficTTFTState(candidate.account, now)
+		}
+	}
 	ordered := append([]accountWithLoad(nil), accounts...)
 	sort.SliceStable(ordered, func(i, j int) bool {
+		if comparison := compareOpenAIRealTrafficTTFTStates(realTTFTStates[ordered[i].account.ID], realTTFTStates[ordered[j].account.ID]); comparison != 0 {
+			return comparison > 0
+		}
 		return ranks[ordered[i].account.ID] < ranks[ordered[j].account.ID]
 	})
 	return ordered
