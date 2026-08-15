@@ -285,6 +285,27 @@ func (s *OpenAIGatewayService) recordOpenAIAccountModelTransientFailure(account 
 	return state.recordFailure(account.ID, openAIAccountModelTransientModel(canonicalModel), now)
 }
 
+func (s *OpenAIGatewayService) recordOpenAIFirstOutputTimeout(
+	account *Account,
+	requestedModel string,
+	now time.Time,
+) openAIAccountModelTransientDecision {
+	if s == nil || account == nil {
+		return openAIAccountModelTransientDecision{}
+	}
+	state := s.getOpenAIAccountModelTransientState()
+	if state == nil {
+		return openAIAccountModelTransientDecision{}
+	}
+	canonicalModel := canonicalOpenAIAccountSchedulingModel(account, requestedModel)
+	return state.recordImmediateFailure(
+		account.ID,
+		openAIAccountModelTransientModel(canonicalModel),
+		now,
+		openAIModelTransientLongCooldown,
+	)
+}
+
 func (s *OpenAIGatewayService) clearOpenAIAccountModelTransientState(accountID int64, model string) {
 	state := s.getOpenAIAccountModelTransientState()
 	if state == nil {

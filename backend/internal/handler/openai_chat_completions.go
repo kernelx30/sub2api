@@ -375,6 +375,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 					// Pool mode: retry on the same account
 					if failoverErr.RetryableOnSameAccount {
 						retryLimit := account.GetPoolModeRetryCount()
+						if h.gatewayService.ShouldPreferOpenAIPoolFailover(c.Request.Context(), account) {
+							retryLimit = 0
+						}
 						if sameAccountRetryCount[account.ID] < retryLimit {
 							sameAccountRetryCount[account.ID]++
 							retryDelay := sameAccountRetryDelayFor(failoverErr, sameAccountRetryCount[account.ID])
@@ -446,6 +449,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), true, nil)
 		}
+		usageResult := openAIEndToEndUsageResult(result, requestStart, forwardStart, time.Now())
 
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
@@ -457,9 +461,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		sessionID := service.ExtractClientSessionID(c)
 
 		cyberBlocked := service.GetOpsCyberPolicy(c) != nil
-		h.submitOpenAIUsageRecordTask(c.Request.Context(), result, func(ctx context.Context) {
+		h.submitOpenAIUsageRecordTask(c.Request.Context(), usageResult, func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
-				Result:             result,
+				Result:             usageResult,
 				APIKey:             usageAPIKey,
 				User:               usageAPIKey.User,
 				Account:            account,
@@ -471,7 +475,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 				APIKeyService:      h.apiKeyService,
 				QuotaPlatform:      quotaPlatform,
 				SessionID:          sessionID,
-				ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
+				ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, usageResult.UpstreamModel),
 				PricingAt:          pricingAt,
 				CyberBlocked:       cyberBlocked,
 			}); err != nil {

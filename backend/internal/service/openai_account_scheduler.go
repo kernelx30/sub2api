@@ -190,11 +190,13 @@ type openAIAccountRuntimeStat struct {
 	ttftEWMABits      atomic.Uint64
 	ttftSampleCount   atomic.Int64
 	ttftUpdatedAt     atomic.Int64
+	lastFailureAt     atomic.Int64
 }
 
 const (
 	openAIRealTrafficTTFTMinSamples      = int64(3)
 	openAIRealTrafficTTFTFreshTTL        = 10 * time.Minute
+	openAIRealTrafficFailurePenaltyTTL   = 5 * time.Minute
 	openAIRealTrafficTTFTDegradedFloorMS = 12000.0
 	openAIRealTrafficTTFTProbeMultiplier = 2.0
 	openAIRealTrafficTTFTMaxThresholdMS  = 30000.0
@@ -266,6 +268,8 @@ func reportOpenAIAccountRuntimeStat(stat *openAIAccountRuntimeStat, success bool
 	errorSample := 1.0
 	if success {
 		errorSample = 0.0
+	} else {
+		stat.lastFailureAt.Store(observedAt.UnixNano())
 	}
 	updateEWMAAtomic(&stat.errorRateEWMABits, errorSample, alpha)
 
@@ -290,6 +294,18 @@ func reportOpenAIAccountRuntimeStat(stat *openAIAccountRuntimeStat, success bool
 	}
 	stat.ttftSampleCount.Add(1)
 	stat.ttftUpdatedAt.Store(observedAt.UnixNano())
+}
+
+func openAIAccountRuntimeStatRecentFailure(stat *openAIAccountRuntimeStat, now time.Time) (bool, time.Time) {
+	if stat == nil {
+		return false, time.Time{}
+	}
+	failedAtUnixNano := stat.lastFailureAt.Load()
+	if failedAtUnixNano <= 0 {
+		return false, time.Time{}
+	}
+	failedAt := time.Unix(0, failedAtUnixNano)
+	return !now.Before(failedAt) && now.Sub(failedAt) <= openAIRealTrafficFailurePenaltyTTL, failedAt
 }
 
 func (s *openAIAccountRuntimeStats) report(accountID int64, success bool, firstTokenMs *int, model ...string) {
@@ -588,25 +604,27 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
 	}
-	if !req.SessionExplicit && s.service.poolAutoPriorityGloballyEnabled(ctx) {
+	if s.service.poolAutoPriorityGloballyEnabled(ctx) {
 		if poolAutoPriorityEnabled(account) {
 			realTTFTState := s.realTrafficTTFTState(account, time.Now())
-			if realTTFTState.Degraded {
+			if realTTFTState.RecentFailure || (!req.SessionExplicit && realTTFTState.Degraded) {
 				_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 				logOpenAIStickyRealTTFTEscape(accountID, realTTFTState)
 				return nil, false, nil
 			}
 		}
-		if accounts, listErr := s.service.listSchedulableAccounts(ctx, req.GroupID, req.Platform); listErr == nil {
-			reason, metrics := s.service.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, req, func(candidate *Account) bool {
-				return s.isAccountRequestCompatible(ctx, candidate, req) && s.isAccountTransportCompatible(candidate, req.RequiredTransport)
-			})
-			if reason != "" {
-				_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
-				logOpenAIStickyProbeEscape(accountID, reason, metrics)
-				// Returning escapedSticky=false lets load balancing bind the newly
-				// selected healthy account instead of preserving the stale binding.
-				return nil, false, nil
+		if !req.SessionExplicit {
+			if accounts, listErr := s.service.listSchedulableAccounts(ctx, req.GroupID, req.Platform); listErr == nil {
+				reason, metrics := s.service.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, req, func(candidate *Account) bool {
+					return s.isAccountRequestCompatible(ctx, candidate, req) && s.isAccountTransportCompatible(candidate, req.RequiredTransport)
+				})
+				if reason != "" {
+					_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+					logOpenAIStickyProbeEscape(accountID, reason, metrics)
+					// Returning escapedSticky=false lets load balancing bind the newly
+					// selected healthy account instead of preserving the stale binding.
+					return nil, false, nil
+				}
 			}
 		}
 	}
@@ -721,6 +739,7 @@ type openAIRealTrafficTTFTState struct {
 	UpdatedAt     time.Time
 	Mature        bool
 	Degraded      bool
+	RecentFailure bool
 	rankingTTFTMS float64
 }
 
@@ -736,27 +755,52 @@ func openAIRealTrafficTTFTStateFromStats(stats *openAIAccountRuntimeStats, accou
 	if stats == nil || account == nil {
 		return state
 	}
+	if value, ok := stats.accounts.Load(account.ID); ok {
+		stat, _ := value.(*openAIAccountRuntimeStat)
+		state.RecentFailure, state.UpdatedAt = openAIAccountRuntimeStatRecentFailure(stat, now)
+		state.Degraded = state.RecentFailure
+	}
 	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
 	if snapshot == nil || snapshot.ModelProbeLastAttemptAt == nil {
 		return state
+	}
+	if key, ok := openAIAccountModelTransientKey(account.ID, snapshot.ModelProbeModel); ok {
+		if value, loaded := stats.models.Load(key); loaded {
+			stat, _ := value.(*openAIAccountRuntimeStat)
+			if recentFailure, failedAt := openAIAccountRuntimeStatRecentFailure(stat, now); recentFailure {
+				state.RecentFailure = true
+				state.Degraded = true
+				if failedAt.After(state.UpdatedAt) {
+					state.UpdatedAt = failedAt
+				}
+			}
+		}
 	}
 	var hasTTFT bool
 	errorRate, ttft, hasTTFT, sampleCount, updatedAt := stats.snapshotModelWithMeta(account.ID, snapshot.ModelProbeModel)
 	state.TTFTMS = ttft
 	state.SampleCount = sampleCount
-	state.UpdatedAt = updatedAt
-	if !hasTTFT || state.SampleCount < openAIRealTrafficTTFTMinSamples || state.UpdatedAt.IsZero() {
+	if updatedAt.After(state.UpdatedAt) {
+		state.UpdatedAt = updatedAt
+	}
+	if state.RecentFailure {
 		return state
 	}
-	if now.Sub(state.UpdatedAt) > openAIRealTrafficTTFTFreshTTL {
+	if !hasTTFT || state.SampleCount < openAIRealTrafficTTFTMinSamples || updatedAt.IsZero() {
 		return state
 	}
-	if state.UpdatedAt.Before(*snapshot.ModelProbeLastAttemptAt) || errorRate > openAIRealTrafficMaxErrorRate {
+	if now.Sub(updatedAt) > openAIRealTrafficTTFTFreshTTL {
 		return state
+	}
+	if updatedAt.Before(*snapshot.ModelProbeLastAttemptAt) {
+		probeInfo, probeSignal := accountProbeAutoPriority(account, now)
+		if !probeSignal || probeInfo.tier != probeAutoPriorityTierHealthy {
+			return state
+		}
 	}
 	state.Mature = true
 	state.ThresholdMS = openAIRealTrafficTTFTDegradedThreshold(account, now)
-	state.Degraded = state.TTFTMS > state.ThresholdMS
+	state.Degraded = state.TTFTMS > state.ThresholdMS || errorRate > openAIRealTrafficMaxErrorRate
 	// Production TTFT is the authoritative latency signal once mature. Do not
 	// require a healthy probe baseline: probes can fail on their synthetic body
 	// while the same account is actively serving real traffic.

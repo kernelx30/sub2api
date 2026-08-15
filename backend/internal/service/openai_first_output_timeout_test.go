@@ -89,6 +89,45 @@ func TestOpenAIForwardFirstOutputTimeoutIncludesResponseHeaderWait(t *testing.T)
 	}
 }
 
+func TestOpenAIFirstOutputTimeoutImmediatelyBlocksAutoPriorityPoolAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	account := &Account{
+		ID: 2, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true,
+		Credentials: map[string]any{"api_key": "test-token", "base_url": "https://example.com", "pool_mode": true},
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	svc.newOpenAIFirstOutputTimeoutError(
+		context.Background(), c, account, time.Now(), "gpt-5.5", "low", time.Second, "response_headers", http.Header{},
+	)
+
+	require.True(t, svc.isOpenAIAccountModelRuntimeBlocked(account, "gpt-5.5"))
+	require.False(t, svc.isOpenAIAccountModelRuntimeBlocked(account, "gpt-5.6-sol"))
+}
+
+func TestOpenAIFirstOutputTimeoutDoesNotImmediatelyBlockNonPoolAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	account := &Account{
+		ID: 3, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true,
+		Credentials: map[string]any{"api_key": "test-token", "base_url": "https://example.com"},
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	svc.newOpenAIFirstOutputTimeoutError(
+		context.Background(), c, account, time.Now(), "gpt-5.5", "low", time.Second, "response_headers", http.Header{},
+	)
+
+	require.False(t, svc.isOpenAIAccountModelRuntimeBlocked(account, "gpt-5.5"))
+}
+
 func TestOpenAINativeFirstOutputTimeoutDisabledPreservesSynchronousStream(t *testing.T) {
 	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
 		OpenAIFirstOutputTimeoutSeconds: 0,

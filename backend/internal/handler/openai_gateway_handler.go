@@ -727,6 +727,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					// 池模式：同账号重试
 					if failoverErr.RetryableOnSameAccount {
 						retryLimit := account.GetPoolModeRetryCount()
+						if h.gatewayService.ShouldPreferOpenAIPoolFailover(c.Request.Context(), account) {
+							retryLimit = 0
+						}
 						if sameAccountRetryCount[account.ID] < retryLimit {
 							sameAccountRetryCount[account.ID]++
 							retryDelay := sameAccountRetryDelayFor(failoverErr, sameAccountRetryCount[account.ID])
@@ -815,6 +818,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), openAIForwardSucceededForScheduling(result), nil)
 		}
+		usageResult := openAIEndToEndUsageResult(result, requestStart, forwardStart, time.Now())
 
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
 		userAgent := c.GetHeader("User-Agent")
@@ -829,9 +833,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
 		cyberBlocked := service.GetOpsCyberPolicy(c) != nil
-		h.submitOpenAIUsageRecordTask(c.Request.Context(), result, func(ctx context.Context) {
+		h.submitOpenAIUsageRecordTask(c.Request.Context(), usageResult, func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
-				Result:             result,
+				Result:             usageResult,
 				APIKey:             usageAPIKey,
 				User:               usageAPIKey.User,
 				Account:            account,
@@ -844,7 +848,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				APIKeyService:      h.apiKeyService,
 				QuotaPlatform:      quotaPlatform,
 				SessionID:          sessionID,
-				ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
+				ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, usageResult.UpstreamModel),
 				PricingAt:          pricingAt,
 				CyberBlocked:       cyberBlocked,
 			}); err != nil {
@@ -1314,6 +1318,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					// 池模式：同账号重试
 					if failoverErr.RetryableOnSameAccount {
 						retryLimit := account.GetPoolModeRetryCount()
+						if h.gatewayService.ShouldPreferOpenAIPoolFailover(c.Request.Context(), account) {
+							retryLimit = 0
+						}
 						if sameAccountRetryCount[account.ID] < retryLimit {
 							sameAccountRetryCount[account.ID]++
 							retryDelay := sameAccountRetryDelayFor(failoverErr, sameAccountRetryCount[account.ID])
@@ -1374,6 +1381,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(currentRoutingModel), true, nil)
 		}
+		usageResult := openAIEndToEndUsageResult(result, requestStart, forwardStart, time.Now())
 
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
@@ -1384,9 +1392,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		sessionID := service.ExtractClientSessionID(c)
 
 		cyberBlocked := service.GetOpsCyberPolicy(c) != nil
-		h.submitOpenAIUsageRecordTask(c.Request.Context(), result, func(ctx context.Context) {
+		h.submitOpenAIUsageRecordTask(c.Request.Context(), usageResult, func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
-				Result:             result,
+				Result:             usageResult,
 				APIKey:             apiKey,
 				User:               apiKey.User,
 				Account:            account,
@@ -1399,7 +1407,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 				APIKeyService:      h.apiKeyService,
 				QuotaPlatform:      quotaPlatform,
 				SessionID:          sessionID,
-				ChannelUsageFields: clientRequestedUsageFields(c, channelMappingMsg, reqModel, result.UpstreamModel),
+				ChannelUsageFields: clientRequestedUsageFields(c, channelMappingMsg, reqModel, usageResult.UpstreamModel),
 				PricingAt:          pricingAt,
 				CyberBlocked:       cyberBlocked,
 			}); err != nil {

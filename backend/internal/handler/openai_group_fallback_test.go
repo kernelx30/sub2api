@@ -400,6 +400,61 @@ func TestOpenAIGroupFallback_RetryablePrimaryFailureUsesFallback(t *testing.T) {
 	}
 }
 
+func TestOpenAIGroupFallback_AutoPriorityPoolSkipsSameAccountRetries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name                string
+		endpoint            string
+		body                string
+		autoPriorityEnabled *bool
+		wantCalls           []int64
+	}{
+		{
+			name:      "responses_auto_priority",
+			endpoint:  EndpointResponses,
+			body:      `{"model":"gpt-5","input":"hello","stream":false}`,
+			wantCalls: []int64{openAIGroupFallbackPrimaryAcc, openAIGroupFallbackTargetAcc},
+		},
+		{
+			name:      "chat_completions_auto_priority",
+			endpoint:  "/v1/chat/completions",
+			body:      `{"model":"gpt-5","messages":[{"role":"user","content":"hello"}],"stream":false}`,
+			wantCalls: []int64{openAIGroupFallbackPrimaryAcc, openAIGroupFallbackTargetAcc},
+		},
+		{
+			name:                "responses_account_opt_out",
+			endpoint:            EndpointResponses,
+			body:                `{"model":"gpt-5","input":"hello","stream":false}`,
+			autoPriorityEnabled: boolPtr(false),
+			wantCalls: []int64{
+				openAIGroupFallbackPrimaryAcc,
+				openAIGroupFallbackPrimaryAcc,
+				openAIGroupFallbackPrimaryAcc,
+				openAIGroupFallbackTargetAcc,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			primary := openAIGroupFallbackAccount(openAIGroupFallbackPrimaryAcc, openAIGroupFallbackPrimaryID, nil)
+			primary.Credentials["pool_mode"] = true
+			primary.Credentials["pool_mode_retry_count"] = float64(2)
+			primary.Credentials["pool_mode_retry_status_codes"] = []any{float64(http.StatusBadGateway)}
+			if tt.autoPriorityEnabled != nil {
+				primary.Extra[service.PoolAutoPriorityEnabledExtraKey] = *tt.autoPriorityEnabled
+			}
+			fixture := newOpenAIGroupFallbackFixture(t, []service.Account{primary}, config.RunModeStandard)
+			fixture.upstream.statuses[openAIGroupFallbackPrimaryAcc] = http.StatusBadGateway
+
+			recorder, _ := runOpenAIGroupFallbackRequest(t, fixture, tt.endpoint, tt.body)
+
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			require.Equal(t, tt.wantCalls, fixture.upstream.accountCalls())
+			requireOpenAIGroupFallbackUsage(t, fixture)
+		})
+	}
+}
+
 func TestOpenAIGroupFallback_FirstOutputTimeoutBudgetDoesNotReset(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	primaryFirst := openAIGroupFallbackAccount(openAIGroupFallbackPrimaryAcc, openAIGroupFallbackPrimaryID, nil)

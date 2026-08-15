@@ -2046,7 +2046,10 @@ func TestOpenAIResponses_APIKeyPassthroughPool5xxRetriesThenExhaustsMaxSwitches(
 				"pool_mode_retry_count":        float64(1),
 				"pool_mode_retry_status_codes": []any{float64(http.StatusBadGateway)},
 			},
-			Extra: map[string]any{"openai_passthrough": true},
+			Extra: map[string]any{
+				"openai_passthrough":                    true,
+				service.PoolAutoPriorityEnabledExtraKey: false,
+			},
 		},
 		{
 			ID: 9911, Name: "fallback-api-key", Platform: service.PlatformOpenAI,
@@ -2146,7 +2149,10 @@ func TestOpenAIResponses_APIKeyPassthroughPoolAuthFailureRetriesThenSwitchesToHe
 						"pool_mode_retry_count":        float64(1),
 						"pool_mode_retry_status_codes": []any{float64(tt.statusCode)},
 					},
-					Extra: map[string]any{"openai_passthrough": true},
+					Extra: map[string]any{
+						"openai_passthrough":                    true,
+						service.PoolAutoPriorityEnabledExtraKey: false,
+					},
 				},
 				{
 					ID: 9911, Name: "fallback-api-key", Platform: service.PlatformOpenAI,
@@ -2238,7 +2244,10 @@ func TestOpenAIResponses_APIKeyPassthroughSSERateLimitUsesConfiguredPoolRetry(t 
 				"pool_mode_retry_count":        float64(1),
 				"pool_mode_retry_status_codes": []any{float64(http.StatusTooManyRequests)},
 			},
-			Extra: map[string]any{"openai_passthrough": true},
+			Extra: map[string]any{
+				"openai_passthrough":                    true,
+				service.PoolAutoPriorityEnabledExtraKey: false,
+			},
 		},
 	}
 	cfg := &config.Config{RunMode: config.RunModeSimple}

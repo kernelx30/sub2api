@@ -841,28 +841,31 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
 	}
-	if openAISessionAffinitySourceFromContext(ctx) != openAISessionAffinityExplicit && s.poolAutoPriorityGloballyEnabled(ctx) {
+	sessionExplicit := openAISessionAffinitySourceFromContext(ctx) == openAISessionAffinityExplicit
+	if s.poolAutoPriorityGloballyEnabled(ctx) {
 		if poolAutoPriorityEnabled(account) {
 			realTTFTState := s.openAIRealTrafficTTFTState(account, time.Now())
-			if realTTFTState.Degraded {
+			if realTTFTState.RecentFailure || (!sessionExplicit && realTTFTState.Degraded) {
 				_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 				logOpenAIStickyRealTTFTEscape(account.ID, realTTFTState)
 				return nil
 			}
 		}
-		if accounts, listErr := s.listSchedulableAccounts(ctx, groupID, platform); listErr == nil {
-			reason, metrics := s.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, OpenAIAccountScheduleRequest{
-				GroupID:            groupID,
-				Platform:           platform,
-				RequestedModel:     requestedModel,
-				ExcludedIDs:        excludedIDs,
-				RequireCompact:     requireCompact,
-				RequiredCapability: requiredCapability,
-			}, nil)
-			if reason != "" {
-				_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
-				logOpenAIStickyProbeEscape(account.ID, reason, metrics)
-				return nil
+		if !sessionExplicit {
+			if accounts, listErr := s.listSchedulableAccounts(ctx, groupID, platform); listErr == nil {
+				reason, metrics := s.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, OpenAIAccountScheduleRequest{
+					GroupID:            groupID,
+					Platform:           platform,
+					RequestedModel:     requestedModel,
+					ExcludedIDs:        excludedIDs,
+					RequireCompact:     requireCompact,
+					RequiredCapability: requiredCapability,
+				}, nil)
+				if reason != "" {
+					_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+					logOpenAIStickyProbeEscape(account.ID, reason, metrics)
+					return nil
+				}
 			}
 		}
 	}
@@ -1082,7 +1085,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 					} else if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
-					} else if realTTFTState := s.openAIRealTrafficTTFTState(account, time.Now()); !sessionExplicit && s.poolAutoPriorityGloballyEnabled(ctx) && poolAutoPriorityEnabled(account) && realTTFTState.Degraded {
+					} else if realTTFTState := s.openAIRealTrafficTTFTState(account, time.Now()); s.poolAutoPriorityGloballyEnabled(ctx) && poolAutoPriorityEnabled(account) && (realTTFTState.RecentFailure || (!sessionExplicit && realTTFTState.Degraded)) {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 						logOpenAIStickyRealTTFTEscape(account.ID, realTTFTState)
 					} else if reason, metrics := s.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, OpenAIAccountScheduleRequest{
@@ -1647,6 +1650,13 @@ func (s *OpenAIGatewayService) poolAutoPriorityGloballyEnabled(ctx context.Conte
 	return settings.Enabled
 }
 
+// ShouldPreferOpenAIPoolFailover reports whether a failed pool-mode request
+// should move to the next ranked account instead of retrying the same one.
+// An account-level opt-out preserves the configured same-account retry policy.
+func (s *OpenAIGatewayService) ShouldPreferOpenAIPoolFailover(ctx context.Context, account *Account) bool {
+	return s.poolAutoPriorityGloballyEnabled(ctx) && poolAutoPriorityEnabled(account)
+}
+
 func (s *OpenAIGatewayService) openAIProbeAutoPriorityRanks(ctx context.Context, accounts []*Account) (map[int64]int, bool) {
 	if !s.poolAutoPriorityGloballyEnabled(ctx) {
 		return nil, false
@@ -1695,6 +1705,10 @@ func (s *OpenAIGatewayService) openAIEffectiveAutoPriorityRanking(
 		})
 	}
 	for i := range candidates {
+		if candidates[i].state.RecentFailure || (candidates[i].state.Mature && candidates[i].state.Degraded) {
+			candidates[i].probeTier = probeAutoPriorityTierFailed
+			continue
+		}
 		// A fresh production TTFT sample proves that this account can serve the
 		// real request shape. Treat it as a healthy ranking signal even when the
 		// lightweight probe is currently failed or unsupported; otherwise a stale
@@ -1728,7 +1742,7 @@ func (s *OpenAIGatewayService) openAIEffectiveAutoPriorityRanking(
 	usedRealTraffic := false
 	for rank, candidate := range candidates {
 		effectiveRanks[candidate.account.ID] = rank
-		if candidate.state.Mature || candidate.probeRank != rank {
+		if candidate.state.Mature || candidate.state.RecentFailure || candidate.probeRank != rank {
 			usedRealTraffic = true
 		}
 	}

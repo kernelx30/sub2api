@@ -277,6 +277,20 @@ func (s *OpenAIGatewayService) newOpenAIFirstOutputTimeoutError(
 	if s.rateLimitService != nil {
 		s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 	}
+	cooldown := openAIAccountModelTransientDecision{}
+	if s.ShouldPreferOpenAIPoolFailover(ctx, account) {
+		cooldown = s.recordOpenAIFirstOutputTimeout(account, originalModel, time.Now())
+	}
+	if cooldown.Cooldown > 0 {
+		logger.LegacyPrintf(
+			"service.openai_gateway",
+			"OpenAI first output timeout cooldown: account=%d model=%s cooldown=%s block_until=%s",
+			account.ID,
+			canonicalOpenAIAccountSchedulingModel(account, originalModel),
+			cooldown.Cooldown,
+			cooldown.BlockUntil.Format(time.RFC3339Nano),
+		)
+	}
 	return &UpstreamFailoverError{
 		StatusCode:      http.StatusGatewayTimeout,
 		ResponseBody:    []byte(`{"error":{"type":"first_output_timeout","message":"Upstream produced no output before the deadline"}}`),
