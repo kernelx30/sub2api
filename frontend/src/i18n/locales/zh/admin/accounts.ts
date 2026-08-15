@@ -224,6 +224,9 @@ export default {
         notMeasured: '未测速'
       },
       poolRanking: {
+        runtimeTTFT: '实际首字',
+        realTrafficSource: '实际流量排序',
+        probeSource: '探针排序',
         title: '自动池速度排行榜',
         pageDescription: '按账号分组查看缓存探测排名、健康状态、延迟和可用余额',
         backToAccounts: '账户管理',

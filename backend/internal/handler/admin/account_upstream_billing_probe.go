@@ -40,6 +40,11 @@ type poolAutoPriorityRankingItem struct {
 	AvailableBalance    *float64   `json:"available_balance,omitempty"`
 	BalanceUnlimited    bool       `json:"balance_unlimited"`
 	BalanceSource       string     `json:"balance_source,omitempty"`
+	RuntimeTTFTMS       float64    `json:"runtime_ttft_ms"`
+	RuntimeSampleCount  int64      `json:"runtime_sample_count"`
+	RuntimeUpdatedAt    *time.Time `json:"runtime_updated_at,omitempty"`
+	RuntimeMature       bool       `json:"runtime_mature"`
+	RankingSource       string     `json:"ranking_source"`
 }
 
 type poolAutoPriorityRankingResponse struct {
@@ -161,7 +166,7 @@ func (h *AccountHandler) GetPoolAutoPriorityRanking(c *gin.Context) {
 
 	items := make([]poolAutoPriorityRankingItem, 0, len(participating))
 	rankedIDs := make(map[int64]struct{}, len(schedulable))
-	for _, snapshot := range service.BuildPoolAutoPriorityRanking(schedulable, now) {
+	for _, snapshot := range h.buildPoolAutoPriorityRanking(schedulable, now) {
 		account := accountByID[snapshot.AccountID]
 		items = append(items, poolAutoPriorityRankingItemFromSnapshot(account, groupID, snapshot, true))
 		rankedIDs[snapshot.AccountID] = struct{}{}
@@ -170,7 +175,7 @@ func (h *AccountHandler) GetPoolAutoPriorityRanking(c *gin.Context) {
 		if _, ok := rankedIDs[account.ID]; ok {
 			continue
 		}
-		snapshots := service.BuildPoolAutoPriorityRanking([]*service.Account{account}, now)
+		snapshots := h.buildPoolAutoPriorityRanking([]*service.Account{account}, now)
 		if len(snapshots) == 0 {
 			continue
 		}
@@ -202,6 +207,13 @@ func (h *AccountHandler) GetPoolAutoPriorityRanking(c *gin.Context) {
 	})
 }
 
+func (h *AccountHandler) buildPoolAutoPriorityRanking(accounts []*service.Account, now time.Time) []service.PoolAutoPriorityRankingSnapshot {
+	if h != nil && h.openAIGatewayService != nil {
+		return h.openAIGatewayService.BuildPoolAutoPriorityRanking(accounts, now)
+	}
+	return service.BuildPoolAutoPriorityRanking(accounts, now)
+}
+
 func poolAutoPriorityRankingItemFromSnapshot(
 	account *service.Account,
 	groupID int64,
@@ -226,6 +238,11 @@ func poolAutoPriorityRankingItemFromSnapshot(
 		AvailableBalance:    snapshot.AvailableBalance,
 		BalanceUnlimited:    snapshot.BalanceUnlimited,
 		BalanceSource:       snapshot.BalanceSource,
+		RuntimeTTFTMS:       snapshot.RuntimeTTFTMS,
+		RuntimeSampleCount:  snapshot.RuntimeSampleCount,
+		RuntimeUpdatedAt:    snapshot.RuntimeUpdatedAt,
+		RuntimeMature:       snapshot.RuntimeMature,
+		RankingSource:       snapshot.RankingSource,
 	}
 	if ranked {
 		rank := snapshot.Rank

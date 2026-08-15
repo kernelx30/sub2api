@@ -194,6 +194,8 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 
 	agentTaskRecoveryTried := false
 	var resp *http.Response
+	var prepareMS int64
+	var responseHeadersMS int64
 	for {
 		upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 		upstreamReq, buildErr := s.buildUpstreamRequestOpenAIPassthrough(upstreamCtx, c, account, body, token)
@@ -204,7 +206,9 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 
 		upstreamStart := time.Now()
 		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+		responseHeadersMS = time.Since(upstreamStart).Milliseconds()
+		prepareMS = upstreamStart.Sub(startTime).Milliseconds()
+		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, responseHeadersMS)
 		if err != nil {
 			// Transport-level failure (proxy/DNS/TCP/TLS — no HTTP response). Convert to
 			// a failover so the handler switches to a healthy account.
@@ -299,6 +303,18 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		forwardResult.ImageInputSize = imageInputSize
 		forwardResult.ImageOutputSizes = imageOutputSizes
 		forwardResult.BillingModel = imageBillingModel
+	}
+	if firstTokenMs != nil {
+		logOpenAISlowTTFTStages(
+			account,
+			reqModel,
+			forwardResult.RequestID,
+			*firstTokenMs,
+			prepareMS,
+			responseHeadersMS,
+			len(body),
+			true,
+		)
 	}
 	return forwardResult, nil
 }

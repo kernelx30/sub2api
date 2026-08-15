@@ -1138,13 +1138,14 @@ func (s *UpstreamBillingProbeService) probeUpstreamModel(
 		Model:  selectUpstreamHealthProbeModel(account),
 	}
 	useResponses := openai_compat.ShouldUseResponsesAPI(account.Extra)
+	probePrompt := upstreamModelProbePrompt(account.ID, time.Now())
 	var payload []byte
 	if useResponses {
 		result.Endpoint = "responses"
-		payload, _ = json.Marshal(createOpenAITestPayload(result.Model, false))
+		payload, _ = json.Marshal(createOpenAIResponsesModelProbePayload(result.Model, probePrompt))
 	} else {
 		result.Endpoint = "chat_completions"
-		payload, _ = json.Marshal(createOpenAIChatCompletionsTestPayload(result.Model, "hi"))
+		payload, _ = json.Marshal(createOpenAIChatCompletionsTestPayload(result.Model, probePrompt))
 	}
 
 	probeURL := buildOpenAIResponsesURL(normalizedBaseURL)
@@ -1163,6 +1164,8 @@ func (s *UpstreamBillingProbeService) probeUpstreamModel(
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Cache-Control", "no-cache, no-store")
+	req.Header.Set("Pragma", "no-cache")
 	if useResponses {
 		applyOpenAICodexProbeHeaders(req.Header)
 	}
@@ -1202,6 +1205,29 @@ func (s *UpstreamBillingProbeService) probeUpstreamModel(
 	result.Status = UpstreamBillingProbeStatusOK
 	result.LastError = ""
 	return result
+}
+
+func upstreamModelProbePrompt(accountID int64, now time.Time) string {
+	return fmt.Sprintf("Reply with OK only. Probe nonce: %d-%d", accountID, now.UTC().UnixNano())
+}
+
+func createOpenAIResponsesModelProbePayload(model, prompt string) map[string]any {
+	payload := createOpenAITestPayload(model, false)
+	payload["input"] = []map[string]any{
+		{
+			"role": "user",
+			"content": []map[string]any{
+				{
+					"type": "input_text",
+					"text": prompt,
+				},
+			},
+		},
+	}
+	// Real Codex traffic uses store=false. Keeping the probe on the same path
+	// prevents a repeated static health check from measuring an upstream cache.
+	payload["store"] = false
+	return payload
 }
 
 // readUpstreamModelProbeFirstOutput measures the same user-visible boundary as

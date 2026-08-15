@@ -66,6 +66,8 @@ type openAICaptureHandler struct {
 	status                    int
 	rawResponse               string
 	responsesLeadingReasoning bool
+	firstOutputDelay          time.Duration
+	completionDelay           time.Duration
 }
 
 func (h *openAICaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -79,14 +81,59 @@ func (h *openAICaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	if h.status == 0 {
 		h.status = http.StatusOK
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(h.status)
 	if h.rawResponse != "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(h.status)
 		_, _ = w.Write([]byte(h.rawResponse))
 		return
 	}
 
 	answer := answerFromOpenAIRequest(parsed)
+	stream, _ := parsed["stream"].(bool)
+	if stream && h.status >= http.StatusOK && h.status < http.StatusMultipleChoices {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(h.status)
+		flusher, _ := w.(http.Flusher)
+		if h.lastPath == providerOpenAIResponsesPath {
+			_, _ = w.Write([]byte("event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_monitor\"}}\n\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+			if h.firstOutputDelay > 0 {
+				time.Sleep(h.firstOutputDelay)
+			}
+			encodedAnswer, _ := json.Marshal(answer)
+			_, _ = w.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":" + string(encodedAnswer) + "}\n\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+			if h.completionDelay > 0 {
+				time.Sleep(h.completionDelay)
+			}
+			_, _ = w.Write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_monitor\"}}\n\n"))
+			return
+		}
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		if h.firstOutputDelay > 0 {
+			time.Sleep(h.firstOutputDelay)
+		}
+		encodedAnswer, _ := json.Marshal(answer)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":" + string(encodedAnswer) + "},\"finish_reason\":null}]}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		if h.completionDelay > 0 {
+			time.Sleep(h.completionDelay)
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(h.status)
 	if h.lastPath == providerOpenAIResponsesPath {
 		output := []map[string]any{}
 		if h.responsesLeadingReasoning {
@@ -187,8 +234,8 @@ func TestRunCheckForModel_OpenAI_DefaultChatRequest(t *testing.T) {
 	if _, ok := h.lastBody["instructions"]; ok {
 		t.Error("chat body must not contain top-level instructions")
 	}
-	if h.lastBody["stream"] != false {
-		t.Errorf("chat body should set stream=false, got %v", h.lastBody["stream"])
+	if h.lastBody["stream"] != true {
+		t.Errorf("chat body should set stream=true, got %v", h.lastBody["stream"])
 	}
 	if h.lastHeaders.Get("Authorization") != "Bearer sk-openai" {
 		t.Errorf("expected bearer auth header, got %q", h.lastHeaders.Get("Authorization"))
@@ -234,8 +281,8 @@ func TestRunCheckForModel_Grok_DefaultChatRequest(t *testing.T) {
 	if _, ok := h.lastBody["messages"]; !ok {
 		t.Error("Grok body should contain messages")
 	}
-	if h.lastBody["stream"] != false {
-		t.Errorf("Grok body should set stream=false, got %v", h.lastBody["stream"])
+	if h.lastBody["stream"] != true {
+		t.Errorf("Grok body should set stream=true, got %v", h.lastBody["stream"])
 	}
 	if h.lastHeaders.Get("Authorization") != "Bearer xai-key" {
 		t.Errorf("expected Grok bearer auth header, got %q", h.lastHeaders.Get("Authorization"))
@@ -307,11 +354,36 @@ func TestRunCheckForModel_OpenAIResponses_DefaultRequest(t *testing.T) {
 	if _, ok := h.lastBody["messages"]; ok {
 		t.Error("responses body must not contain chat messages")
 	}
-	if h.lastBody["stream"] != false {
-		t.Errorf("responses body should set stream=false, got %v", h.lastBody["stream"])
+	if h.lastBody["stream"] != true {
+		t.Errorf("responses body should set stream=true, got %v", h.lastBody["stream"])
 	}
 	if h.lastHeaders.Get("Authorization") != "Bearer sk-openai" {
 		t.Errorf("expected bearer auth header, got %q", h.lastHeaders.Get("Authorization"))
+	}
+}
+
+func TestRunCheckForModel_OpenAI_RecordsFirstVisibleOutputInsteadOfCompletion(t *testing.T) {
+	h := &openAICaptureHandler{
+		firstOutputDelay: 25 * time.Millisecond,
+		completionDelay:  150 * time.Millisecond,
+	}
+	endpoint := setupFakeOpenAI(t, h)
+
+	startedAt := time.Now()
+	res := runCheckForModel(context.Background(), MonitorProviderOpenAI, endpoint, "sk-openai", "gpt-test", nil)
+	total := time.Since(startedAt)
+
+	if res.Status != MonitorStatusOperational {
+		t.Fatalf("streaming challenge should pass, got status=%s message=%q", res.Status, res.Message)
+	}
+	if res.LatencyMs == nil {
+		t.Fatal("streaming challenge should record first-output latency")
+	}
+	if total < 150*time.Millisecond {
+		t.Fatalf("test server did not delay completion: total=%s", total)
+	}
+	if *res.LatencyMs >= 120 {
+		t.Fatalf("latency should stop at first visible output, got %dms with total=%s", *res.LatencyMs, total)
 	}
 }
 

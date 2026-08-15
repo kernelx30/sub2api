@@ -57,6 +57,10 @@ function rankingEntry(overrides: Partial<PoolAutoPriorityRankingEntry>): PoolAut
     consecutive_failures: 0,
     last_probe_at: '2026-08-14T08:00:00Z',
     balance_unlimited: false,
+    runtime_ttft_ms: 1450,
+    runtime_sample_count: 4,
+    runtime_mature: true,
+    ranking_source: 'real_traffic',
     ...overrides
   }
 }
@@ -146,6 +150,10 @@ describe('PoolAutoPriorityLeaderboard', () => {
     expect(rows[1].text()).toContain('$-0.12')
     expect(rows[1].find('[data-testid="pool-ranking-balance"]').attributes('title')).toBe(
       'admin.accounts.poolRanking.upstreamWalletBalance'
+    )
+    expect(rows[0].find('[data-testid="pool-ranking-runtime-ttft"]').text()).toContain('1450 ms')
+    expect(rows[0].find('[data-testid="pool-ranking-runtime-ttft"]').text()).toContain(
+      'admin.accounts.poolRanking.realTrafficSource'
     )
     expect(rows[2].find('[data-testid="pool-ranking-balance"]').text()).toBe('—')
     expect(wrapper.emitted('updated')?.at(-1)?.[0]).toEqual(entries)

@@ -803,6 +803,14 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 		return nil
 	}
 	if s.poolAutoPriorityGloballyEnabled(ctx) {
+		if poolAutoPriorityEnabled(account) {
+			realTTFTState := s.openAIRealTrafficTTFTState(account, time.Now())
+			if realTTFTState.Degraded {
+				_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+				logOpenAIStickyRealTTFTEscape(account.ID, realTTFTState)
+				return nil
+			}
+		}
 		if accounts, listErr := s.listSchedulableAccounts(ctx, groupID, platform); listErr == nil {
 			reason, metrics := s.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, OpenAIAccountScheduleRequest{
 				GroupID:            groupID,
@@ -1034,6 +1042,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 					} else if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+					} else if realTTFTState := s.openAIRealTrafficTTFTState(account, time.Now()); s.poolAutoPriorityGloballyEnabled(ctx) && poolAutoPriorityEnabled(account) && realTTFTState.Degraded {
+						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						logOpenAIStickyRealTTFTEscape(account.ID, realTTFTState)
 					} else if reason, metrics := s.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, OpenAIAccountScheduleRequest{
 						GroupID:            groupID,
 						Platform:           platform,
@@ -1600,7 +1611,49 @@ func (s *OpenAIGatewayService) openAIProbeAutoPriorityRanks(ctx context.Context,
 	if !s.poolAutoPriorityGloballyEnabled(ctx) {
 		return nil, false
 	}
-	return probeAutoPrioritySelectionRanks(accounts, time.Now())
+	ranks, _, _, ranked := s.openAIEffectiveAutoPriorityRanking(accounts, time.Now())
+	return ranks, ranked
+}
+
+func (s *OpenAIGatewayService) openAIEffectiveAutoPriorityRanking(
+	accounts []*Account,
+	now time.Time,
+) (map[int64]int, map[int64]openAIRealTrafficTTFTState, bool, bool) {
+	probeRanks, ranked := probeAutoPrioritySelectionRanks(accounts, now)
+	if !ranked {
+		return nil, nil, false, false
+	}
+
+	states := make(map[int64]openAIRealTrafficTTFTState, len(accounts))
+	stats := s.getOpenAIAccountRuntimeStats()
+	ordered := make([]*Account, 0, len(accounts))
+	for _, account := range accounts {
+		if account == nil {
+			continue
+		}
+		ordered = append(ordered, account)
+		if poolAutoPriorityEnabled(account) {
+			states[account.ID] = openAIRealTrafficTTFTStateFromStats(stats, account, now)
+		}
+	}
+
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left, right := ordered[i], ordered[j]
+		if comparison := compareOpenAIRealTrafficTTFTStates(states[left.ID], states[right.ID]); comparison != 0 {
+			return comparison > 0
+		}
+		return probeRanks[left.ID] < probeRanks[right.ID]
+	})
+
+	effectiveRanks := make(map[int64]int, len(ordered))
+	usedRealTraffic := false
+	for rank, account := range ordered {
+		effectiveRanks[account.ID] = rank
+		if probeRanks[account.ID] != rank {
+			usedRealTraffic = true
+		}
+	}
+	return effectiveRanks, states, usedRealTraffic, true
 }
 
 func (s *OpenAIGatewayService) openAIStickyProbeEscapeReasonForCandidates(
@@ -1657,7 +1710,22 @@ func (s *OpenAIGatewayService) openAIStickyProbeEscapeReasonForCandidates(
 		candidates = append(candidates, candidate)
 	}
 
-	return accountProbeStickyEscapeReasonWithinPool(account, candidates, time.Now())
+	now := time.Now()
+	reason, metrics := accountProbeStickyEscapeReasonWithinPool(account, candidates, now)
+	if reason != "" {
+		return reason, metrics
+	}
+	ranks, _, usedRealTraffic, ranked := s.openAIEffectiveAutoPriorityRanking(candidates, now)
+	currentRank, currentRanked := ranks[account.ID]
+	if !ranked || !usedRealTraffic || !currentRanked {
+		return "", metrics
+	}
+	for _, candidate := range candidates {
+		if candidate != nil && candidate.ID != account.ID && ranks[candidate.ID] < currentRank {
+			return "real_traffic_ttft", metrics
+		}
+	}
+	return "", metrics
 }
 
 func logOpenAIStickyProbeEscape(accountID int64, reason string, metrics upstreamModelProbeMetrics) {
@@ -1668,6 +1736,15 @@ func logOpenAIStickyProbeEscape(accountID int64, reason string, metrics upstream
 		"success_rate", metrics.SuccessRate,
 		"p50_ms", metrics.P50LatencyMS,
 		"p95_ms", metrics.P95LatencyMS,
+	)
+}
+
+func logOpenAIStickyRealTTFTEscape(accountID int64, state openAIRealTrafficTTFTState) {
+	slog.Info("sticky_real_ttft_escape_triggered",
+		"account_id", accountID,
+		"sample_count", state.SampleCount,
+		"ttft_ms", state.TTFTMS,
+		"threshold_ms", state.ThresholdMS,
 	)
 }
 

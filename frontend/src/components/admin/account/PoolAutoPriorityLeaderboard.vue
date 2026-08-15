@@ -61,7 +61,7 @@
     </div>
 
     <div v-else class="overflow-x-auto border-t border-gray-200 dark:border-dark-700">
-      <table class="w-full min-w-[920px] table-fixed text-left text-xs">
+      <table class="w-full min-w-[1040px] table-fixed text-left text-xs">
         <thead class="bg-white text-gray-500 dark:bg-dark-800 dark:text-dark-400">
           <tr>
             <th class="w-14 px-3 py-2 font-medium">{{ t('admin.accounts.poolRanking.rank') }}</th>
@@ -70,6 +70,7 @@
             <th class="w-24 px-3 py-2 font-medium">P50</th>
             <th class="w-24 px-3 py-2 font-medium">P95</th>
             <th class="w-24 px-3 py-2 font-medium">{{ t('admin.accounts.poolRanking.latest') }}</th>
+            <th class="w-32 px-3 py-2 font-medium">{{ t('admin.accounts.poolRanking.runtimeTTFT') }}</th>
             <th class="w-28 px-3 py-2 font-medium">{{ t('admin.accounts.poolRanking.successRate') }}</th>
             <th class="w-32 px-3 py-2 font-medium">{{ t('admin.accounts.poolRanking.balance') }}</th>
             <th class="w-28 px-3 py-2 font-medium">{{ t('admin.accounts.poolRanking.lastProbe') }}</th>
@@ -77,12 +78,12 @@
         </thead>
         <tbody class="divide-y divide-gray-100 bg-white dark:divide-dark-700 dark:bg-dark-800/60">
           <tr v-if="loading && entries.length === 0">
-            <td colspan="9" class="px-3 py-8 text-center text-gray-400 dark:text-dark-500">
+            <td colspan="10" class="px-3 py-8 text-center text-gray-400 dark:text-dark-500">
               {{ t('common.loading') }}
             </td>
           </tr>
           <tr v-else-if="entries.length === 0">
-            <td colspan="9" class="px-3 py-8 text-center text-gray-400 dark:text-dark-500">
+            <td colspan="10" class="px-3 py-8 text-center text-gray-400 dark:text-dark-500">
               {{ t('admin.accounts.poolRanking.empty') }}
             </td>
           </tr>
@@ -123,6 +124,12 @@
               <td class="px-3 py-2.5 font-mono">{{ formatLatency(entry.p50_latency_ms) }}</td>
               <td class="px-3 py-2.5 font-mono">{{ formatLatency(entry.p95_latency_ms) }}</td>
               <td class="px-3 py-2.5 font-mono">{{ formatLatency(entry.latest_latency_ms) }}</td>
+              <td class="px-3 py-2.5" data-testid="pool-ranking-runtime-ttft">
+                <div class="font-mono">{{ formatLatency(entry.runtime_ttft_ms) }}</div>
+                <div class="mt-0.5 text-[10px] text-gray-400 dark:text-dark-500">
+                  {{ rankingSourceLabel(entry) }}<span v-if="entry.runtime_sample_count > 0"> / {{ entry.runtime_sample_count }}</span>
+                </div>
+              </td>
               <td class="px-3 py-2.5 font-mono">{{ formatSuccess(entry) }}</td>
               <td class="px-3 py-2.5 font-mono" :title="balanceTitle(entry)" data-testid="pool-ranking-balance">
                 {{ formatBalance(entry) }}
@@ -226,6 +233,12 @@ function formatLatency(value: number): string {
 function formatSuccess(entry: PoolAutoPriorityRankingEntry): string {
   if (entry.sample_count <= 0) return '—'
   return `${Math.round(entry.success_rate * 100)}% · ${entry.sample_count}`
+}
+
+function rankingSourceLabel(entry: PoolAutoPriorityRankingEntry): string {
+  return entry.ranking_source === 'real_traffic'
+    ? t('admin.accounts.poolRanking.realTrafficSource')
+    : t('admin.accounts.poolRanking.probeSource')
 }
 
 function formatBalance(entry: PoolAutoPriorityRankingEntry): string {

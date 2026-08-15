@@ -1126,6 +1126,11 @@ export interface PoolAutoPriorityRankingEntry {
   available_balance?: number
   balance_unlimited: boolean
   balance_source?: 'upstream_api_key_quota' | 'upstream_wallet' | 'upstream_subscription' | 'local_account_quota'
+  runtime_ttft_ms: number
+  runtime_sample_count: number
+  runtime_updated_at?: string
+  runtime_mature: boolean
+  ranking_source: 'probe' | 'real_traffic'
 }
 
 export interface PoolAutoPriorityRankingResponse {

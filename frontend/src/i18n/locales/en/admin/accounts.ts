@@ -278,6 +278,9 @@ export default {
         notMeasured: 'Not measured'
       },
       poolRanking: {
+        runtimeTTFT: 'Actual TTFT',
+        realTrafficSource: 'Real traffic order',
+        probeSource: 'Probe order',
         title: 'Automatic Pool Speed Ranking',
         pageDescription: 'Cached probe ranking, health, latency, and available balance by account group',
         backToAccounts: 'Account Management',

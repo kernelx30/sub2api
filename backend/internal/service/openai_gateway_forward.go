@@ -843,7 +843,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		// Send request
 		upstreamStart := time.Now()
 		resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+		responseHeadersMS := time.Since(upstreamStart).Milliseconds()
+		prepareMS := upstreamStart.Sub(startTime).Milliseconds()
+		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, responseHeadersMS)
 		if headerGuard != nil && headerGuard.stopHeaderWait() {
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
@@ -1023,6 +1025,18 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		// when search_price_per_1k is configured (nil price → $0 from CalculateSearchCost).
 		if searchCount > 0 && account != nil && account.IsGrok() {
 			forwardResult.SearchCount = searchCount
+		}
+		if firstTokenMs != nil {
+			logOpenAISlowTTFTStages(
+				account,
+				upstreamModel,
+				forwardResult.RequestID,
+				*firstTokenMs,
+				prepareMS,
+				responseHeadersMS,
+				len(body),
+				false,
+			)
 		}
 		return forwardResult, nil
 	}

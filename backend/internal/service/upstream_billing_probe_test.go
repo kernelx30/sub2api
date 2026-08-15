@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -170,6 +171,9 @@ type upstreamBillingProbeHTTPStub struct {
 	billingCalls   atomic.Int64
 	balanceCalls   atomic.Int64
 	modelCalls     atomic.Int64
+	modelMu        sync.Mutex
+	modelBody      []byte
+	modelHeaders   http.Header
 	active         atomic.Int64
 	maxActive      atomic.Int64
 	beforeResponse func()
@@ -178,6 +182,11 @@ type upstreamBillingProbeHTTPStub struct {
 func (u *upstreamBillingProbeHTTPStub) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
 	if req != nil && req.URL != nil && strings.HasSuffix(req.URL.Path, "/responses") {
 		u.modelCalls.Add(1)
+		body, _ := io.ReadAll(req.Body)
+		u.modelMu.Lock()
+		u.modelBody = append(u.modelBody[:0], body...)
+		u.modelHeaders = req.Header.Clone()
+		u.modelMu.Unlock()
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -1746,6 +1755,48 @@ func TestProbePoolModeRecordsModelHealthAndLatency(t *testing.T) {
 	require.Greater(t, snapshot.ModelProbeLatencyMS, int64(0))
 	require.Equal(t, int64(1), upstream.modelCalls.Load())
 	require.Equal(t, int64(1), upstream.calls.Load())
+
+	upstream.modelMu.Lock()
+	modelBody := append([]byte(nil), upstream.modelBody...)
+	modelHeaders := upstream.modelHeaders.Clone()
+	upstream.modelMu.Unlock()
+	require.Equal(t, "no-cache, no-store", modelHeaders.Get("Cache-Control"))
+	require.Equal(t, "no-cache", modelHeaders.Get("Pragma"))
+	var requestBody map[string]any
+	require.NoError(t, json.Unmarshal(modelBody, &requestBody))
+	require.Equal(t, false, requestBody["store"])
+	require.Equal(t, true, requestBody["stream"])
+	input, ok := requestBody["input"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, input)
+	message, ok := input[0].(map[string]any)
+	require.True(t, ok)
+	content, ok := message["content"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, content)
+	part, ok := content[0].(map[string]any)
+	require.True(t, ok)
+	probeText, _ := part["text"].(string)
+	require.Contains(t, probeText, "Probe nonce: 73-")
+	require.NotEqual(t, "hi", probeText)
+}
+
+func TestCreateOpenAIResponsesModelProbePayloadUsesUniqueRealTrafficShape(t *testing.T) {
+	firstPrompt := upstreamModelProbePrompt(7, time.Unix(100, 1))
+	secondPrompt := upstreamModelProbePrompt(7, time.Unix(100, 2))
+	require.NotEqual(t, firstPrompt, secondPrompt)
+
+	payload := createOpenAIResponsesModelProbePayload("gpt-5.6-sol", firstPrompt)
+	require.Equal(t, "gpt-5.6-sol", payload["model"])
+	require.Equal(t, true, payload["stream"])
+	require.Equal(t, false, payload["store"])
+	input, ok := payload["input"].([]map[string]any)
+	require.True(t, ok)
+	require.Len(t, input, 1)
+	content, ok := input[0]["content"].([]map[string]any)
+	require.True(t, ok)
+	require.Len(t, content, 1)
+	require.Equal(t, firstPrompt, content[0]["text"])
 }
 
 func TestReadUpstreamModelProbeFirstOutputResponsesIgnoresPreamble(t *testing.T) {

@@ -14,6 +14,8 @@ const (
 	PoolAutoPriorityBalanceSourceUpstream             = "upstream_api_key_quota"
 	PoolAutoPriorityBalanceSourceUpstreamWallet       = "upstream_wallet"
 	PoolAutoPriorityBalanceSourceUpstreamSubscription = "upstream_subscription"
+	PoolAutoPriorityRankingSourceProbe                = "probe"
+	PoolAutoPriorityRankingSourceRealTraffic          = "real_traffic"
 )
 
 // PoolAutoPriorityRankingSnapshot is a read-only projection of the same probe
@@ -36,6 +38,11 @@ type PoolAutoPriorityRankingSnapshot struct {
 	AvailableBalance    *float64   `json:"available_balance,omitempty"`
 	BalanceUnlimited    bool       `json:"balance_unlimited"`
 	BalanceSource       string     `json:"balance_source,omitempty"`
+	RuntimeTTFTMS       float64    `json:"runtime_ttft_ms"`
+	RuntimeSampleCount  int64      `json:"runtime_sample_count"`
+	RuntimeUpdatedAt    *time.Time `json:"runtime_updated_at,omitempty"`
+	RuntimeMature       bool       `json:"runtime_mature"`
+	RankingSource       string     `json:"ranking_source"`
 }
 
 // IsPoolAutoPriorityEnabled reports the account-level opt-in exactly as the
@@ -82,6 +89,43 @@ func BuildPoolAutoPriorityRanking(accounts []*Account, now time.Time) []PoolAuto
 	return result
 }
 
+// BuildPoolAutoPriorityRanking returns the exact effective order consumed by
+// OpenAI scheduling, including mature production TTFT feedback.
+func (s *OpenAIGatewayService) BuildPoolAutoPriorityRanking(accounts []*Account, now time.Time) []PoolAutoPriorityRankingSnapshot {
+	result := BuildPoolAutoPriorityRanking(accounts, now)
+	if len(result) == 0 || s == nil {
+		return result
+	}
+
+	ranks, states, usedRealTraffic, ranked := s.openAIEffectiveAutoPriorityRanking(accounts, now)
+	rankingSource := PoolAutoPriorityRankingSourceProbe
+	if usedRealTraffic {
+		rankingSource = PoolAutoPriorityRankingSourceRealTraffic
+	}
+	for i := range result {
+		state := states[result[i].AccountID]
+		result[i].RuntimeTTFTMS = state.TTFTMS
+		result[i].RuntimeSampleCount = state.SampleCount
+		result[i].RuntimeMature = state.Mature
+		result[i].RankingSource = rankingSource
+		if !state.UpdatedAt.IsZero() {
+			updatedAt := state.UpdatedAt.UTC()
+			result[i].RuntimeUpdatedAt = &updatedAt
+		}
+	}
+	if !ranked {
+		return result
+	}
+
+	sort.SliceStable(result, func(i, j int) bool {
+		return ranks[result[i].AccountID] < ranks[result[j].AccountID]
+	})
+	for i := range result {
+		result[i].Rank = i + 1
+	}
+	return result
+}
+
 func buildPoolAutoPriorityRankingSnapshot(account *Account, cohortRank int, now time.Time) PoolAutoPriorityRankingSnapshot {
 	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
 	metrics := upstreamModelProbeWindowMetrics(snapshot, now)
@@ -95,6 +139,7 @@ func buildPoolAutoPriorityRankingSnapshot(account *Account, cohortRank int, now 
 		P50LatencyMS:        metrics.P50LatencyMS,
 		P95LatencyMS:        metrics.P95LatencyMS,
 		ConsecutiveFailures: metrics.ConsecutiveFailures,
+		RankingSource:       PoolAutoPriorityRankingSourceProbe,
 	}
 	item.AvailableBalance, item.BalanceUnlimited, item.BalanceSource = poolAutoPriorityAvailableBalance(account, snapshot, now)
 

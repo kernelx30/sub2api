@@ -188,6 +188,16 @@ type openAIAccountRuntimeStat struct {
 	ttftUpdatedAt     atomic.Int64
 }
 
+const (
+	openAIRealTrafficTTFTMinSamples       = int64(3)
+	openAIRealTrafficTTFTFreshTTL         = 10 * time.Minute
+	openAIRealTrafficTTFTDegradedFloorMS  = 12000.0
+	openAIRealTrafficTTFTProbeMultiplier  = 2.0
+	openAIRealTrafficTTFTMaxThresholdMS   = 30000.0
+	openAIRealTrafficTTFTCohortSlackRatio = 0.20
+	openAIRealTrafficTTFTCohortMinSlackMS = 1000.0
+)
+
 func newOpenAIAccountRuntimeStats() *openAIAccountRuntimeStats {
 	return &openAIAccountRuntimeStats{}
 }
@@ -514,6 +524,14 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		return nil, false, nil
 	}
 	if s.service.poolAutoPriorityGloballyEnabled(ctx) {
+		if poolAutoPriorityEnabled(account) {
+			realTTFTState := s.realTrafficTTFTState(account, time.Now())
+			if realTTFTState.Degraded {
+				_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+				logOpenAIStickyRealTTFTEscape(accountID, realTTFTState)
+				return nil, false, nil
+			}
+		}
 		if accounts, listErr := s.service.listSchedulableAccounts(ctx, req.GroupID, req.Platform); listErr == nil {
 			reason, metrics := s.service.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, req, func(candidate *Account) bool {
 				return s.isAccountRequestCompatible(ctx, candidate, req) && s.isAccountTransportCompatible(candidate, req.RequiredTransport)
@@ -545,17 +563,14 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		return nil, false, nil
 	}
 	escapeCfg := s.service.openAIStickyEscapeConfig()
-	probeRankingOwnsOrder := s.service.poolAutoPriorityGloballyEnabled(ctx) && poolAutoPriorityEnabled(account)
-	if !probeRankingOwnsOrder {
-		if reason, errorRate, ttft, shouldEscape := s.shouldEscapeStickyAccount(accountID, escapeCfg); shouldEscape {
-			slog.Info("sticky_escape_triggered",
-				"account_id", accountID,
-				"reason", reason,
-				"error_rate", errorRate,
-				"ttft", ttft,
-			)
-			return nil, true, nil
-		}
+	if reason, errorRate, ttft, shouldEscape := s.shouldEscapeStickyAccount(accountID, escapeCfg); shouldEscape {
+		slog.Info("sticky_escape_triggered",
+			"account_id", accountID,
+			"reason", reason,
+			"error_rate", errorRate,
+			"ttft", ttft,
+		)
+		return nil, true, nil
 	}
 	result, acquireErr := s.service.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 	if acquireErr == nil && result != nil && result.Acquired {
@@ -632,6 +647,83 @@ func (s *defaultOpenAIAccountScheduler) shouldEscapeStickyAccount(accountID int6
 		return "error_rate", errorRate, ttft, true
 	}
 	return "", errorRate, ttft, false
+}
+
+type openAIRealTrafficTTFTState struct {
+	TTFTMS      float64
+	ThresholdMS float64
+	SampleCount int64
+	UpdatedAt   time.Time
+	Mature      bool
+	Degraded    bool
+}
+
+func (s *defaultOpenAIAccountScheduler) realTrafficTTFTState(account *Account, now time.Time) openAIRealTrafficTTFTState {
+	if s == nil {
+		return openAIRealTrafficTTFTState{}
+	}
+	return openAIRealTrafficTTFTStateFromStats(s.stats, account, now)
+}
+
+func openAIRealTrafficTTFTStateFromStats(stats *openAIAccountRuntimeStats, account *Account, now time.Time) openAIRealTrafficTTFTState {
+	state := openAIRealTrafficTTFTState{}
+	if stats == nil || account == nil {
+		return state
+	}
+	var hasTTFT bool
+	_, state.TTFTMS, hasTTFT, state.SampleCount, state.UpdatedAt = stats.snapshotWithMeta(account.ID)
+	if !hasTTFT || state.SampleCount < openAIRealTrafficTTFTMinSamples || state.UpdatedAt.IsZero() {
+		return state
+	}
+	if now.Sub(state.UpdatedAt) > openAIRealTrafficTTFTFreshTTL {
+		return state
+	}
+	state.Mature = true
+	state.ThresholdMS = openAIRealTrafficTTFTDegradedThreshold(account, now)
+	state.Degraded = state.TTFTMS > state.ThresholdMS
+	return state
+}
+
+func openAIRealTrafficTTFTDegradedThreshold(account *Account, now time.Time) float64 {
+	threshold := openAIRealTrafficTTFTDegradedFloorMS
+	if info, signal := accountProbeAutoPriority(account, now); signal {
+		baselineMS := info.p95LatencyMS
+		if baselineMS <= 0 {
+			baselineMS = info.p50LatencyMS
+		}
+		if baselineMS <= 0 {
+			baselineMS = info.latencyMS
+		}
+		if probeThreshold := float64(baselineMS) * openAIRealTrafficTTFTProbeMultiplier; probeThreshold > threshold {
+			threshold = probeThreshold
+		}
+	}
+	if threshold > openAIRealTrafficTTFTMaxThresholdMS {
+		threshold = openAIRealTrafficTTFTMaxThresholdMS
+	}
+	return threshold
+}
+
+func compareOpenAIRealTrafficTTFTStates(left openAIRealTrafficTTFTState, right openAIRealTrafficTTFTState) int {
+	if left.Degraded != right.Degraded {
+		if left.Degraded {
+			return -1
+		}
+		return 1
+	}
+	if !left.Mature || !right.Mature || left.TTFTMS <= 0 || right.TTFTMS <= 0 {
+		return 0
+	}
+	best := math.Min(left.TTFTMS, right.TTFTMS)
+	slack := math.Max(openAIRealTrafficTTFTCohortMinSlackMS, best*openAIRealTrafficTTFTCohortSlackRatio)
+	switch {
+	case left.TTFTMS+slack < right.TTFTMS:
+		return 1
+	case right.TTFTMS+slack < left.TTFTMS:
+		return -1
+	default:
+		return 0
+	}
 }
 
 type openAIAccountCandidateScore struct {
@@ -2116,6 +2208,10 @@ func (s *OpenAIGatewayService) getOpenAIAccountRuntimeStats() *openAIAccountRunt
 		}
 	})
 	return s.openaiAccountStats
+}
+
+func (s *OpenAIGatewayService) openAIRealTrafficTTFTState(account *Account, now time.Time) openAIRealTrafficTTFTState {
+	return openAIRealTrafficTTFTStateFromStats(s.getOpenAIAccountRuntimeStats(), account, now)
 }
 
 func resetOpenAIAdvancedSchedulerSettingCacheForTest() {
