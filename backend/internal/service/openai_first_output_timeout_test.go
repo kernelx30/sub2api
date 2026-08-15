@@ -101,10 +101,11 @@ func TestOpenAIFirstOutputTimeoutImmediatelyBlocksAutoPriorityPoolAccount(t *tes
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 
-	svc.newOpenAIFirstOutputTimeoutError(
+	failoverErr := svc.newOpenAIFirstOutputTimeoutError(
 		context.Background(), c, account, time.Now(), "gpt-5.5", "low", time.Second, "response_headers", http.Header{},
 	)
 
+	require.NotNil(t, failoverErr)
 	require.True(t, svc.isOpenAIAccountModelRuntimeBlocked(account, "gpt-5.5"))
 	require.False(t, svc.isOpenAIAccountModelRuntimeBlocked(account, "gpt-5.6-sol"))
 }
@@ -121,10 +122,11 @@ func TestOpenAIFirstOutputTimeoutDoesNotImmediatelyBlockNonPoolAccount(t *testin
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 
-	svc.newOpenAIFirstOutputTimeoutError(
+	failoverErr := svc.newOpenAIFirstOutputTimeoutError(
 		context.Background(), c, account, time.Now(), "gpt-5.5", "low", time.Second, "response_headers", http.Header{},
 	)
 
+	require.NotNil(t, failoverErr)
 	require.False(t, svc.isOpenAIAccountModelRuntimeBlocked(account, "gpt-5.5"))
 }
 
