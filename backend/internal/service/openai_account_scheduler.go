@@ -189,13 +189,11 @@ type openAIAccountRuntimeStat struct {
 }
 
 const (
-	openAIRealTrafficTTFTMinSamples       = int64(3)
-	openAIRealTrafficTTFTFreshTTL         = 10 * time.Minute
-	openAIRealTrafficTTFTDegradedFloorMS  = 12000.0
-	openAIRealTrafficTTFTProbeMultiplier  = 2.0
-	openAIRealTrafficTTFTMaxThresholdMS   = 30000.0
-	openAIRealTrafficTTFTCohortSlackRatio = 0.20
-	openAIRealTrafficTTFTCohortMinSlackMS = 1000.0
+	openAIRealTrafficTTFTMinSamples      = int64(3)
+	openAIRealTrafficTTFTFreshTTL        = 10 * time.Minute
+	openAIRealTrafficTTFTDegradedFloorMS = 12000.0
+	openAIRealTrafficTTFTProbeMultiplier = 2.0
+	openAIRealTrafficTTFTMaxThresholdMS  = 30000.0
 )
 
 func newOpenAIAccountRuntimeStats() *openAIAccountRuntimeStats {
@@ -721,31 +719,6 @@ func openAIRealTrafficTTFTDegradedThreshold(account *Account, now time.Time) flo
 	return threshold
 }
 
-func compareOpenAIEffectiveTTFTStates(left openAIRealTrafficTTFTState, right openAIRealTrafficTTFTState) int {
-	if left.Degraded != right.Degraded {
-		if left.Degraded {
-			return -1
-		}
-		return 1
-	}
-	if !left.Mature && !right.Mature {
-		return 0
-	}
-	if left.rankingTTFTMS <= 0 || right.rankingTTFTMS <= 0 {
-		return 0
-	}
-	best := math.Min(left.rankingTTFTMS, right.rankingTTFTMS)
-	slack := math.Max(openAIRealTrafficTTFTCohortMinSlackMS, best*openAIRealTrafficTTFTCohortSlackRatio)
-	switch {
-	case left.rankingTTFTMS+slack < right.rankingTTFTMS:
-		return 1
-	case right.rankingTTFTMS+slack < left.rankingTTFTMS:
-		return -1
-	default:
-		return 0
-	}
-}
-
 type openAIAccountCandidateScore struct {
 	account     *Account
 	loadInfo    *AccountLoadInfo
@@ -1172,7 +1145,12 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		}
 		ranked := selectTopKOpenAICandidates(pool, groupTopK)
 		var primary []openAIAccountCandidateScore
-		if req.StickyWeighted {
+		if len(ranked) > 0 && ranked[0].probeRanked {
+			// Auto-priority is an ordered failover policy: try the displayed winner
+			// first and only fall through when it cannot acquire a slot. Weighted
+			// selection inside TopK made runtime routing diverge from the leaderboard.
+			primary = ranked
+		} else if req.StickyWeighted {
 			for _, stickyID := range []int64{req.StickyPreviousAccountID, req.StickyAccountID} {
 				if stickyID <= 0 {
 					continue

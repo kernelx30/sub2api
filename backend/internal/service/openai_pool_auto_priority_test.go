@@ -145,6 +145,50 @@ func TestOpenAIGatewayLoadAwareSelectionComparesRuntimeTTFTWithProbeFallback(t *
 	selection.ReleaseFunc()
 }
 
+func TestOpenAIEffectiveRankingUsesHealthyRuntimeOrderAndKeepsFailedProbesLast(t *testing.T) {
+	xiao := openAIPoolProbeTestAccount(37, 0, UpstreamBillingProbeStatusOK, 2129)
+	shark := openAIPoolProbeTestAccount(38, 0, UpstreamBillingProbeStatusOK, 2188)
+	fish := openAIPoolProbeTestAccount(42, 0, UpstreamBillingProbeStatusOK, 3244)
+	seven := openAIPoolProbeTestAccount(45, 0, UpstreamBillingProbeStatusOK, 2303)
+	hero := openAIPoolProbeTestAccount(47, 0, UpstreamBillingProbeStatusFailed, 9107)
+	accounts := []Account{xiao, shark, fish, seven, hero}
+
+	stats := newOpenAIAccountRuntimeStats()
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		stats.report(xiao.ID, true, intPtrForTest(13615))
+		stats.report(shark.ID, true, intPtrForTest(15839))
+		stats.report(fish.ID, true, intPtrForTest(6700))
+		stats.report(seven.ID, true, intPtrForTest(16486))
+	}
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
+	ranking := svc.BuildPoolAutoPriorityRanking(
+		[]*Account{&accounts[4], &accounts[1], &accounts[3], &accounts[0], &accounts[2]},
+		time.Now(),
+	)
+	require.Len(t, ranking, 5)
+	require.Equal(t, []int64{fish.ID, xiao.ID, shark.ID, seven.ID, hero.ID}, []int64{
+		ranking[0].AccountID,
+		ranking[1].AccountID,
+		ranking[2].AccountID,
+		ranking[3].AccountID,
+		ranking[4].AccountID,
+	})
+	require.Equal(t, PoolAutoPriorityRankingSourceRealTraffic, ranking[0].RankingSource)
+	require.True(t, ranking[0].RuntimeMature)
+
+	scheduler := &defaultOpenAIAccountScheduler{service: svc, stats: stats}
+	plan := scheduler.buildOpenAIAccountLoadPlan(
+		context.Background(),
+		OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.6-sol"},
+		[]*Account{&accounts[4], &accounts[1], &accounts[3], &accounts[0], &accounts[2]},
+		map[int64]*AccountLoadInfo{},
+	)
+	require.Len(t, plan.selectionOrder, 5)
+	require.Equal(t, fish.ID, plan.selectionOrder[0].account.ID)
+	require.Equal(t, hero.ID, plan.selectionOrder[4].account.ID)
+}
+
 func TestOpenAIGatewayLoadAwareSelectionMatchesDisplayedRankInsideProbeCohort(t *testing.T) {
 	displayedFirst := openAIPoolProbeTestAccount(7171, 0, UpstreamBillingProbeStatusOK, 1000)
 	displayedSecond := openAIPoolProbeTestAccount(7172, 0, UpstreamBillingProbeStatusOK, 1050)

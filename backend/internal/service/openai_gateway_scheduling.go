@@ -1624,32 +1624,62 @@ func (s *OpenAIGatewayService) openAIEffectiveAutoPriorityRanking(
 		return nil, nil, false, false
 	}
 
+	type effectiveCandidate struct {
+		account   *Account
+		probeRank int
+		probeTier int
+		state     openAIRealTrafficTTFTState
+	}
+
 	states := make(map[int64]openAIRealTrafficTTFTState, len(accounts))
 	stats := s.getOpenAIAccountRuntimeStats()
-	ordered := make([]*Account, 0, len(accounts))
+	candidates := make([]effectiveCandidate, 0, len(accounts))
 	for _, account := range accounts {
 		if account == nil {
 			continue
 		}
-		ordered = append(ordered, account)
+		state := openAIRealTrafficTTFTState{}
 		if poolAutoPriorityEnabled(account) {
-			states[account.ID] = openAIRealTrafficTTFTStateFromStats(stats, account, now)
+			state = openAIRealTrafficTTFTStateFromStats(stats, account, now)
 		}
+		states[account.ID] = state
+		probeTier := probeAutoPriorityTierUnsupported + 1
+		if info, signal := accountProbeAutoPriority(account, now); signal {
+			probeTier = info.tier
+		}
+		candidates = append(candidates, effectiveCandidate{
+			account:   account,
+			probeRank: probeRanks[account.ID],
+			probeTier: probeTier,
+			state:     state,
+		})
 	}
 
-	sort.SliceStable(ordered, func(i, j int) bool {
-		left, right := ordered[i], ordered[j]
-		if comparison := compareOpenAIEffectiveTTFTStates(states[left.ID], states[right.ID]); comparison != 0 {
-			return comparison > 0
+	// Keep the comparator a strict total order. A pairwise latency tolerance is
+	// non-transitive and previously let failed or unmeasured accounts split the
+	// healthy runtime order. Probe health wins first, then the effective TTFT
+	// (mature production EWMA or the fresh probe fallback), then probe order.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		left, right := candidates[i], candidates[j]
+		if left.probeTier != right.probeTier {
+			return left.probeTier < right.probeTier
 		}
-		return probeRanks[left.ID] < probeRanks[right.ID]
+		leftHasTTFT := left.state.rankingTTFTMS > 0
+		rightHasTTFT := right.state.rankingTTFTMS > 0
+		if leftHasTTFT != rightHasTTFT {
+			return leftHasTTFT
+		}
+		if leftHasTTFT && left.state.rankingTTFTMS != right.state.rankingTTFTMS {
+			return left.state.rankingTTFTMS < right.state.rankingTTFTMS
+		}
+		return left.probeRank < right.probeRank
 	})
 
-	effectiveRanks := make(map[int64]int, len(ordered))
+	effectiveRanks := make(map[int64]int, len(candidates))
 	usedRealTraffic := false
-	for rank, account := range ordered {
-		effectiveRanks[account.ID] = rank
-		if probeRanks[account.ID] != rank {
+	for rank, candidate := range candidates {
+		effectiveRanks[candidate.account.ID] = rank
+		if candidate.probeRank != rank {
 			usedRealTraffic = true
 		}
 	}
