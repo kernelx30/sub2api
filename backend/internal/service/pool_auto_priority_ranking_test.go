@@ -78,6 +78,23 @@ func TestBuildPoolAutoPriorityRankingUsesManualPriorityInsideLatencySlack(t *tes
 	require.Equal(t, int64(20), got[1].AccountID)
 }
 
+func TestProbeAutoPrioritySelectionRanksMatchDisplayedRanking(t *testing.T) {
+	now := time.Date(2026, time.August, 14, 10, 0, 0, 0, time.UTC)
+	fastLowerManualPriority := poolRankingTestAccount(30, 10, UpstreamBillingProbeStatusOK, []int64{1000, 1050, 1100}, now)
+	fastHigherManualPriority := poolRankingTestAccount(20, 0, UpstreamBillingProbeStatusOK, []int64{1030, 1080, 1130}, now)
+	slow := poolRankingTestAccount(10, -10, UpstreamBillingProbeStatusOK, []int64{2800, 3000, 3200}, now)
+	accounts := []*Account{slow, fastLowerManualPriority, fastHigherManualPriority}
+
+	displayed := BuildPoolAutoPriorityRanking(accounts, now)
+	selectionRanks, ranked := probeAutoPrioritySelectionRanks(accounts, now)
+
+	require.True(t, ranked)
+	require.Len(t, displayed, len(accounts))
+	for i, item := range displayed {
+		require.Equal(t, i, selectionRanks[item.AccountID])
+	}
+}
+
 func TestBuildPoolAutoPriorityRankingResolvesUpstreamAndLocalBalances(t *testing.T) {
 	now := time.Date(2026, time.August, 14, 10, 0, 0, 0, time.UTC)
 	upstream := poolRankingTestAccount(10, 0, UpstreamBillingProbeStatusOK, []int64{1000, 1000, 1000}, now)
