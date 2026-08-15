@@ -577,7 +577,7 @@ func readMonitorOpenAIStream(body io.Reader, responsesMode bool) ([]byte, string
 			firstOutputAt = time.Now()
 		}
 		if part := monitorOpenAIStreamText(data, eventType, responsesMode); part != "" {
-			text.WriteString(part)
+			_, _ = text.WriteString(part)
 		}
 		eventType = ""
 		dataLines = dataLines[:0]
@@ -588,8 +588,8 @@ func readMonitorOpenAIStream(body io.Reader, responsesMode bool) ([]byte, string
 		if raw.Len()+len(line)+1 > monitorResponseMaxBytes {
 			return raw.Bytes(), text.String(), firstOutputAt, errors.New("read stream: response too large")
 		}
-		raw.WriteString(line)
-		raw.WriteByte('\n')
+		_, _ = raw.WriteString(line)
+		_ = raw.WriteByte('\n')
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			dispatch()
