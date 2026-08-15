@@ -42,6 +42,7 @@ const (
 	upstreamBillingProbeMaxIntervalMinutes     = 24 * 60
 	upstreamBillingProbeCycleInterval          = time.Minute
 	upstreamBillingProbeRequestTimeout         = 10 * time.Second
+	upstreamBalanceProbeRequestTimeout         = 10 * time.Second
 	upstreamBillingProbeMaxBodyBytes           = 64 * 1024
 	upstreamBillingProbeMaxPerCycle            = 20
 	upstreamBillingProbeConcurrency            = 4
@@ -102,6 +103,15 @@ const (
 	UpstreamBillingProbeStatusOK          = "ok"
 	UpstreamBillingProbeStatusUnsupported = "unsupported"
 	UpstreamBillingProbeStatusFailed      = "failed"
+
+	UpstreamBalanceSourceAPIKeyQuota  = "api_key_quota"
+	UpstreamBalanceSourceWallet       = "wallet_balance"
+	UpstreamBalanceSourceSubscription = "subscription_quota"
+)
+
+const (
+	upstreamBalanceObservedAtKey = "available_balance_observed_at"
+	upstreamBalanceFreshUntilKey = "available_balance_fresh_until"
 )
 
 // UpstreamBillingProbeSettings controls the periodic probe runner.
@@ -192,6 +202,26 @@ type upstreamBillingProbeResponse struct {
 	EffectiveRateMultiplier   *float64 `json:"effective_rate_multiplier"`
 	Timezone                  *string  `json:"timezone"`
 	ObservedAt                string   `json:"observed_at"`
+}
+
+type upstreamUsageBalanceResponse struct {
+	Mode      string   `json:"mode"`
+	IsValid   *bool    `json:"isValid"`
+	Remaining *float64 `json:"remaining"`
+	Balance   *float64 `json:"balance"`
+	Unit      string   `json:"unit"`
+	Quota     *struct {
+		Remaining *float64 `json:"remaining"`
+		Unit      string   `json:"unit"`
+	} `json:"quota"`
+	Subscription json.RawMessage `json:"subscription"`
+}
+
+type upstreamAvailableBalanceProbeResult struct {
+	AvailableBalance *float64
+	Unlimited        bool
+	Source           string
+	ObservedAt       time.Time
 }
 
 // GetUpstreamBillingProbeSettings returns defaults when the setting is absent.
@@ -833,6 +863,13 @@ func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, ac
 	if s.accountTestService.tlsFPProfileService != nil {
 		tlsProfile = s.accountTestService.tlsFPProfileService.ResolveTLSProfile(account)
 	}
+	profile := HTTPUpstreamProfileDefault
+	if account.Platform == PlatformOpenAI {
+		profile = HTTPUpstreamProfileOpenAI
+	}
+	probeAvailableBalance := func() *upstreamAvailableBalanceProbeResult {
+		return s.probeUpstreamAvailableBalance(ctx, now, account, normalizedBaseURL, apiKey, proxyURL, tlsProfile, profile)
+	}
 
 	// Pool-mode routing needs real model reachability. Ordinary channel-status
 	// probes keep the original billing-only behavior to avoid unnecessary spend.
@@ -841,7 +878,7 @@ func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, ac
 		modelProbe = s.probeUpstreamModel(ctx, account, normalizedBaseURL, apiKey, proxyURL, tlsProfile)
 	}
 	if !includeBilling {
-		return s.persistModelOnlyProbe(ctx, account, intervalMinutes, now, modelProbe)
+		return s.persistModelOnlyProbe(ctx, account, intervalMinutes, now, modelProbe, probeAvailableBalance())
 	}
 
 	probeURL := buildOpenAIEndpointURL(normalizedBaseURL, "/v1/sub2api/billing")
@@ -852,10 +889,6 @@ func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, ac
 		return s.persistProbeFailure(ctx, account, intervalMinutes, now, 0, "request_build_failed", 0, modelProbe)
 	}
 	// OpenAI 账号保持官方 openai 传输画像；其他平台探测走默认画像。
-	profile := HTTPUpstreamProfileDefault
-	if account.Platform == PlatformOpenAI {
-		profile = HTTPUpstreamProfileOpenAI
-	}
 	reqCtx := WithHTTPUpstreamProfile(req.Context(), profile)
 	req = req.WithContext(WithHTTPUpstreamRedirectsDisabled(reqCtx))
 	req.Header.Set("Accept", "application/json")
@@ -865,29 +898,32 @@ func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, ac
 	probeStarted := time.Now()
 	resp, err := s.accountTestService.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, tlsProfile)
 	if err != nil {
-		return s.persistProbeFailure(ctx, account, intervalMinutes, now, 0, "request_failed", 0, modelProbe)
+		return s.persistProbeFailure(ctx, account, intervalMinutes, now, 0, "request_failed", 0, modelProbe, probeAvailableBalance())
 	}
 	if resp == nil || resp.Body == nil {
-		return s.persistProbeFailure(ctx, account, intervalMinutes, now, 0, "empty_response", 0, modelProbe)
+		return s.persistProbeFailure(ctx, account, intervalMinutes, now, 0, "empty_response", 0, modelProbe, probeAvailableBalance())
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, upstreamBillingProbeMaxBodyBytes+1))
 	latencyMS := probeLatencyMS(probeStarted)
 	if readErr != nil {
-		return s.persistProbeFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "response_read_failed", retryAfter(resp.Header, now), modelProbe)
+		return s.persistProbeFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "response_read_failed", retryAfter(resp.Header, now), modelProbe, probeAvailableBalance())
 	}
 	if len(body) > upstreamBillingProbeMaxBodyBytes {
-		return s.persistProbeFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "response_too_large", retryAfter(resp.Header, now), modelProbe)
+		return s.persistProbeFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "response_too_large", retryAfter(resp.Header, now), modelProbe, probeAvailableBalance())
 	}
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
-		return s.persistProbeFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "unsupported", retryAfter(resp.Header, now), modelProbe)
+		return s.persistProbeFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "unsupported", retryAfter(resp.Header, now), modelProbe, probeAvailableBalance())
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return s.persistProbeFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "http_error", retryAfter(resp.Header, now), modelProbe)
+		return s.persistProbeFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "http_error", retryAfter(resp.Header, now), modelProbe, probeAvailableBalance())
 	}
 	data, err := parseUpstreamBillingProbeResponse(body)
 	if err != nil {
-		return s.persistProbeFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "invalid_response", retryAfter(resp.Header, now), modelProbe)
+		return s.persistProbeFailure(ctx, account, intervalMinutes, now, resp.StatusCode, "invalid_response", retryAfter(resp.Header, now), modelProbe, probeAvailableBalance())
+	}
+	if shouldProbeUpstreamUsageBalance(data) {
+		data = mergeUpstreamAvailableBalance(data, probeAvailableBalance(), now, intervalMinutes)
 	}
 	snapshot := &UpstreamBillingProbeSnapshot{
 		Status:                UpstreamBillingProbeStatusOK,
@@ -938,6 +974,155 @@ func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, ac
 		)
 	}
 	return snapshot, nil
+}
+
+func (s *UpstreamBillingProbeService) probeUpstreamAvailableBalance(
+	ctx context.Context,
+	now time.Time,
+	account *Account,
+	normalizedBaseURL string,
+	apiKey string,
+	proxyURL string,
+	tlsProfile *tlsfingerprint.Profile,
+	profile HTTPUpstreamProfile,
+) *upstreamAvailableBalanceProbeResult {
+	probeURL := buildOpenAIEndpointURL(normalizedBaseURL, "/v1/usage")
+	probeCtx, cancel := context.WithTimeout(ctx, upstreamBalanceProbeRequestTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, probeURL, bytes.NewReader(nil))
+	if err != nil {
+		return nil
+	}
+	reqCtx := WithHTTPUpstreamProfile(req.Context(), profile)
+	req = req.WithContext(WithHTTPUpstreamRedirectsDisabled(reqCtx))
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	account.ApplyHeaderOverrides(req.Header)
+
+	resp, err := s.accountTestService.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, tlsProfile)
+	if err != nil || resp == nil || resp.Body == nil {
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, upstreamBillingProbeMaxBodyBytes+1))
+	if err != nil || len(body) > upstreamBillingProbeMaxBodyBytes {
+		return nil
+	}
+	result, err := parseUpstreamUsageBalanceResponse(body)
+	if err != nil {
+		return nil
+	}
+	result.ObservedAt = now
+	return result
+}
+
+func parseUpstreamUsageBalanceResponse(body []byte) (*upstreamAvailableBalanceProbeResult, error) {
+	var response upstreamUsageBalanceResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, err
+	}
+	if response.IsValid != nil && !*response.IsValid {
+		return nil, fmt.Errorf("upstream usage response reports invalid API key")
+	}
+	validMoney := func(value *float64) bool {
+		return value != nil && !math.IsNaN(*value) && !math.IsInf(*value, 0)
+	}
+	validUSD := func(unit string) bool {
+		return strings.EqualFold(strings.TrimSpace(unit), "USD")
+	}
+
+	switch strings.TrimSpace(response.Mode) {
+	case "quota_limited":
+		remaining := response.Remaining
+		unit := response.Unit
+		if response.Quota != nil {
+			if response.Quota.Remaining != nil {
+				remaining = response.Quota.Remaining
+			}
+			if strings.TrimSpace(response.Quota.Unit) != "" {
+				unit = response.Quota.Unit
+			}
+		}
+		if !validMoney(remaining) || !validUSD(unit) || *remaining < 0 {
+			return nil, fmt.Errorf("invalid API key quota balance")
+		}
+		value := *remaining
+		return &upstreamAvailableBalanceProbeResult{
+			AvailableBalance: &value,
+			Source:           UpstreamBalanceSourceAPIKeyQuota,
+		}, nil
+	case "unrestricted":
+		if validMoney(response.Balance) && validUSD(response.Unit) {
+			value := *response.Balance
+			return &upstreamAvailableBalanceProbeResult{
+				AvailableBalance: &value,
+				Source:           UpstreamBalanceSourceWallet,
+			}, nil
+		}
+		if validMoney(response.Remaining) && validUSD(response.Unit) && len(bytes.TrimSpace(response.Subscription)) > 0 && string(bytes.TrimSpace(response.Subscription)) != "null" {
+			if *response.Remaining < 0 {
+				return &upstreamAvailableBalanceProbeResult{
+					Unlimited: true,
+					Source:    UpstreamBalanceSourceSubscription,
+				}, nil
+			}
+			value := *response.Remaining
+			return &upstreamAvailableBalanceProbeResult{
+				AvailableBalance: &value,
+				Source:           UpstreamBalanceSourceSubscription,
+			}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("upstream usage response has no USD balance")
+}
+
+func shouldProbeUpstreamUsageBalance(data map[string]any) bool {
+	if data == nil {
+		return true
+	}
+	source, _ := data["available_balance_source"].(string)
+	switch strings.TrimSpace(source) {
+	case UpstreamBalanceSourceAPIKeyQuota:
+		if unlimited, ok := data["available_balance_unlimited"].(bool); ok && unlimited {
+			return true
+		}
+		balance, ok := resolveAccountExtraNumber(data, "available_balance")
+		return !ok || balance < 0 || math.IsNaN(balance) || math.IsInf(balance, 0)
+	default:
+		return true
+	}
+}
+
+func mergeUpstreamAvailableBalance(
+	data map[string]any,
+	result *upstreamAvailableBalanceProbeResult,
+	now time.Time,
+	intervalMinutes int,
+) map[string]any {
+	if result == nil {
+		return data
+	}
+	merged := mergeMap(nil, data)
+	delete(merged, "available_balance")
+	delete(merged, "available_balance_unlimited")
+	merged["available_balance_source"] = result.Source
+	if result.AvailableBalance != nil {
+		merged["available_balance"] = *result.AvailableBalance
+	}
+	if result.Unlimited {
+		merged["available_balance_unlimited"] = true
+	}
+	observedAt := result.ObservedAt
+	if observedAt.IsZero() {
+		observedAt = now
+	}
+	merged[upstreamBalanceObservedAtKey] = observedAt.UTC().Format(time.RFC3339Nano)
+	merged[upstreamBalanceFreshUntilKey] = observedAt.Add(2 * time.Duration(intervalMinutes) * time.Minute).UTC().Format(time.RFC3339Nano)
+	return merged
 }
 
 func (s *UpstreamBillingProbeService) probeUpstreamModel(
@@ -1389,6 +1574,7 @@ func (s *UpstreamBillingProbeService) persistModelOnlyProbe(
 	intervalMinutes int,
 	now time.Time,
 	modelProbe *upstreamModelProbeResult,
+	balanceProbe ...*upstreamAvailableBalanceProbeResult,
 ) (*UpstreamBillingProbeSnapshot, error) {
 	if modelProbe == nil {
 		modelProbe = failedUpstreamModelProbe(account, "model_probe_unavailable")
@@ -1398,6 +1584,10 @@ func (s *UpstreamBillingProbeService) persistModelOnlyProbe(
 	if previous != nil {
 		*snapshot = *previous
 	}
+	hadPreviousData := snapshot.Data != nil
+	if len(balanceProbe) > 0 {
+		snapshot.Data = mergeUpstreamAvailableBalance(snapshot.Data, balanceProbe[0], now, intervalMinutes)
+	}
 	applyScheduledUpstreamModelProbe(snapshot, account, modelProbe, now, intervalMinutes, 0)
 	snapshot.LastAttemptAt = now
 	if snapshot.ModelProbeNextAt != nil {
@@ -1406,7 +1596,7 @@ func (s *UpstreamBillingProbeService) persistModelOnlyProbe(
 	if snapshot.Status == "" {
 		snapshot.Status = modelProbe.Status
 	}
-	if snapshot.Data == nil {
+	if !hadPreviousData {
 		snapshot.FailureCount = snapshot.ModelProbeFailureCount
 		snapshot.LastError = modelProbe.LastError
 	}
@@ -1425,6 +1615,7 @@ func (s *UpstreamBillingProbeService) persistProbeFailure(
 	reason string,
 	retryAfterDuration time.Duration,
 	modelProbe *upstreamModelProbeResult,
+	balanceProbe ...*upstreamAvailableBalanceProbeResult,
 ) (*UpstreamBillingProbeSnapshot, error) {
 	previous := decodeUpstreamBillingProbeSnapshot(account.Extra)
 	failureCount := nextProbeFailureCount(account)
@@ -1450,6 +1641,9 @@ func (s *UpstreamBillingProbeService) persistProbeFailure(
 		if snapshot.FreshUntil == nil && previous.Status == UpstreamBillingProbeStatusOK && previous.ReceivedAt != nil {
 			snapshot.FreshUntil = probeTimePtr(previous.ReceivedAt.Add(2 * time.Duration(intervalMinutes) * time.Minute))
 		}
+	}
+	if len(balanceProbe) > 0 {
+		snapshot.Data = mergeUpstreamAvailableBalance(snapshot.Data, balanceProbe[0], now, intervalMinutes)
 	}
 	applyScheduledUpstreamModelProbe(snapshot, account, modelProbe, now, intervalMinutes, retryAfterDuration)
 	if snapshot.ModelProbeNextAt != nil && snapshot.ModelProbeNextAt.Before(snapshot.NextProbeAt) {
@@ -1520,11 +1714,15 @@ func parseUpstreamBillingProbeResponse(body []byte) (map[string]any, error) {
 		"observed_at":               observedAt.UTC().Format(time.RFC3339Nano),
 	}
 	if response.AvailableBalanceSource != nil {
-		if strings.TrimSpace(*response.AvailableBalanceSource) != "api_key_quota" {
+		source := strings.TrimSpace(*response.AvailableBalanceSource)
+		switch source {
+		case UpstreamBalanceSourceAPIKeyQuota, UpstreamBalanceSourceWallet, UpstreamBalanceSourceSubscription:
+		default:
 			return nil, fmt.Errorf("invalid available balance source")
 		}
 		if response.AvailableBalance != nil {
-			if *response.AvailableBalance < 0 || math.IsNaN(*response.AvailableBalance) || math.IsInf(*response.AvailableBalance, 0) {
+			if math.IsNaN(*response.AvailableBalance) || math.IsInf(*response.AvailableBalance, 0) ||
+				(source != UpstreamBalanceSourceWallet && *response.AvailableBalance < 0) {
 				return nil, fmt.Errorf("invalid available balance")
 			}
 			data["available_balance"] = *response.AvailableBalance
@@ -1533,7 +1731,7 @@ func parseUpstreamBillingProbeResponse(body []byte) (map[string]any, error) {
 			data["available_balance_unlimited"] = *response.AvailableBalanceUnlimited
 		}
 		if response.AvailableBalance != nil || response.AvailableBalanceUnlimited != nil {
-			data["available_balance_source"] = "api_key_quota"
+			data["available_balance_source"] = source
 		}
 	}
 	if response.UserRateMultiplier != nil {

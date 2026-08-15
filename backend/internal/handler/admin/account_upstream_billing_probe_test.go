@@ -125,10 +125,13 @@ func TestAccountHandlerGetPoolAutoPriorityRankingUsesPersistedProbeData(t *testi
 			Groups:      []*service.Group{group},
 			Extra: map[string]any{
 				service.PoolAutoPriorityEnabledExtraKey: true,
-				"quota_limit":                           100.0,
-				"quota_used":                            25.0,
 				service.UpstreamBillingProbeExtraKey: service.UpstreamBillingProbeSnapshot{
-					Status:                  service.UpstreamBillingProbeStatusOK,
+					Status:     service.UpstreamBillingProbeStatusOK,
+					FreshUntil: &freshUntil,
+					Data: map[string]any{
+						"available_balance":        75.0,
+						"available_balance_source": service.UpstreamBalanceSourceAPIKeyQuota,
+					},
 					ModelProbeStatus:        service.UpstreamBillingProbeStatusOK,
 					ModelProbeModel:         "gpt-test",
 					ModelProbeLatencyMS:     latency,

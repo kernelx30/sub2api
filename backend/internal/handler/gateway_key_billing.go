@@ -92,7 +92,6 @@ func buildKeyBillingInfo(apiKey *service.APIKey, resolvedRate float64, now time.
 		Object:                  "sub2api.key_billing",
 		SchemaVersion:           keyBillingInfoSchemaVersion,
 		BillingScope:            "token",
-		AvailableBalanceSource:  "api_key_quota",
 		GroupRateMultiplier:     groupRate,
 		UserRateMultiplier:      userRate,
 		ResolvedRateMultiplier:  resolvedRate,
@@ -101,9 +100,17 @@ func buildKeyBillingInfo(apiKey *service.APIKey, resolvedRate float64, now time.
 		ObservedAt:              now.UTC(),
 	}
 	if remaining := apiKey.GetQuotaRemaining(); remaining < 0 {
-		response.AvailableBalanceUnlimited = true
+		if !apiKey.Group.IsSubscriptionType() && apiKey.User != nil {
+			balance := apiKey.User.Balance
+			response.AvailableBalance = &balance
+			response.AvailableBalanceSource = service.UpstreamBalanceSourceWallet
+		} else if !apiKey.Group.IsSubscriptionType() {
+			response.AvailableBalanceUnlimited = true
+			response.AvailableBalanceSource = service.UpstreamBalanceSourceAPIKeyQuota
+		}
 	} else {
 		response.AvailableBalance = &remaining
+		response.AvailableBalanceSource = service.UpstreamBalanceSourceAPIKeyQuota
 	}
 	if apiKey.Group.PeakRateEnabled {
 		response.PeakStart = &apiKey.Group.PeakStart

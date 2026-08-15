@@ -8,11 +8,12 @@ import (
 )
 
 const (
-	PoolAutoPriorityProbeStatusOK         = "ok"
-	PoolAutoPriorityProbeStatusStale      = "stale"
-	PoolAutoPriorityProbeStatusUnmeasured = "unmeasured"
-	PoolAutoPriorityBalanceSourceUpstream = "upstream_api_key_quota"
-	PoolAutoPriorityBalanceSourceLocal    = "local_account_quota"
+	PoolAutoPriorityProbeStatusOK                     = "ok"
+	PoolAutoPriorityProbeStatusStale                  = "stale"
+	PoolAutoPriorityProbeStatusUnmeasured             = "unmeasured"
+	PoolAutoPriorityBalanceSourceUpstream             = "upstream_api_key_quota"
+	PoolAutoPriorityBalanceSourceUpstreamWallet       = "upstream_wallet"
+	PoolAutoPriorityBalanceSourceUpstreamSubscription = "upstream_subscription"
 )
 
 // PoolAutoPriorityRankingSnapshot is a read-only projection of the same probe
@@ -95,7 +96,7 @@ func buildPoolAutoPriorityRankingSnapshot(account *Account, cohortRank int, now 
 		P95LatencyMS:        metrics.P95LatencyMS,
 		ConsecutiveFailures: metrics.ConsecutiveFailures,
 	}
-	item.AvailableBalance, item.BalanceUnlimited, item.BalanceSource = poolAutoPriorityAvailableBalance(account, snapshot)
+	item.AvailableBalance, item.BalanceUnlimited, item.BalanceSource = poolAutoPriorityAvailableBalance(account, snapshot, now)
 
 	if snapshot == nil {
 		return item
@@ -121,31 +122,46 @@ func buildPoolAutoPriorityRankingSnapshot(account *Account, cohortRank int, now 
 	return item
 }
 
-func poolAutoPriorityAvailableBalance(account *Account, snapshot *UpstreamBillingProbeSnapshot) (*float64, bool, string) {
-	if snapshot != nil && snapshot.Data != nil {
-		source, _ := snapshot.Data["available_balance_source"].(string)
-		if strings.TrimSpace(source) == "api_key_quota" {
-			if unlimited, ok := snapshot.Data["available_balance_unlimited"].(bool); ok && unlimited {
-				return nil, true, PoolAutoPriorityBalanceSourceUpstream
-			}
-			if balance, ok := resolveAccountExtraNumber(snapshot.Data, "available_balance"); ok &&
-				balance >= 0 && !math.IsNaN(balance) && !math.IsInf(balance, 0) {
-				value := balance
-				return &value, false, PoolAutoPriorityBalanceSourceUpstream
-			}
-		}
-	}
-
-	if account == nil || !account.IsAPIKeyOrBedrock() {
+func poolAutoPriorityAvailableBalance(_ *Account, snapshot *UpstreamBillingProbeSnapshot, now time.Time) (*float64, bool, string) {
+	if snapshot == nil || snapshot.Data == nil {
 		return nil, false, ""
 	}
-	limit := account.GetQuotaLimit()
-	if limit <= 0 {
-		return nil, true, PoolAutoPriorityBalanceSourceLocal
+	balanceFreshUntil := snapshot.FreshUntil
+	if rawFreshUntil, exists := snapshot.Data[upstreamBalanceFreshUntilKey]; exists {
+		rawFreshUntilString, ok := rawFreshUntil.(string)
+		if !ok || strings.TrimSpace(rawFreshUntilString) == "" {
+			return nil, false, ""
+		}
+		freshUntil, err := time.Parse(time.RFC3339Nano, rawFreshUntilString)
+		if err != nil {
+			return nil, false, ""
+		}
+		balanceFreshUntil = &freshUntil
 	}
-	remaining := limit - account.GetQuotaUsed()
-	if remaining < 0 {
-		remaining = 0
+	if balanceFreshUntil == nil || !now.Before(*balanceFreshUntil) {
+		return nil, false, ""
 	}
-	return &remaining, false, PoolAutoPriorityBalanceSourceLocal
+
+	source, _ := snapshot.Data["available_balance_source"].(string)
+	var rankingSource string
+	switch strings.TrimSpace(source) {
+	case UpstreamBalanceSourceAPIKeyQuota:
+		rankingSource = PoolAutoPriorityBalanceSourceUpstream
+	case UpstreamBalanceSourceWallet:
+		rankingSource = PoolAutoPriorityBalanceSourceUpstreamWallet
+	case UpstreamBalanceSourceSubscription:
+		rankingSource = PoolAutoPriorityBalanceSourceUpstreamSubscription
+	default:
+		return nil, false, ""
+	}
+	if unlimited, ok := snapshot.Data["available_balance_unlimited"].(bool); ok && unlimited {
+		return nil, true, rankingSource
+	}
+	balance, ok := resolveAccountExtraNumber(snapshot.Data, "available_balance")
+	if !ok || math.IsNaN(balance) || math.IsInf(balance, 0) ||
+		(source != UpstreamBalanceSourceWallet && balance < 0) {
+		return nil, false, ""
+	}
+	value := balance
+	return &value, false, rankingSource
 }

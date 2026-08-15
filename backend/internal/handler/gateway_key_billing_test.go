@@ -130,6 +130,45 @@ func TestBuildKeyBillingInfoMarksUnlimitedQuota(t *testing.T) {
 	require.Equal(t, "api_key_quota", got.AvailableBalanceSource)
 }
 
+func TestBuildKeyBillingInfoUsesWalletBalanceForUnlimitedStandardKey(t *testing.T) {
+	groupID := int64(7)
+	apiKey := &service.APIKey{
+		GroupID: &groupID,
+		Group: &service.Group{
+			ID:               groupID,
+			RateMultiplier:   1,
+			SubscriptionType: service.SubscriptionTypeStandard,
+		},
+		User: &service.User{Balance: -0.11810209},
+	}
+
+	got := buildKeyBillingInfo(apiKey, 1, time.Now())
+
+	require.NotNil(t, got.AvailableBalance)
+	require.InDelta(t, -0.11810209, *got.AvailableBalance, 1e-12)
+	require.False(t, got.AvailableBalanceUnlimited)
+	require.Equal(t, service.UpstreamBalanceSourceWallet, got.AvailableBalanceSource)
+}
+
+func TestBuildKeyBillingInfoLeavesSubscriptionBalanceForUsageEndpoint(t *testing.T) {
+	groupID := int64(7)
+	apiKey := &service.APIKey{
+		GroupID: &groupID,
+		Group: &service.Group{
+			ID:               groupID,
+			RateMultiplier:   1,
+			SubscriptionType: service.SubscriptionTypeSubscription,
+		},
+		User: &service.User{Balance: 99},
+	}
+
+	got := buildKeyBillingInfo(apiKey, 1, time.Now())
+
+	require.Nil(t, got.AvailableBalance)
+	require.False(t, got.AvailableBalanceUnlimited)
+	require.Empty(t, got.AvailableBalanceSource)
+}
+
 func TestGatewayHandlerKeyBillingInfoUsesUserOverride(t *testing.T) {
 	groupID := int64(7)
 	userRate := 0.5

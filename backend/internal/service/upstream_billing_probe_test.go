@@ -167,6 +167,8 @@ type upstreamBillingProbeSettingRepo struct {
 
 type upstreamBillingProbeHTTPStub struct {
 	calls          atomic.Int64
+	billingCalls   atomic.Int64
+	balanceCalls   atomic.Int64
 	modelCalls     atomic.Int64
 	active         atomic.Int64
 	maxActive      atomic.Int64
@@ -188,6 +190,12 @@ func (u *upstreamBillingProbeHTTPStub) Do(req *http.Request, proxyURL string, ac
 		}, nil
 	}
 	u.calls.Add(1)
+	isBalanceRequest := req != nil && req.URL != nil && strings.HasSuffix(req.URL.Path, "/v1/usage")
+	if isBalanceRequest {
+		u.balanceCalls.Add(1)
+	} else {
+		u.billingCalls.Add(1)
+	}
 	active := u.active.Add(1)
 	defer u.active.Add(-1)
 	for {
@@ -199,6 +207,19 @@ func (u *upstreamBillingProbeHTTPStub) Do(req *http.Request, proxyURL string, ac
 	if u.beforeResponse != nil {
 		u.beforeResponse()
 	}
+	if isBalanceRequest {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{
+				"mode":"unrestricted",
+				"isValid":true,
+				"remaining":12.5,
+				"balance":12.5,
+				"unit":"USD"
+			}`)),
+		}, nil
+	}
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -206,6 +227,8 @@ func (u *upstreamBillingProbeHTTPStub) Do(req *http.Request, proxyURL string, ac
 			"object":"sub2api.key_billing",
 			"schema_version":1,
 			"billing_scope":"token",
+			"available_balance":12.5,
+			"available_balance_source":"api_key_quota",
 			"group_rate_multiplier":0.8,
 			"resolved_rate_multiplier":0.8,
 			"peak_rate_enabled":false,
@@ -342,6 +365,8 @@ func TestUpstreamBillingProbeSuccessPersistsSanitizedSnapshot(t *testing.T) {
 			"object":"sub2api.key_billing",
 			"schema_version":1,
 			"billing_scope":"token",
+			"available_balance":12.5,
+			"available_balance_source":"api_key_quota",
 			"group_rate_multiplier":0.8,
 			"user_rate_multiplier":0.6,
 			"resolved_rate_multiplier":0.6,
@@ -422,6 +447,167 @@ func TestUpstreamBillingProbeSyncsResolvedRateForAllAPIKeyPlatforms(t *testing.T
 			require.Equal(t, 0.8, *account.RateMultiplier)
 		})
 	}
+}
+
+func TestUpstreamBillingProbeMergesRealWalletBalanceFromUsage(t *testing.T) {
+	account := &Account{
+		ID:          117,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-sensitive",
+			"base_url": "https://upstream.example",
+		},
+		Extra: map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+	}
+	repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{
+				"object":"sub2api.key_billing",
+				"schema_version":1,
+				"billing_scope":"token",
+				"group_rate_multiplier":0.1,
+				"resolved_rate_multiplier":0.1,
+				"peak_rate_enabled":false,
+				"effective_rate_multiplier":0.1,
+				"observed_at":"2026-08-15T01:00:00Z"
+			}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{
+				"mode":"unrestricted",
+				"isValid":true,
+				"remaining":-0.11810209,
+				"balance":-0.11810209,
+				"unit":"USD"
+			}`)),
+		},
+	}}
+	svc := newUpstreamBillingProbeTestService(repo, upstream, &upstreamBillingProbeSettingRepo{})
+	fixedNow := time.Date(2026, time.August, 15, 2, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return fixedNow }
+
+	snapshot, err := svc.ProbeAccount(context.Background(), account.ID)
+
+	require.NoError(t, err)
+	require.Equal(t, UpstreamBillingProbeStatusOK, snapshot.Status)
+	require.Equal(t, UpstreamBalanceSourceWallet, snapshot.Data["available_balance_source"])
+	require.InDelta(t, -0.11810209, snapshot.Data["available_balance"], 1e-12)
+	require.Equal(t, fixedNow.Format(time.RFC3339Nano), snapshot.Data[upstreamBalanceObservedAtKey])
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, "/v1/sub2api/billing", upstream.requests[0].URL.Path)
+	require.Equal(t, "/v1/usage", upstream.requests[1].URL.Path)
+}
+
+func TestUpstreamBillingProbeKeepsRealBalanceWhenBillingEndpointIsUnsupported(t *testing.T) {
+	account := &Account{
+		ID:          118,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-sensitive",
+			"base_url": "https://upstream.example",
+		},
+		Extra: map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+	}
+	repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusNotFound,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":"not found"}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{
+				"mode":"unrestricted",
+				"isValid":true,
+				"remaining":1.6141685,
+				"balance":1.6141685,
+				"unit":"USD"
+			}`)),
+		},
+	}}
+	svc := newUpstreamBillingProbeTestService(repo, upstream, &upstreamBillingProbeSettingRepo{})
+
+	snapshot, err := svc.ProbeAccount(context.Background(), account.ID)
+
+	require.NoError(t, err)
+	require.Equal(t, UpstreamBillingProbeStatusUnsupported, snapshot.Status)
+	require.Equal(t, UpstreamBalanceSourceWallet, snapshot.Data["available_balance_source"])
+	require.InDelta(t, 1.6141685, snapshot.Data["available_balance"], 1e-12)
+}
+
+func TestScheduledPoolProbeRefreshesBalanceWhenBillingProbeIsDisabled(t *testing.T) {
+	account := &Account{
+		ID:          119,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":   "sk-sensitive",
+			"base_url":  "https://upstream.example",
+			"pool_mode": true,
+		},
+		Extra: map[string]any{
+			UpstreamBillingProbeEnabledExtraKey: false,
+			PoolAutoPriorityEnabledExtraKey:     true,
+		},
+	}
+	repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body: io.NopCloser(strings.NewReader(
+				"event: response.created\n" +
+					"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_probe\"}}\n\n" +
+					"event: response.output_text.delta\n" +
+					"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
+			)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{
+				"mode":"unrestricted",
+				"isValid":true,
+				"remaining":48.09447843,
+				"balance":48.09447843,
+				"unit":"USD"
+			}`)),
+		},
+	}}
+	svc := newUpstreamBillingProbeTestService(repo, upstream, &upstreamBillingProbeSettingRepo{})
+	fixedNow := time.Date(2026, time.August, 15, 3, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return fixedNow }
+
+	snapshot, err := svc.probeScheduledAccount(
+		context.Background(),
+		account.ID,
+		&UpstreamBillingProbeSettings{Enabled: true, IntervalMinutes: 5},
+		&PoolAutoPrioritySettings{Enabled: true, IntervalMinutes: 5},
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, snapshot)
+	require.False(t, snapshot.BillingProbeAttempted)
+	require.Equal(t, UpstreamBalanceSourceWallet, snapshot.Data["available_balance_source"])
+	require.InDelta(t, 48.09447843, snapshot.Data["available_balance"], 1e-12)
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, "/v1/responses", upstream.requests[0].URL.Path)
+	require.Equal(t, "/v1/usage", upstream.requests[1].URL.Path)
 }
 
 func TestUpstreamBillingProbeOnlyDoesNotChangeAccountRate(t *testing.T) {
@@ -530,6 +716,8 @@ func TestUpstreamBillingProbeKeepsRateWhenDeclarationOutOfSyncRange(t *testing.T
 					"object":"sub2api.key_billing",
 					"schema_version":1,
 					"billing_scope":"token",
+					"available_balance":12.5,
+					"available_balance_source":"api_key_quota",
 					"group_rate_multiplier":%[1]s,
 					"resolved_rate_multiplier":%[1]s,
 					"peak_rate_enabled":false,
@@ -576,6 +764,8 @@ func TestUpstreamBillingProbeWithoutSyncIgnoresUnusableDeclaredRate(t *testing.T
 			"object":"sub2api.key_billing",
 			"schema_version":1,
 			"billing_scope":"token",
+			"available_balance":12.5,
+			"available_balance_source":"api_key_quota",
 			"group_rate_multiplier":0,
 			"resolved_rate_multiplier":0,
 			"peak_rate_enabled":false,
@@ -1015,10 +1205,14 @@ func TestPoolAutoPriorityRunnerIsIndependentFromBillingDiscovery(t *testing.T) {
 
 		require.NoError(t, svc.RunDue(context.Background()))
 		require.Equal(t, int64(1), upstream.modelCalls.Load())
-		require.Zero(t, upstream.calls.Load(), "billing endpoint must stay off")
+		require.Equal(t, int64(1), upstream.calls.Load())
+		require.Zero(t, upstream.billingCalls.Load(), "billing endpoint must stay off")
+		require.Equal(t, int64(1), upstream.balanceCalls.Load())
 		snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
 		require.NotNil(t, snapshot)
 		require.Equal(t, UpstreamBillingProbeStatusOK, snapshot.ModelProbeStatus)
+		require.Equal(t, UpstreamBalanceSourceWallet, snapshot.Data["available_balance_source"])
+		require.InDelta(t, 12.5, snapshot.Data["available_balance"], 1e-12)
 	})
 
 	t.Run("auto priority off keeps billing probe but skips model request", func(t *testing.T) {
@@ -1034,6 +1228,8 @@ func TestPoolAutoPriorityRunnerIsIndependentFromBillingDiscovery(t *testing.T) {
 
 		require.NoError(t, svc.RunDue(context.Background()))
 		require.Equal(t, int64(1), upstream.calls.Load())
+		require.Equal(t, int64(1), upstream.billingCalls.Load())
+		require.Zero(t, upstream.balanceCalls.Load())
 		require.Zero(t, upstream.modelCalls.Load())
 		snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
 		require.NotNil(t, snapshot)

@@ -230,20 +230,34 @@ function formatSuccess(entry: PoolAutoPriorityRankingEntry): string {
 
 function formatBalance(entry: PoolAutoPriorityRankingEntry): string {
   if (entry.balance_unlimited) {
-    return entry.balance_source === 'local_account_quota'
-      ? t('admin.accounts.poolRanking.localUnlimited')
-      : t('admin.accounts.poolRanking.unlimited')
+    if (entry.balance_source === 'upstream_api_key_quota') {
+      return t('admin.accounts.poolRanking.keyUnlimited')
+    }
+    if (entry.balance_source === 'upstream_subscription') {
+      return t('admin.accounts.poolRanking.subscriptionUnlimited')
+    }
+    return '—'
   }
-  if (entry.available_balance == null) return '—'
+  if (
+    entry.available_balance == null ||
+    !['upstream_api_key_quota', 'upstream_wallet', 'upstream_subscription'].includes(
+      entry.balance_source ?? ''
+    )
+  ) {
+    return '—'
+  }
   return `$${entry.available_balance.toFixed(entry.available_balance < 10 ? 2 : 1)}`
 }
 
 function balanceTitle(entry: PoolAutoPriorityRankingEntry): string {
+  if (entry.balance_source === 'upstream_wallet') {
+    return t('admin.accounts.poolRanking.upstreamWalletBalance')
+  }
+  if (entry.balance_source === 'upstream_subscription') {
+    return t('admin.accounts.poolRanking.upstreamSubscriptionBalance')
+  }
   if (entry.balance_source === 'upstream_api_key_quota') {
     return t('admin.accounts.poolRanking.upstreamBalance')
-  }
-  if (entry.balance_source === 'local_account_quota') {
-    return t('admin.accounts.poolRanking.localBalance')
   }
   return t('admin.accounts.poolRanking.unknownBalance')
 }
