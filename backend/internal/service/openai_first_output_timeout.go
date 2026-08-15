@@ -243,6 +243,13 @@ func (s *OpenAIGatewayService) openAIFirstOutputTimeout(reasoningEffort string) 
 	return time.Duration(seconds) * time.Second
 }
 
+func (s *OpenAIGatewayService) openAIFirstOutputTimeoutForRequest(c *gin.Context, reasoningEffort string) time.Duration {
+	if imageIntent, known := getOpenAIImageIntentHint(c); known && imageIntent {
+		return 0
+	}
+	return s.openAIFirstOutputTimeout(reasoningEffort)
+}
+
 func (s *OpenAIGatewayService) newOpenAIFirstOutputTimeoutError(
 	ctx context.Context,
 	c *gin.Context,

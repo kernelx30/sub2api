@@ -51,7 +51,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	}
 	firstOutputTimeout := time.Duration(0)
 	if account != nil && account.Platform == PlatformOpenAI {
-		firstOutputTimeout = s.openAIFirstOutputTimeout(reasoningEffort)
+		firstOutputTimeout = s.openAIFirstOutputTimeoutForRequest(c, reasoningEffort)
 	}
 	guardFirstOutput := firstOutputTimeout > 0
 	var attemptResponseHeaders http.Header
@@ -234,8 +234,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	clientOutputStarted := false
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	var streamEarlyErr error
+	terminalBoundaryReached := false
 	eventInProgress := false
-	eventStartsClientOutput := false
+	eventCommitsAttempt := false
 	eventStartsVisibleOutput := false
 	eventShouldFlush := false
 	handlePendingWriteError := func(err error) {
@@ -255,12 +256,12 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
 	}
 	completeGuardedEvent := func(queueDrained bool) {
-		completedProgressEvent := eventStartsClientOutput
+		completedCommitEvent := eventCommitsAttempt
 		completedVisibleEvent := eventStartsVisibleOutput
-		shouldFlush := eventShouldFlush || (queueDrained && clientOutputStarted)
+		shouldFlush := eventShouldFlush || completedCommitEvent || (queueDrained && clientOutputStarted)
 		eventInProgress = false
 		if !clientDisconnected {
-			if completedProgressEvent {
+			if completedCommitEvent || eventShouldFlush {
 				applyAttemptResponseHeaders()
 			}
 			if shouldFlush {
@@ -273,7 +274,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				}
 			}
 		}
-		if completedProgressEvent && !firstOutputProgressObserved {
+		if completedCommitEvent && !firstOutputProgressObserved {
 			firstOutputScanGuard.Store(false)
 			firstOutputProgressObserved = true
 			stopFirstOutputTimer()
@@ -282,7 +283,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
 		}
-		eventStartsClientOutput = false
+		eventCommitsAttempt = false
 		eventStartsVisibleOutput = false
 		eventShouldFlush = false
 	}
@@ -437,7 +438,8 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			eventType := strings.TrimSpace(eventTypeRaw)
 			observer.ObserveOpenAI(dataBytes, eventTypeRaw)
 			// 初始上游 data 的 type 只解析一次：原始值保持终止事件的精确匹配，规范化值供后续分支复用。
-			if openAIStreamEventIsTerminalWithType(data, eventTypeRaw) {
+			isTerminalEvent := openAIStreamEventIsTerminalWithType(data, eventTypeRaw)
+			if isTerminalEvent {
 				sawTerminalEvent = true
 			}
 			if responseID == "" {
@@ -548,11 +550,13 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			}
 			startsClientOutput := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(data, eventType)
 			startsVisibleOutput := openAIStreamDataStartsVisibleOutput(data, eventType)
+			commitsAttempt := startsVisibleOutput || forceFlushFailedEvent || isTerminalEvent ||
+				(eventType == "error" && startsClientOutput)
 			if guardFirstOutput {
-				eventStartsClientOutput = eventStartsClientOutput || startsClientOutput
+				eventCommitsAttempt = eventCommitsAttempt || commitsAttempt
 				eventStartsVisibleOutput = eventStartsVisibleOutput || startsVisibleOutput
 			}
-			if startsClientOutput && !openAIStreamEventTypeIsTerminal(eventType) {
+			if startsVisibleOutput && !openAIStreamEventTypeIsTerminal(eventType) {
 				responsesSemanticOutputSeen = true
 			}
 			// OpenAI Responses streams that terminate with an empty
@@ -570,7 +574,11 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 
 			// 写入客户端（客户端断开后继续 drain 上游）
 			if !clientDisconnected {
-				shouldFlush := queueDrained && (clientOutputStarted || startsClientOutput)
+				attemptOutputReady := startsClientOutput
+				if guardFirstOutput && !clientOutputStarted {
+					attemptOutputReady = commitsAttempt
+				}
+				shouldFlush := queueDrained && (clientOutputStarted || attemptOutputReady)
 				if firstTokenMs == nil && startsVisibleOutput {
 					// 保证首个 token 事件尽快出站，避免影响 TTFT。
 					shouldFlush = true
@@ -605,6 +613,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			if streamEarlyErr == nil {
 				completeGuardedEvent(queueDrained)
 			}
+			terminalBoundaryReached = sawTerminalEvent
 			return
 		}
 		// Non-guarded streams retain upstream's event-boundary flushing: a keepalive
@@ -632,6 +641,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				}
 			}
 		}
+		if line == "" {
+			terminalBoundaryReached = sawTerminalEvent
+		}
 	}
 
 	// 无超时/无 keepalive 的常见路径走同步扫描，减少 goroutine 与 channel 开销。
@@ -641,6 +653,10 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			processSSELine(documentScanner.Text(), true)
 			if streamEarlyErr != nil {
 				return resultWithUsage(), streamEarlyErr
+			}
+			if terminalBoundaryReached {
+				_ = resp.Body.Close()
+				return finalizeStream()
 			}
 		}
 		if result, err, done := handleScanErr(documentScanner.Err()); done {
@@ -720,6 +736,12 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			markEventProcessed(ev)
 			if streamEarlyErr != nil {
 				return resultWithUsage(), streamEarlyErr
+			}
+			if terminalBoundaryReached {
+				// Closing the body unblocks the scanner goroutine if the upstream
+				// keeps the HTTP stream open after a complete terminal SSE event.
+				_ = resp.Body.Close()
+				return finalizeStream()
 			}
 
 		case <-intervalCh:

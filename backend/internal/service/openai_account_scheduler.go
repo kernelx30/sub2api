@@ -73,6 +73,9 @@ type OpenAIAccountScheduleRequest struct {
 	StickyAccountID         int64
 	StickyPreviousAccountID int64
 	StickyWeighted          bool
+	AutoPriorityEnabled     bool
+	SessionCanMove          bool
+	SessionExplicit         bool
 	SubscriptionPriority    bool
 	PreserveStickyBinding   bool
 	PreviousResponseID      string
@@ -178,6 +181,7 @@ func (m *openAIAccountSchedulerMetrics) recordSwitch() {
 
 type openAIAccountRuntimeStats struct {
 	accounts     sync.Map
+	models       sync.Map
 	accountCount atomic.Int64
 }
 
@@ -194,6 +198,7 @@ const (
 	openAIRealTrafficTTFTDegradedFloorMS = 12000.0
 	openAIRealTrafficTTFTProbeMultiplier = 2.0
 	openAIRealTrafficTTFTMaxThresholdMS  = 30000.0
+	openAIRealTrafficMaxErrorRate        = 0.25
 )
 
 func newOpenAIAccountRuntimeStats() *openAIAccountRuntimeStats {
@@ -222,6 +227,25 @@ func (s *openAIAccountRuntimeStats) loadOrCreate(accountID int64) *openAIAccount
 	return stat
 }
 
+func (s *openAIAccountRuntimeStats) loadOrCreateModel(accountID int64, model string) *openAIAccountRuntimeStat {
+	key, ok := openAIAccountModelTransientKey(accountID, model)
+	if !ok {
+		return nil
+	}
+	if value, loaded := s.models.Load(key); loaded {
+		stat, _ := value.(*openAIAccountRuntimeStat)
+		if stat != nil {
+			return stat
+		}
+	}
+
+	stat := &openAIAccountRuntimeStat{}
+	stat.ttftEWMABits.Store(math.Float64bits(math.NaN()))
+	actual, _ := s.models.LoadOrStore(key, stat)
+	existing, _ := actual.(*openAIAccountRuntimeStat)
+	return existing
+}
+
 func updateEWMAAtomic(target *atomic.Uint64, sample float64, alpha float64) {
 	for {
 		oldBits := target.Load()
@@ -233,12 +257,11 @@ func updateEWMAAtomic(target *atomic.Uint64, sample float64, alpha float64) {
 	}
 }
 
-func (s *openAIAccountRuntimeStats) report(accountID int64, success bool, firstTokenMs *int) {
-	if s == nil || accountID <= 0 {
+func reportOpenAIAccountRuntimeStat(stat *openAIAccountRuntimeStat, success bool, firstTokenMs *int, observedAt time.Time) {
+	if stat == nil {
 		return
 	}
 	const alpha = 0.2
-	stat := s.loadOrCreate(accountID)
 
 	errorSample := 1.0
 	if success {
@@ -246,25 +269,49 @@ func (s *openAIAccountRuntimeStats) report(accountID int64, success bool, firstT
 	}
 	updateEWMAAtomic(&stat.errorRateEWMABits, errorSample, alpha)
 
-	if firstTokenMs != nil && *firstTokenMs > 0 {
-		ttft := float64(*firstTokenMs)
-		ttftBits := math.Float64bits(ttft)
-		for {
-			oldBits := stat.ttftEWMABits.Load()
-			oldValue := math.Float64frombits(oldBits)
-			if math.IsNaN(oldValue) {
-				if stat.ttftEWMABits.CompareAndSwap(oldBits, ttftBits) {
-					break
-				}
-				continue
-			}
-			newValue := alpha*ttft + (1-alpha)*oldValue
-			if stat.ttftEWMABits.CompareAndSwap(oldBits, math.Float64bits(newValue)) {
+	if firstTokenMs == nil || *firstTokenMs <= 0 {
+		return
+	}
+	ttft := float64(*firstTokenMs)
+	ttftBits := math.Float64bits(ttft)
+	for {
+		oldBits := stat.ttftEWMABits.Load()
+		oldValue := math.Float64frombits(oldBits)
+		if math.IsNaN(oldValue) {
+			if stat.ttftEWMABits.CompareAndSwap(oldBits, ttftBits) {
 				break
 			}
+			continue
 		}
-		stat.ttftSampleCount.Add(1)
-		stat.ttftUpdatedAt.Store(time.Now().UnixNano())
+		newValue := alpha*ttft + (1-alpha)*oldValue
+		if stat.ttftEWMABits.CompareAndSwap(oldBits, math.Float64bits(newValue)) {
+			break
+		}
+	}
+	stat.ttftSampleCount.Add(1)
+	stat.ttftUpdatedAt.Store(observedAt.UnixNano())
+}
+
+func (s *openAIAccountRuntimeStats) report(accountID int64, success bool, firstTokenMs *int, model ...string) {
+	s.reportAt(accountID, success, firstTokenMs, time.Now(), model...)
+}
+
+func (s *openAIAccountRuntimeStats) reportAt(accountID int64, success bool, firstTokenMs *int, observedAt time.Time, model ...string) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	if observedAt.IsZero() {
+		observedAt = time.Now()
+	}
+	reportOpenAIAccountRuntimeStat(s.loadOrCreate(accountID), success, firstTokenMs, observedAt)
+
+	// Account-level statistics keep their historical behavior for load scoring
+	// and sticky escape. Ranking promotion uses successful, model-scoped TTFT so
+	// an unrelated model cannot make a newly failed probe appear healthy.
+	if success && firstTokenMs != nil && *firstTokenMs > 0 && len(model) > 0 {
+		reportOpenAIAccountRuntimeStat(s.loadOrCreateModel(accountID, model[0]), true, firstTokenMs, observedAt)
+	} else if len(model) > 0 {
+		reportOpenAIAccountRuntimeStat(s.loadOrCreateModel(accountID, model[0]), success, nil, observedAt)
 	}
 }
 
@@ -282,6 +329,26 @@ func (s *openAIAccountRuntimeStats) snapshotWithMeta(accountID int64) (errorRate
 		return 0, 0, false, 0, time.Time{}
 	}
 	stat, _ := value.(*openAIAccountRuntimeStat)
+	return snapshotOpenAIAccountRuntimeStat(stat)
+}
+
+func (s *openAIAccountRuntimeStats) snapshotModelWithMeta(accountID int64, model string) (errorRate float64, ttft float64, hasTTFT bool, sampleCount int64, updatedAt time.Time) {
+	if s == nil {
+		return 0, 0, false, 0, time.Time{}
+	}
+	key, ok := openAIAccountModelTransientKey(accountID, model)
+	if !ok {
+		return 0, 0, false, 0, time.Time{}
+	}
+	value, ok := s.models.Load(key)
+	if !ok {
+		return 0, 0, false, 0, time.Time{}
+	}
+	stat, _ := value.(*openAIAccountRuntimeStat)
+	return snapshotOpenAIAccountRuntimeStat(stat)
+}
+
+func snapshotOpenAIAccountRuntimeStat(stat *openAIAccountRuntimeStat) (errorRate float64, ttft float64, hasTTFT bool, sampleCount int64, updatedAt time.Time) {
 	if stat == nil {
 		return 0, 0, false, 0, time.Time{}
 	}
@@ -400,8 +467,8 @@ func (s *defaultOpenAIAccountScheduler) Select(
 	}()
 
 	previousResponseID := strings.TrimSpace(req.PreviousResponseID)
-	if previousResponseID != "" && normalizeOpenAICompatiblePlatform(req.Platform) == PlatformOpenAI &&
-		(!req.StickyWeighted || !req.PreviousResponseCanMove) {
+	previousResponseCanRank := req.PreviousResponseCanMove && (req.StickyWeighted || req.AutoPriorityEnabled)
+	if previousResponseID != "" && normalizeOpenAICompatiblePlatform(req.Platform) == PlatformOpenAI && !previousResponseCanRank {
 		selection, err := s.service.selectAccountByPreviousResponseIDForCapability(
 			ctx,
 			req.GroupID,
@@ -434,7 +501,7 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		}
 	}
 
-	if !req.StickyWeighted {
+	if req.SessionExplicit || (!req.StickyWeighted && !req.SessionCanMove) {
 		selection, escapedSticky, err := s.selectBySessionHash(ctx, req)
 		if err != nil {
 			return nil, decision, err
@@ -521,7 +588,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
 	}
-	if s.service.poolAutoPriorityGloballyEnabled(ctx) {
+	if !req.SessionExplicit && s.service.poolAutoPriorityGloballyEnabled(ctx) {
 		if poolAutoPriorityEnabled(account) {
 			realTTFTState := s.realTrafficTTFTState(account, time.Now())
 			if realTTFTState.Degraded {
@@ -561,7 +628,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		return nil, false, nil
 	}
 	escapeCfg := s.service.openAIStickyEscapeConfig()
-	if reason, errorRate, ttft, shouldEscape := s.shouldEscapeStickyAccount(accountID, escapeCfg); shouldEscape {
+	if reason, errorRate, ttft, shouldEscape := s.shouldEscapeStickyAccount(accountID, escapeCfg); !req.SessionExplicit && shouldEscape {
 		slog.Info("sticky_escape_triggered",
 			"account_id", accountID,
 			"reason", reason,
@@ -669,20 +736,31 @@ func openAIRealTrafficTTFTStateFromStats(stats *openAIAccountRuntimeStats, accou
 	if stats == nil || account == nil {
 		return state
 	}
+	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
+	if snapshot == nil || snapshot.ModelProbeLastAttemptAt == nil {
+		return state
+	}
 	var hasTTFT bool
-	_, state.TTFTMS, hasTTFT, state.SampleCount, state.UpdatedAt = stats.snapshotWithMeta(account.ID)
+	errorRate, ttft, hasTTFT, sampleCount, updatedAt := stats.snapshotModelWithMeta(account.ID, snapshot.ModelProbeModel)
+	state.TTFTMS = ttft
+	state.SampleCount = sampleCount
+	state.UpdatedAt = updatedAt
 	if !hasTTFT || state.SampleCount < openAIRealTrafficTTFTMinSamples || state.UpdatedAt.IsZero() {
 		return state
 	}
 	if now.Sub(state.UpdatedAt) > openAIRealTrafficTTFTFreshTTL {
 		return state
 	}
+	if state.UpdatedAt.Before(*snapshot.ModelProbeLastAttemptAt) || errorRate > openAIRealTrafficMaxErrorRate {
+		return state
+	}
 	state.Mature = true
 	state.ThresholdMS = openAIRealTrafficTTFTDegradedThreshold(account, now)
 	state.Degraded = state.TTFTMS > state.ThresholdMS
-	if state.rankingTTFTMS > 0 {
-		state.rankingTTFTMS = state.TTFTMS
-	}
+	// Production TTFT is the authoritative latency signal once mature. Do not
+	// require a healthy probe baseline: probes can fail on their synthetic body
+	// while the same account is actively serving real traffic.
+	state.rankingTTFTMS = state.TTFTMS
 	return state
 }
 
@@ -2412,6 +2490,10 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 		}
 	}
 	stickyWeighted := s.isOpenAIAdvancedSchedulerStickyWeightedEnabled(ctx)
+	autoPriorityEnabled := s.poolAutoPriorityGloballyEnabled(ctx)
+	sessionSource := openAISessionAffinitySourceFromContext(ctx)
+	sessionExplicit := sessionSource == openAISessionAffinityExplicit
+	sessionCanMove := autoPriorityEnabled && sessionSource == openAISessionAffinityDerived
 	subscriptionPriority := s.isOpenAIAdvancedSchedulerSubscriptionPriorityEnabled(ctx)
 	stickyPreviousAccountID := int64(0)
 	if stickyWeighted && previousResponseCanMove && strings.TrimSpace(previousResponseID) != "" && platform == PlatformOpenAI {
@@ -2425,6 +2507,9 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 		StickyAccountID:         stickyAccountID,
 		StickyPreviousAccountID: stickyPreviousAccountID,
 		StickyWeighted:          stickyWeighted,
+		AutoPriorityEnabled:     autoPriorityEnabled,
+		SessionCanMove:          sessionCanMove,
+		SessionExplicit:         sessionExplicit,
 		SubscriptionPriority:    subscriptionPriority,
 		PreviousResponseID:      previousResponseID,
 		PreviousResponseCanMove: previousResponseCanMove,
@@ -2484,7 +2569,7 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(accountID int64
 		s.clearOpenAIAccountModelTransientState(accountID, normalizeOpenAIAccountModelTransientModel(model))
 	}
 	if stats := s.getOpenAIAccountRuntimeStats(); stats != nil {
-		stats.report(accountID, success, firstTokenMs)
+		stats.report(accountID, success, firstTokenMs, model)
 	}
 }
 

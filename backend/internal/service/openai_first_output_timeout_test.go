@@ -437,6 +437,21 @@ func TestOpenAINativeFirstOutputEOFDispatchesTerminalEventWithoutBlankLine(t *te
 	require.Equal(t, "17", rec.Result().Header.Get("X-Ratelimit-Remaining-Requests"))
 }
 
+func TestOpenAIFirstOutputTimeoutForRequestExemptsImageIntent(t *testing.T) {
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
+		OpenAIFirstOutputTimeoutSeconds:           15,
+		OpenAIHighEffortFirstOutputTimeoutSeconds: 60,
+	}}}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+
+	require.Equal(t, 15*time.Second, svc.openAIFirstOutputTimeoutForRequest(c, "medium"))
+	require.Equal(t, 60*time.Second, svc.openAIFirstOutputTimeoutForRequest(c, "high"))
+	SetOpenAIImageIntentHint(c, true)
+	require.Zero(t, svc.openAIFirstOutputTimeoutForRequest(c, "medium"))
+	require.Zero(t, svc.openAIFirstOutputTimeoutForRequest(c, "high"))
+}
+
 func TestOpenAINativeFirstOutputStageOverflowFailsOverWithoutAttemptBytes(t *testing.T) {
 	cfg := &config.Config{Gateway: config.GatewayConfig{
 		OpenAIFirstOutputTimeoutSeconds: 30,

@@ -63,6 +63,164 @@ func TestOpenAIGatewayLoadAwareSelectionUsesPoolProbePriority(t *testing.T) {
 	selection.ReleaseFunc()
 }
 
+func TestOpenAILegacySchedulerAutoPoolRoutesDerivedSessionByCurrentRanking(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	groupID := int64(7110)
+	slowSticky := openAIPoolProbeTestAccount(7111, 0, UpstreamBillingProbeStatusOK, 9000)
+	fastRanked := openAIPoolProbeTestAccount(7112, 20, UpstreamBillingProbeStatusOK, 1200)
+	slowSticky.GroupIDs = []int64{groupID}
+	fastRanked.GroupIDs = []int64{groupID}
+	sessionHash := "derived-session-auto-pool"
+	cacheKey := "openai:" + sessionHash
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{cacheKey: slowSticky.ID}}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = true
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{slowSticky, fastRanked}},
+		cache:              cache,
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("false"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	ctx := context.WithValue(context.Background(), openAISessionAffinitySourceContextKey{}, openAISessionAffinityDerived)
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx, &groupID, "", sessionHash, "gpt-5.6-sol", nil, OpenAIUpstreamTransportAny, false,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, fastRanked.ID, selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Equal(t, fastRanked.ID, cache.sessionBindings[cacheKey])
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAILegacySchedulerAutoPoolRoutesDerivedSessionWithoutLoadBatch(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	groupID := int64(7115)
+	slowSticky := openAIPoolProbeTestAccount(7116, 0, UpstreamBillingProbeStatusOK, 9000)
+	fastRanked := openAIPoolProbeTestAccount(7117, 20, UpstreamBillingProbeStatusOK, 1200)
+	slowSticky.GroupIDs = []int64{groupID}
+	fastRanked.GroupIDs = []int64{groupID}
+	sessionHash := "derived-session-auto-pool-no-batch"
+	cacheKey := "openai:" + sessionHash
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{cacheKey: slowSticky.ID}}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{slowSticky, fastRanked}},
+		cache:              cache,
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("false"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	ctx := context.WithValue(context.Background(), openAISessionAffinitySourceContextKey{}, openAISessionAffinityDerived)
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx, &groupID, "", sessionHash, "gpt-5.6-sol", nil, OpenAIUpstreamTransportAny, false,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, fastRanked.ID, selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Equal(t, fastRanked.ID, cache.sessionBindings[cacheKey])
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAILegacySchedulerAutoPoolKeepsExplicitSessionSticky(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	groupID := int64(7120)
+	slowSticky := openAIPoolProbeTestAccount(7121, 0, UpstreamBillingProbeStatusOK, 9000)
+	fastRanked := openAIPoolProbeTestAccount(7122, 20, UpstreamBillingProbeStatusOK, 1200)
+	slowSticky.GroupIDs = []int64{groupID}
+	fastRanked.GroupIDs = []int64{groupID}
+	sessionHash := "explicit-session-auto-pool"
+	cacheKey := "openai:" + sessionHash
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{cacheKey: slowSticky.ID}}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = true
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{slowSticky, fastRanked}},
+		cache:              cache,
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("false"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	ctx := context.WithValue(context.Background(), openAISessionAffinitySourceContextKey{}, openAISessionAffinityExplicit)
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx, &groupID, "", sessionHash, "gpt-5.6-sol", nil, OpenAIUpstreamTransportAny, false,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, slowSticky.ID, selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Equal(t, slowSticky.ID, cache.sessionBindings[cacheKey])
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIAdvancedSchedulerAutoPoolOnlyMovesRebuildablePreviousResponse(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(7130)
+	slowPrevious := openAIPoolProbeTestAccount(7131, 100, UpstreamBillingProbeStatusOK, 9000)
+	fastRanked := openAIPoolProbeTestAccount(7132, 0, UpstreamBillingProbeStatusOK, 1200)
+	slowPrevious.Extra["openai_apikey_responses_websockets_v2_enabled"] = true
+	fastRanked.Extra["openai_apikey_responses_websockets_v2_enabled"] = true
+	slowPrevious.GroupIDs = []int64{groupID}
+	fastRanked.GroupIDs = []int64{groupID}
+	cfg := newSchedulerTestOpenAIWSV2Config()
+	cfg.Gateway.OpenAIWS.LBTopK = 1
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{slowPrevious, fastRanked}},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true", "false"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	store := svc.getOpenAIWSStateStore()
+	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_auto_pool_movable", slowPrevious.ID, time.Hour))
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForCapability(
+		ctx, &groupID, "resp_auto_pool_movable", "", "gpt-5.6-sol", nil,
+		OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityChatCompletions,
+		false, false, true, PlatformOpenAI,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, slowPrevious.ID, selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerPreviousResponse, decision.Layer)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+
+	selection, decision, err = svc.SelectAccountWithSchedulerForCapability(
+		ctx, &groupID, "resp_auto_pool_movable", "", "gpt-5.6-sol", nil,
+		OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityChatCompletions,
+		false, true, true, PlatformOpenAI,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, fastRanked.ID, selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestOpenAIGatewayLoadAwareSelectionUsesRealTrafficTTFTAndMatchesDisplayedRanking(t *testing.T) {
 	probeWinner := openAIPoolProbeTestAccount(7151, 0, UpstreamBillingProbeStatusOK, 1000)
 	productionWinner := openAIPoolProbeTestAccount(7152, 20, UpstreamBillingProbeStatusOK, 2200)
@@ -155,10 +313,10 @@ func TestOpenAIEffectiveRankingUsesHealthyRuntimeOrderAndKeepsFailedProbesLast(t
 
 	stats := newOpenAIAccountRuntimeStats()
 	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
-		stats.report(xiao.ID, true, intPtrForTest(13615))
-		stats.report(shark.ID, true, intPtrForTest(15839))
-		stats.report(fish.ID, true, intPtrForTest(6700))
-		stats.report(seven.ID, true, intPtrForTest(16486))
+		stats.report(xiao.ID, true, intPtrForTest(13615), "gpt-5.6-sol")
+		stats.report(shark.ID, true, intPtrForTest(15839), "gpt-5.6-sol")
+		stats.report(fish.ID, true, intPtrForTest(6700), "gpt-5.6-sol")
+		stats.report(seven.ID, true, intPtrForTest(16486), "gpt-5.6-sol")
 	}
 
 	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
@@ -187,6 +345,100 @@ func TestOpenAIEffectiveRankingUsesHealthyRuntimeOrderAndKeepsFailedProbesLast(t
 	require.Len(t, plan.selectionOrder, 5)
 	require.Equal(t, fish.ID, plan.selectionOrder[0].account.ID)
 	require.Equal(t, hero.ID, plan.selectionOrder[4].account.ID)
+}
+
+func TestOpenAIEffectiveRankingUsesMatureRuntimeWhenAllProbesFailed(t *testing.T) {
+	slowProbeWinner := openAIPoolProbeTestAccount(7401, 0, UpstreamBillingProbeStatusFailed, 3000)
+	fastProbeBackup := openAIPoolProbeTestAccount(7402, 20, UpstreamBillingProbeStatusFailed, 6000)
+	accounts := []Account{slowProbeWinner, fastProbeBackup}
+
+	stats := newOpenAIAccountRuntimeStats()
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		stats.report(slowProbeWinner.ID, true, intPtrForTest(95000), "gpt-5.6-sol")
+		stats.report(fastProbeBackup.ID, true, intPtrForTest(7000), "gpt-5.6-sol")
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
+
+	ranking := svc.BuildPoolAutoPriorityRanking([]*Account{&accounts[0], &accounts[1]}, time.Now())
+
+	require.Len(t, ranking, 2)
+	require.Equal(t, fastProbeBackup.ID, ranking[0].AccountID)
+	require.Equal(t, PoolAutoPriorityRankingSourceRealTraffic, ranking[0].RankingSource)
+	require.True(t, ranking[0].RuntimeMature)
+
+	scheduler := &defaultOpenAIAccountScheduler{service: svc, stats: stats}
+	plan := scheduler.buildOpenAIAccountLoadPlan(
+		context.Background(),
+		OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.6-sol"},
+		[]*Account{&accounts[0], &accounts[1]},
+		map[int64]*AccountLoadInfo{},
+	)
+	require.Len(t, plan.selectionOrder, 2)
+	require.Equal(t, fastProbeBackup.ID, plan.selectionOrder[0].account.ID)
+}
+
+func TestOpenAIEffectiveRankingDoesNotPromoteFailedProbeFromDifferentModelRuntime(t *testing.T) {
+	failedProbe := openAIPoolProbeTestAccount(7411, 0, UpstreamBillingProbeStatusFailed, 3000)
+	healthyProbe := openAIPoolProbeTestAccount(7412, 20, UpstreamBillingProbeStatusOK, 6000)
+	stats := newOpenAIAccountRuntimeStats()
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		stats.report(failedProbe.ID, true, intPtrForTest(500), "gpt-5.5")
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
+
+	state := openAIRealTrafficTTFTStateFromStats(stats, &failedProbe, time.Now())
+	require.False(t, state.Mature)
+	require.Zero(t, state.SampleCount)
+
+	ranking := svc.BuildPoolAutoPriorityRanking([]*Account{&failedProbe, &healthyProbe}, time.Now())
+	require.Len(t, ranking, 2)
+	require.Equal(t, healthyProbe.ID, ranking[0].AccountID)
+	require.Equal(t, PoolAutoPriorityRankingSourceProbe, ranking[0].RankingSource)
+}
+
+func TestOpenAIEffectiveRankingDoesNotPromoteFailedProbeFromOlderRuntime(t *testing.T) {
+	failedProbe := openAIPoolProbeTestAccount(7421, 0, UpstreamBillingProbeStatusFailed, 3000)
+	healthyProbe := openAIPoolProbeTestAccount(7422, 20, UpstreamBillingProbeStatusOK, 6000)
+	snapshot := decodeUpstreamBillingProbeSnapshot(failedProbe.Extra)
+	require.NotNil(t, snapshot)
+	require.NotNil(t, snapshot.ModelProbeLastAttemptAt)
+
+	stats := newOpenAIAccountRuntimeStats()
+	oldRuntimeAt := snapshot.ModelProbeLastAttemptAt.Add(-time.Second)
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		stats.reportAt(failedProbe.ID, true, intPtrForTest(500), oldRuntimeAt, "gpt-5.6-sol")
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
+
+	state := openAIRealTrafficTTFTStateFromStats(stats, &failedProbe, time.Now())
+	require.False(t, state.Mature)
+	require.Equal(t, int64(openAIPoolProbeRuntimeSamples), state.SampleCount)
+
+	ranking := svc.BuildPoolAutoPriorityRanking([]*Account{&failedProbe, &healthyProbe}, time.Now())
+	require.Len(t, ranking, 2)
+	require.Equal(t, healthyProbe.ID, ranking[0].AccountID)
+	require.Equal(t, PoolAutoPriorityRankingSourceProbe, ranking[0].RankingSource)
+}
+
+func TestOpenAIEffectiveRankingDoesNotPromoteFailedProbeFromUnreliableRuntime(t *testing.T) {
+	failedProbe := openAIPoolProbeTestAccount(7431, 0, UpstreamBillingProbeStatusFailed, 3000)
+	healthyProbe := openAIPoolProbeTestAccount(7432, 20, UpstreamBillingProbeStatusOK, 6000)
+	stats := newOpenAIAccountRuntimeStats()
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		stats.report(failedProbe.ID, true, intPtrForTest(500), "gpt-5.6-sol")
+	}
+	stats.report(failedProbe.ID, false, nil, "gpt-5.6-sol")
+	stats.report(failedProbe.ID, false, nil, "gpt-5.6-sol")
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
+
+	state := openAIRealTrafficTTFTStateFromStats(stats, &failedProbe, time.Now())
+	require.False(t, state.Mature)
+	require.Equal(t, int64(openAIPoolProbeRuntimeSamples), state.SampleCount)
+
+	ranking := svc.BuildPoolAutoPriorityRanking([]*Account{&failedProbe, &healthyProbe}, time.Now())
+	require.Len(t, ranking, 2)
+	require.Equal(t, healthyProbe.ID, ranking[0].AccountID)
+	require.Equal(t, PoolAutoPriorityRankingSourceProbe, ranking[0].RankingSource)
 }
 
 func TestOpenAIGatewayLoadAwareSelectionMatchesDisplayedRankInsideProbeCohort(t *testing.T) {
@@ -248,8 +500,8 @@ func TestOpenAIAdvancedSchedulerUsesRealTrafficTTFT(t *testing.T) {
 
 	stats := newOpenAIAccountRuntimeStats()
 	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
-		stats.report(probeWinner.ID, true, intPtrForTest(30000))
-		stats.report(productionWinner.ID, true, intPtrForTest(4000))
+		stats.report(probeWinner.ID, true, intPtrForTest(30000), "gpt-5.6-sol")
+		stats.report(productionWinner.ID, true, intPtrForTest(4000), "gpt-5.6-sol")
 	}
 	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
 	scheduler := &defaultOpenAIAccountScheduler{service: svc, stats: stats}
@@ -270,8 +522,8 @@ func TestOpenAIAdvancedSchedulerWaitsForStableRealTrafficTTFT(t *testing.T) {
 
 	stats := newOpenAIAccountRuntimeStats()
 	for i := int64(0); i < openAIRealTrafficTTFTMinSamples-1; i++ {
-		stats.report(probeWinner.ID, true, intPtrForTest(30000))
-		stats.report(probeBackup.ID, true, intPtrForTest(4000))
+		stats.report(probeWinner.ID, true, intPtrForTest(30000), "gpt-5.6-sol")
+		stats.report(probeBackup.ID, true, intPtrForTest(4000), "gpt-5.6-sol")
 	}
 	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
 	scheduler := &defaultOpenAIAccountScheduler{service: svc, stats: stats}
@@ -363,7 +615,7 @@ func TestOpenAIStickyMixedRuntimeAndProbeTTFTIsClearedAndRebound(t *testing.T) {
 	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{cacheKey: probeWinner.ID}}
 	stats := newOpenAIAccountRuntimeStats()
 	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
-		stats.report(probeWinner.ID, true, intPtrForTest(8125))
+		stats.report(probeWinner.ID, true, intPtrForTest(8125), "gpt-5.6-sol")
 	}
 	svc := &OpenAIGatewayService{
 		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{probeWinner, productionWinner}},

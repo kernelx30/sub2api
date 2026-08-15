@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -61,6 +62,32 @@ func (r *passthroughFlushTestErrorBody) Read(p []byte) (int, error) {
 }
 
 func (r *passthroughFlushTestErrorBody) Close() error { return nil }
+
+type passthroughTerminalBlockingBody struct {
+	data      []byte
+	offset    int
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func newPassthroughTerminalBlockingBody(data []byte) *passthroughTerminalBlockingBody {
+	return &passthroughTerminalBlockingBody{data: data, closed: make(chan struct{})}
+}
+
+func (r *passthroughTerminalBlockingBody) Read(p []byte) (int, error) {
+	if r.offset < len(r.data) {
+		n := copy(p, r.data[r.offset:])
+		r.offset += n
+		return n, nil
+	}
+	<-r.closed
+	return 0, io.EOF
+}
+
+func (r *passthroughTerminalBlockingBody) Close() error {
+	r.closeOnce.Do(func() { close(r.closed) })
+	return nil
+}
 
 func runPassthroughFlushTest(
 	t *testing.T,
@@ -125,6 +152,42 @@ func TestOpenAIStreamingPassthroughFlushesAtCompleteEventBoundaries(t *testing.T
 	}, writer.flushBodyLengths)
 	require.Equal(t, 3, result.usage.InputTokens)
 	require.Equal(t, 2, result.usage.OutputTokens)
+}
+
+func TestOpenAIStreamingPassthroughReturnsAtTerminalBoundaryWithoutUpstreamEOF(t *testing.T) {
+	terminalEvent := `data: {"type":"response.completed","response":{"id":"resp_held_open","output":[{"type":"message","id":"msg_1"}],"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}}` + "\n\n"
+	body := newPassthroughTerminalBlockingBody([]byte(terminalEvent))
+	defer func() { require.NoError(t, body.Close()) }()
+
+	type testResult struct {
+		result   *openaiStreamingResultPassthrough
+		recorder *httptest.ResponseRecorder
+		writer   *passthroughFlushTestWriter
+		err      error
+	}
+	resultCh := make(chan testResult, 1)
+	go func() {
+		result, recorder, writer, err := runPassthroughFlushTest(t, body, -1)
+		resultCh <- testResult{result: result, recorder: recorder, writer: writer, err: err}
+	}()
+
+	select {
+	case got := <-resultCh:
+		require.NoError(t, got.err)
+		require.NotNil(t, got.result)
+		require.Equal(t, terminalEvent, got.recorder.Body.String())
+		require.Equal(t, []int{len(terminalEvent)}, got.writer.flushBodyLengths)
+		require.Equal(t, 7, got.result.usage.InputTokens)
+		require.Equal(t, 3, got.result.usage.OutputTokens)
+	case <-time.After(time.Second):
+		t.Fatal("passthrough stream waited for upstream EOF after response.completed")
+	}
+
+	select {
+	case <-body.closed:
+	case <-time.After(time.Second):
+		t.Fatal("passthrough terminal handling did not close the upstream body")
+	}
 }
 
 func TestOpenAIStreamingPassthroughKeepsPreamblePendingUntilFirstOutputBoundary(t *testing.T) {

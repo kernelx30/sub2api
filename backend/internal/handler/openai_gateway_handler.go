@@ -498,7 +498,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		requestPlatform = openAICompatibleRequestPlatform(c.Request.Context(), currentState.apiKey)
 		requiredCapability = openAIResponsesRequiredCapability(imageIntent, requestPlatform)
 		switchCount = 0
-		firstOutputTimeoutSwitchCount = 0
+		// The first-output failover budget is request-scoped. A group fallback must
+		// not reset it, otherwise primary + fallback groups can each replay a slow
+		// request and multiply both user-visible latency and upstream billing.
 		sameAccountRetryCount = make(map[int64]int)
 		lastFailoverErr = nil
 		oauth429FailoverState = service.OpenAIOAuth429FailoverState{}
@@ -1967,7 +1969,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 
-	sessionHash := h.gatewayService.GenerateSessionHashWithFallback(
+	sessionHash, ctx := generateOpenAIWSIngressSessionContext(
+		h.gatewayService,
 		c,
 		firstMessage,
 		openAIWSIngressFallbackSessionSeed(subject.UserID, apiKey.ID, apiKey.GroupID),
@@ -3025,6 +3028,16 @@ func openAIWSIngressFallbackSessionSeed(userID, apiKeyID int64, groupID *int64) 
 		gid = *groupID
 	}
 	return fmt.Sprintf("openai_ws_ingress:%d:%d:%d", gid, userID, apiKeyID)
+}
+
+func generateOpenAIWSIngressSessionContext(
+	gatewayService *service.OpenAIGatewayService,
+	c *gin.Context,
+	firstMessage []byte,
+	fallbackSeed string,
+) (string, context.Context) {
+	sessionHash := gatewayService.GenerateSessionHashWithFallback(c, firstMessage, fallbackSeed)
+	return sessionHash, c.Request.Context()
 }
 
 func isOpenAIWSUpgradeRequest(r *http.Request) bool {

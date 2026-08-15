@@ -27,6 +27,37 @@ const (
 	codeBuddyConversationHeader   = "X-Conversation-ID"
 )
 
+type openAISessionAffinitySource uint8
+
+const (
+	openAISessionAffinityUnknown openAISessionAffinitySource = iota
+	openAISessionAffinityExplicit
+	openAISessionAffinityDerived
+)
+
+type openAISessionAffinitySourceContextKey struct{}
+
+func attachOpenAISessionAffinitySource(c *gin.Context, source openAISessionAffinitySource) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), openAISessionAffinitySourceContextKey{}, source))
+}
+
+func openAISessionAffinitySourceFromContext(ctx context.Context) openAISessionAffinitySource {
+	if ctx == nil {
+		return openAISessionAffinityUnknown
+	}
+	source, _ := ctx.Value(openAISessionAffinitySourceContextKey{}).(openAISessionAffinitySource)
+	return source
+}
+
+func (s *OpenAIGatewayService) shouldRouteDerivedOpenAISessionByAutoPriority(ctx context.Context, sessionHash string) bool {
+	return strings.TrimSpace(sessionHash) != "" &&
+		openAISessionAffinitySourceFromContext(ctx) == openAISessionAffinityDerived &&
+		s.poolAutoPriorityGloballyEnabled(ctx)
+}
+
 var explicitOpenAIHeaderSessionNames = []string{
 	"session_id",
 	"conversation_id",
@@ -119,6 +150,7 @@ func grokPreviousResponseSessionSeed(body []byte) string {
 // used by stateless endpoints such as /v1/images.
 func (s *OpenAIGatewayService) GenerateExplicitSessionHash(c *gin.Context, body []byte) string {
 	sessionID := explicitOpenAIRequestSessionID(c, body)
+	attachOpenAISessionAffinitySource(c, openAISessionAffinityExplicit)
 	if sessionID == "" {
 		return ""
 	}
@@ -151,9 +183,12 @@ func (s *OpenAIGatewayService) GenerateSessionHash(c *gin.Context, body []byte) 
 	}
 
 	sessionID := explicitOpenAIRequestSessionID(c, body)
+	source := openAISessionAffinityExplicit
 	if sessionID == "" && len(body) > 0 {
 		sessionID = deriveOpenAIContentSessionSeed(body)
+		source = openAISessionAffinityDerived
 	}
+	attachOpenAISessionAffinitySource(c, source)
 	if sessionID == "" {
 		return ""
 	}
@@ -198,6 +233,7 @@ func (s *OpenAIGatewayService) GenerateSessionHashWithFallback(c *gin.Context, b
 		return ""
 	}
 
+	attachOpenAISessionAffinitySource(c, openAISessionAffinityDerived)
 	currentHash, legacyHash := deriveOpenAISessionHashes(seed)
 	attachOpenAILegacySessionHashToGin(c, legacyHash)
 	return currentHash
@@ -752,6 +788,9 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	if sessionHash == "" {
 		return nil
 	}
+	if s.shouldRouteDerivedOpenAISessionByAutoPriority(ctx, sessionHash) {
+		return nil
+	}
 	platform = normalizeOpenAICompatiblePlatform(platform)
 
 	accountID := stickyAccountID
@@ -802,7 +841,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
 	}
-	if s.poolAutoPriorityGloballyEnabled(ctx) {
+	if openAISessionAffinitySourceFromContext(ctx) != openAISessionAffinityExplicit && s.poolAutoPriorityGloballyEnabled(ctx) {
 		if poolAutoPriorityEnabled(account) {
 			realTTFTState := s.openAIRealTrafficTTFTState(account, time.Now())
 			if realTTFTState.Degraded {
@@ -970,6 +1009,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	cfg := s.schedulingConfig()
 	preferLowUpstreamRate := useUpstreamTokenCost && s.isOpenAILowUpstreamRatePriorityEnabled(ctx)
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
+	sessionExplicit := openAISessionAffinitySourceFromContext(ctx) == openAISessionAffinityExplicit
 	var stickyAccountID int64
 	if sessionHash != "" && s.cache != nil {
 		if accountID, err := s.getStickySessionAccountID(ctx, groupID, sessionHash); err == nil {
@@ -1021,7 +1061,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	}
 
 	// ============ Layer 1: Sticky session ============
-	if sessionHash != "" {
+	if sessionHash != "" && !s.shouldRouteDerivedOpenAISessionByAutoPriority(ctx, sessionHash) {
 		accountID := stickyAccountID
 		if accountID > 0 && !isExcluded(accountID) {
 			account, err := s.getSchedulableAccount(ctx, accountID)
@@ -1042,7 +1082,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 					} else if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
-					} else if realTTFTState := s.openAIRealTrafficTTFTState(account, time.Now()); s.poolAutoPriorityGloballyEnabled(ctx) && poolAutoPriorityEnabled(account) && realTTFTState.Degraded {
+					} else if realTTFTState := s.openAIRealTrafficTTFTState(account, time.Now()); !sessionExplicit && s.poolAutoPriorityGloballyEnabled(ctx) && poolAutoPriorityEnabled(account) && realTTFTState.Degraded {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 						logOpenAIStickyRealTTFTEscape(account.ID, realTTFTState)
 					} else if reason, metrics := s.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, OpenAIAccountScheduleRequest{
@@ -1052,7 +1092,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 						ExcludedIDs:        excludedIDs,
 						RequireCompact:     requireCompact,
 						RequiredCapability: requiredCapability,
-					}, nil); reason != "" {
+					}, nil); !sessionExplicit && reason != "" {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 						logOpenAIStickyProbeEscape(account.ID, reason, metrics)
 					} else {
@@ -1654,6 +1694,15 @@ func (s *OpenAIGatewayService) openAIEffectiveAutoPriorityRanking(
 			state:     state,
 		})
 	}
+	for i := range candidates {
+		// A fresh production TTFT sample proves that this account can serve the
+		// real request shape. Treat it as a healthy ranking signal even when the
+		// lightweight probe is currently failed or unsupported; otherwise a stale
+		// probe can keep a 60-90s account ahead of a much faster working account.
+		if candidates[i].state.Mature {
+			candidates[i].probeTier = probeAutoPriorityTierHealthy
+		}
+	}
 
 	// Keep the comparator a strict total order. A pairwise latency tolerance is
 	// non-transitive and previously let failed or unmeasured accounts split the
@@ -1679,7 +1728,7 @@ func (s *OpenAIGatewayService) openAIEffectiveAutoPriorityRanking(
 	usedRealTraffic := false
 	for rank, candidate := range candidates {
 		effectiveRanks[candidate.account.ID] = rank
-		if candidate.probeRank != rank {
+		if candidate.state.Mature || candidate.probeRank != rank {
 			usedRealTraffic = true
 		}
 	}

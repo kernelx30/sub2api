@@ -592,6 +592,7 @@ func TestOpenAIGatewayService_GenerateSessionHashWithFallback(t *testing.T) {
 	want := fmt.Sprintf("%016x", xxhash.Sum64String(seed))
 	require.Equal(t, want, got)
 	require.NotEmpty(t, openAILegacySessionHashFromContext(c.Request.Context()))
+	require.Equal(t, openAISessionAffinityDerived, openAISessionAffinitySourceFromContext(c.Request.Context()))
 
 	empty := svc.GenerateSessionHashWithFallback(c, []byte(`{}`), "   ")
 	require.Equal(t, "", empty)
@@ -609,6 +610,7 @@ func TestOpenAIGatewayService_GenerateSessionHash_ContentFallback(t *testing.T) 
 
 	hash := svc.GenerateSessionHash(c, body)
 	require.NotEmpty(t, hash, "content-based fallback should produce a hash")
+	require.Equal(t, openAISessionAffinityDerived, openAISessionAffinitySourceFromContext(c.Request.Context()))
 
 	hash2 := svc.GenerateSessionHash(c, body)
 	require.Equal(t, hash, hash2, "same content should produce same hash")
@@ -2298,7 +2300,7 @@ func TestOpenAIStreamingMissingTerminalEventReturnsIncompleteError(t *testing.T)
 	}
 }
 
-func TestOpenAIStreamingPassthroughMissingTerminalEventReturnsIncompleteError(t *testing.T) {
+func TestOpenAIStreamingPassthroughStructuralOnlyDisconnectCanFailOver(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
@@ -2325,9 +2327,9 @@ func TestOpenAIStreamingPassthroughMissingTerminalEventReturnsIncompleteError(t 
 
 	_, err := svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "", "")
 	_ = pr.Close()
-	if err == nil || !strings.Contains(err.Error(), "missing terminal event") {
-		t.Fatalf("expected missing terminal event error, got %v", err)
-	}
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Empty(t, rec.Body.String())
 }
 
 func TestOpenAIStreamingPassthroughPostOutputDisconnectQuarantinesSharedProxy(t *testing.T) {

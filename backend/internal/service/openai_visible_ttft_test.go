@@ -71,11 +71,84 @@ func TestOpenAIResponsesTTFTStartsAtCompletedImage(t *testing.T) {
 	}
 }
 
-func TestOpenAINativeProgressDisarmsTimeoutWithoutStartingTTFT(t *testing.T) {
-	result := runSyntheticVisibleTTFTStream(t, false, 1200*time.Millisecond, 1,
-		`{"type":"response.output_text.delta","delta":"test output"}`)
-	require.NotNil(t, result.firstTokenMs)
-	require.GreaterOrEqual(t, *result.firstTokenMs, 1100)
+func TestOpenAINativeStructuralProgressDoesNotDisarmVisibleOutputTimeout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
+		MaxLineSize:                     defaultMaxLineSize,
+		OpenAIFirstOutputTimeoutSeconds: 1,
+	}}}
+	reader, writer := io.Pipe()
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		defer func() { _ = writer.Close() }()
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test\"}}\n\n")
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"item_test\",\"type\":\"reasoning\",\"summary\":[]}}\n\n")
+		time.Sleep(1200 * time.Millisecond)
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"too late\"}\n\n")
+	}()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: reader}
+
+	result, err := svc.handleStreamingResponse(
+		context.Background(), resp, c, &Account{ID: 1, Name: "account_test", Platform: PlatformOpenAI},
+		time.Now(), "test-model", "test-model",
+	)
+
+	require.NotNil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusGatewayTimeout, failoverErr.StatusCode)
+	require.Contains(t, string(failoverErr.ResponseBody), "first_output_timeout")
+	require.Empty(t, recorder.Body.String(), "structural preamble must remain private before visible output")
+	select {
+	case <-writerDone:
+	case <-time.After(time.Second):
+		t.Fatal("synthetic upstream writer did not exit after visible-output timeout")
+	}
+}
+
+func TestOpenAIPassthroughStructuralProgressDoesNotDisarmVisibleOutputTimeout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
+		MaxLineSize:                     defaultMaxLineSize,
+		OpenAIFirstOutputTimeoutSeconds: 1,
+	}}}
+	reader, writer := io.Pipe()
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		defer func() { _ = writer.Close() }()
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test\"}}\n\n")
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"item_test\",\"type\":\"reasoning\",\"summary\":[]}}\n\n")
+		time.Sleep(1200 * time.Millisecond)
+		_, _ = io.WriteString(writer, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"too late\"}\n\n")
+	}()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: reader}
+
+	result, err := svc.handleStreamingResponsePassthrough(
+		context.Background(), resp, c, &Account{ID: 1, Name: "account_test", Platform: PlatformOpenAI},
+		time.Now(), "test-model", "test-model",
+	)
+
+	require.NotNil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusGatewayTimeout, failoverErr.StatusCode)
+	require.Contains(t, string(failoverErr.ResponseBody), "first_output_timeout")
+	require.Empty(t, recorder.Body.String(), "structural preamble must remain private before visible output")
+	select {
+	case <-writerDone:
+	case <-time.After(time.Second):
+		t.Fatal("synthetic passthrough writer did not exit after visible-output timeout")
+	}
 }
 
 func runSyntheticVisibleTTFTStream(t *testing.T, passthrough bool, visibleDelay time.Duration, timeoutSeconds int, visibleEvent string) *openaiStreamingResult {

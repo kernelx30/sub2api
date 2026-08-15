@@ -929,6 +929,27 @@ func TestOpenAIResponsesWebSocket_SetsClientTransportWSWhenUpgradeValid(t *testi
 	require.Equal(t, service.OpenAIClientTransportWS, service.GetOpenAIClientTransport(c))
 }
 
+func TestOpenAIWSIngressSessionContextUsesUpdatedRequestContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	baseCtx := context.WithValue(context.Background(), struct{ name string }{"base"}, "preserved")
+	c.Request = httptest.NewRequest(http.MethodGet, "/openai/v1/responses", nil).WithContext(baseCtx)
+	gatewayService := &service.OpenAIGatewayService{}
+
+	sessionHash, routingCtx := generateOpenAIWSIngressSessionContext(
+		gatewayService,
+		c,
+		[]byte(`{"type":"response.create","model":"gpt-5.6-sol","input":"hello"}`),
+		"fallback-seed",
+	)
+
+	require.NotEmpty(t, sessionHash)
+	require.Equal(t, "preserved", routingCtx.Value(struct{ name string }{"base"}))
+	require.Equal(t, c.Request.Context(), routingCtx)
+	require.NotEqual(t, baseCtx, routingCtx)
+}
+
 func TestOpenAIResponsesWebSocket_InvalidUpgradeDoesNotSetTransport(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

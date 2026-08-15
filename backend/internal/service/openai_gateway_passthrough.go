@@ -191,6 +191,14 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	if c != nil {
 		c.Set("openai_passthrough", true)
 	}
+	reasoningEffortValue := ""
+	if reasoningEffort != nil {
+		reasoningEffortValue = *reasoningEffort
+	}
+	firstOutputTimeout := time.Duration(0)
+	if reqStream && account.Platform == PlatformOpenAI {
+		firstOutputTimeout = s.openAIFirstOutputTimeoutForRequest(c, reasoningEffortValue)
+	}
 
 	agentTaskRecoveryTried := false
 	var resp *http.Response
@@ -198,9 +206,20 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	var responseHeadersMS int64
 	for {
 		upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+		var headerGuard *openAIFirstOutputHeaderGuard
+		if firstOutputTimeout > 0 {
+			upstreamCtx, headerGuard = newOpenAIFirstOutputHeaderGuard(
+				upstreamCtx, releaseUpstreamCtx, startTime.Add(firstOutputTimeout),
+			)
+		}
 		upstreamReq, buildErr := s.buildUpstreamRequestOpenAIPassthrough(upstreamCtx, c, account, body, token)
-		releaseUpstreamCtx()
+		if headerGuard == nil {
+			releaseUpstreamCtx()
+		}
 		if buildErr != nil {
+			if headerGuard != nil {
+				headerGuard.close()
+			}
 			return nil, buildErr
 		}
 
@@ -209,10 +228,26 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		responseHeadersMS = time.Since(upstreamStart).Milliseconds()
 		prepareMS = upstreamStart.Sub(startTime).Milliseconds()
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, responseHeadersMS)
+		if headerGuard != nil && headerGuard.stopHeaderWait() {
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			headerGuard.close()
+			return nil, s.newOpenAIFirstOutputTimeoutError(
+				ctx, c, account, startTime, reqModel, reasoningEffortValue,
+				firstOutputTimeout, "response_headers", nil,
+			)
+		}
 		if err != nil {
+			if headerGuard != nil {
+				headerGuard.close()
+			}
 			// Transport-level failure (proxy/DNS/TCP/TLS — no HTTP response). Convert to
 			// a failover so the handler switches to a healthy account.
 			return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, true)
+		}
+		if headerGuard != nil {
+			resp.Body = &openAIRequestContextReadCloser{ReadCloser: resp.Body, cleanup: headerGuard.close}
 		}
 		if resp.StatusCode < 400 {
 			break
@@ -250,7 +285,10 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	imageCount := 0
 	var imageOutputSizes []string
 	if reqStream {
-		result, err := s.handleStreamingResponsePassthrough(ctx, resp, c, account, startTime, reqModel, upstreamPassthroughModel)
+		result, err := s.handleStreamingResponsePassthroughWithTimeout(
+			ctx, resp, c, account, startTime, reqModel, upstreamPassthroughModel,
+			firstOutputTimeout, reasoningEffortValue,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -842,8 +880,8 @@ func openAIStreamItemHasVisibleOutput(item gjson.Result) bool {
 	return false
 }
 
-// Structural progress can commit an attempt and disarm first-output failover,
-// but TTFT should start only when the stream carries content a client can use.
+// Visible text, tool payload, audio, or image content marks the first output a
+// client can use. Structural response events alone must not disarm failover.
 func openAIStreamDataStartsVisibleOutput(data, eventType string) bool {
 	trimmed := strings.TrimSpace(data)
 	if trimmed == "" || trimmed == "[DONE]" || !gjson.Valid(trimmed) {
@@ -1208,6 +1246,23 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	originalModel string,
 	mappedModel string,
 ) (*openaiStreamingResultPassthrough, error) {
+	return s.handleStreamingResponsePassthroughWithTimeout(
+		ctx, resp, c, account, startTime, originalModel, mappedModel,
+		s.openAIFirstOutputTimeoutForRequest(c, ""), "",
+	)
+}
+
+func (s *OpenAIGatewayService) handleStreamingResponsePassthroughWithTimeout(
+	ctx context.Context,
+	resp *http.Response,
+	c *gin.Context,
+	account *Account,
+	startTime time.Time,
+	originalModel string,
+	mappedModel string,
+	firstOutputTimeout time.Duration,
+	reasoningEffort string,
+) (*openaiStreamingResultPassthrough, error) {
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
@@ -1241,6 +1296,47 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	failedMessage := ""
 	clientOutputStarted := false
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
+	var firstOutputTimer *time.Timer
+	firstOutputTimedOut := make(chan struct{})
+	if firstOutputTimeout > 0 {
+		remaining := time.Until(startTime.Add(firstOutputTimeout))
+		if remaining <= 0 {
+			remaining = time.Nanosecond
+		}
+		firstOutputTimer = time.AfterFunc(remaining, func() {
+			close(firstOutputTimedOut)
+			_ = resp.Body.Close()
+		})
+		defer firstOutputTimer.Stop()
+	}
+	firstOutputTimeoutError := func() error {
+		return s.newOpenAIFirstOutputTimeoutError(
+			ctx, c, account, startTime, originalModel, reasoningEffort,
+			firstOutputTimeout, "semantic_output", resp.Header,
+		)
+	}
+	firstOutputTimerFired := func() bool {
+		if firstOutputTimer == nil {
+			return false
+		}
+		select {
+		case <-firstOutputTimedOut:
+			return true
+		default:
+			return false
+		}
+	}
+	stopFirstOutputTimer := func() bool {
+		if firstOutputTimer == nil {
+			return false
+		}
+		if !firstOutputTimer.Stop() {
+			<-firstOutputTimedOut
+			return true
+		}
+		firstOutputTimer = nil
+		return false
+	}
 	// pendingLines 在首个可见输出前保留前导事件，确保无输出失败仍可安全 failover。
 	pendingLines := make([]string, 0, 8)
 	// flushPending 表示已写入但未到 SSE 空行边界的脏状态；defer 兜底函数退出前的残留，断连后不再 Flush。
@@ -1399,8 +1495,11 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				trimmedData = strings.TrimSpace(string(sanitizedData))
 				line = "data: " + string(sanitizedData)
 			}
-			lineStartsClientOutput = forceFlushFailedEvent || openAIStreamDataStartsClientOutput(trimmedData, eventType)
-			if lineStartsClientOutput && trimmedData != "[DONE]" && !openAIStreamEventTypeIsTerminal(eventType) {
+			startsVisibleOutput := openAIStreamDataStartsVisibleOutput(trimmedData, eventType)
+			startsTerminalOutput := trimmedData == "[DONE]" || openAIStreamEventTypeIsTerminal(eventType)
+			startsNonRetryableError := eventType == "error" && openAIStreamDataStartsClientOutput(trimmedData, eventType)
+			lineStartsClientOutput = forceFlushFailedEvent || startsVisibleOutput || startsTerminalOutput || startsNonRetryableError
+			if startsVisibleOutput && !startsTerminalOutput {
 				semanticOutputSeen = true
 			}
 			// OpenAI Responses streams that terminate with an empty
@@ -1412,9 +1511,17 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				openAIResponsesCompletedEventIsEmpty(dataBytes, usage) {
 				return resultWithUsage(), newOpenAIResponsesEmptyCompletedFailoverError(c, account, upstreamRequestID)
 			}
-			if firstTokenMs == nil && openAIStreamDataStartsVisibleOutput(trimmedData, eventType) {
+			if firstTokenMs == nil && startsVisibleOutput {
+				if stopFirstOutputTimer() {
+					return resultWithUsage(), firstOutputTimeoutError()
+				}
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
+			}
+			if firstTokenMs == nil && (startsTerminalOutput || startsNonRetryableError || forceFlushFailedEvent) {
+				if stopFirstOutputTimer() {
+					return resultWithUsage(), firstOutputTimeoutError()
+				}
 			}
 			s.parseSSEUsageBytes(dataBytes, usage)
 		}
@@ -1440,6 +1547,21 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				}
 			}
 		}
+		// A terminal data line is not a complete SSE event until its blank-line
+		// boundary has been forwarded. Once that boundary is flushed, the usage
+		// carried by response.completed/response.failed is final; do not wait for
+		// a misbehaving upstream to close an otherwise completed HTTP body.
+		if line == "" && (sawDone || sawTerminalEvent) {
+			_ = resp.Body.Close()
+			if sawFailedEvent {
+				return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
+			}
+			s.clearOpenAIProxyStreamDisconnect(account)
+			return resultWithUsage(), nil
+		}
+	}
+	if firstOutputTimerFired() && firstTokenMs == nil {
+		return resultWithUsage(), firstOutputTimeoutError()
 	}
 	if err := documentScanner.Err(); err != nil {
 		if (sawDone || sawTerminalEvent) && !sawFailedEvent {
