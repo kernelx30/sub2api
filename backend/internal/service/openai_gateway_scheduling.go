@@ -1639,7 +1639,7 @@ func (s *OpenAIGatewayService) openAIEffectiveAutoPriorityRanking(
 
 	sort.SliceStable(ordered, func(i, j int) bool {
 		left, right := ordered[i], ordered[j]
-		if comparison := compareOpenAIRealTrafficTTFTStates(states[left.ID], states[right.ID]); comparison != 0 {
+		if comparison := compareOpenAIEffectiveTTFTStates(states[left.ID], states[right.ID]); comparison != 0 {
 			return comparison > 0
 		}
 		return probeRanks[left.ID] < probeRanks[right.ID]

@@ -650,12 +650,13 @@ func (s *defaultOpenAIAccountScheduler) shouldEscapeStickyAccount(accountID int6
 }
 
 type openAIRealTrafficTTFTState struct {
-	TTFTMS      float64
-	ThresholdMS float64
-	SampleCount int64
-	UpdatedAt   time.Time
-	Mature      bool
-	Degraded    bool
+	TTFTMS        float64
+	ThresholdMS   float64
+	SampleCount   int64
+	UpdatedAt     time.Time
+	Mature        bool
+	Degraded      bool
+	rankingTTFTMS float64
 }
 
 func (s *defaultOpenAIAccountScheduler) realTrafficTTFTState(account *Account, now time.Time) openAIRealTrafficTTFTState {
@@ -666,7 +667,7 @@ func (s *defaultOpenAIAccountScheduler) realTrafficTTFTState(account *Account, n
 }
 
 func openAIRealTrafficTTFTStateFromStats(stats *openAIAccountRuntimeStats, account *Account, now time.Time) openAIRealTrafficTTFTState {
-	state := openAIRealTrafficTTFTState{}
+	state := openAIRealTrafficTTFTState{rankingTTFTMS: openAIProbeRankingTTFTMS(account, now)}
 	if stats == nil || account == nil {
 		return state
 	}
@@ -681,7 +682,23 @@ func openAIRealTrafficTTFTStateFromStats(stats *openAIAccountRuntimeStats, accou
 	state.Mature = true
 	state.ThresholdMS = openAIRealTrafficTTFTDegradedThreshold(account, now)
 	state.Degraded = state.TTFTMS > state.ThresholdMS
+	if state.rankingTTFTMS > 0 {
+		state.rankingTTFTMS = state.TTFTMS
+	}
 	return state
+}
+
+func openAIProbeRankingTTFTMS(account *Account, now time.Time) float64 {
+	info, signal := accountProbeAutoPriority(account, now)
+	if !signal || info.tier != probeAutoPriorityTierHealthy {
+		return 0
+	}
+	for _, latencyMS := range []int64{info.p50LatencyMS, info.latencyMS, info.p95LatencyMS} {
+		if latencyMS > 0 {
+			return float64(latencyMS)
+		}
+	}
+	return 0
 }
 
 func openAIRealTrafficTTFTDegradedThreshold(account *Account, now time.Time) float64 {
@@ -704,22 +721,25 @@ func openAIRealTrafficTTFTDegradedThreshold(account *Account, now time.Time) flo
 	return threshold
 }
 
-func compareOpenAIRealTrafficTTFTStates(left openAIRealTrafficTTFTState, right openAIRealTrafficTTFTState) int {
+func compareOpenAIEffectiveTTFTStates(left openAIRealTrafficTTFTState, right openAIRealTrafficTTFTState) int {
 	if left.Degraded != right.Degraded {
 		if left.Degraded {
 			return -1
 		}
 		return 1
 	}
-	if !left.Mature || !right.Mature || left.TTFTMS <= 0 || right.TTFTMS <= 0 {
+	if !left.Mature && !right.Mature {
 		return 0
 	}
-	best := math.Min(left.TTFTMS, right.TTFTMS)
+	if left.rankingTTFTMS <= 0 || right.rankingTTFTMS <= 0 {
+		return 0
+	}
+	best := math.Min(left.rankingTTFTMS, right.rankingTTFTMS)
 	slack := math.Max(openAIRealTrafficTTFTCohortMinSlackMS, best*openAIRealTrafficTTFTCohortSlackRatio)
 	switch {
-	case left.TTFTMS+slack < right.TTFTMS:
+	case left.rankingTTFTMS+slack < right.rankingTTFTMS:
 		return 1
-	case right.TTFTMS+slack < left.TTFTMS:
+	case right.rankingTTFTMS+slack < left.rankingTTFTMS:
 		return -1
 	default:
 		return 0

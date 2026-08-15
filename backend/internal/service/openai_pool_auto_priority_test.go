@@ -100,6 +100,51 @@ func TestOpenAIGatewayLoadAwareSelectionUsesRealTrafficTTFTAndMatchesDisplayedRa
 	selection.ReleaseFunc()
 }
 
+func TestOpenAIGatewayLoadAwareSelectionComparesRuntimeTTFTWithProbeFallback(t *testing.T) {
+	probeWinnerButRuntimeSlow := openAIPoolProbeTestAccount(7161, 0, UpstreamBillingProbeStatusOK, 1750)
+	probeBackupWithoutRuntime := openAIPoolProbeTestAccount(7162, 20, UpstreamBillingProbeStatusOK, 2381)
+	accounts := []Account{probeWinnerButRuntimeSlow, probeBackupWithoutRuntime}
+
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = true
+	svc := &OpenAIGatewayService{
+		accountRepo: schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cfg:         cfg,
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{
+			loadMap: map[int64]*AccountLoadInfo{
+				probeWinnerButRuntimeSlow.ID: {AccountID: probeWinnerButRuntimeSlow.ID},
+				probeBackupWithoutRuntime.ID: {AccountID: probeBackupWithoutRuntime.ID},
+			},
+		}),
+	}
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		svc.ReportOpenAIAccountScheduleResult(probeWinnerButRuntimeSlow.ID, "gpt-5.6-sol", true, intPtrForTest(8125))
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), nil, "", "gpt-5.6-sol", nil)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, probeBackupWithoutRuntime.ID, selection.Account.ID)
+	require.NotNil(t, svc.openaiAccountStats)
+
+	scheduler := &defaultOpenAIAccountScheduler{service: svc, stats: svc.openaiAccountStats}
+	plan := scheduler.buildOpenAIAccountLoadPlan(
+		context.Background(),
+		OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.6-sol"},
+		[]*Account{&accounts[0], &accounts[1]},
+		map[int64]*AccountLoadInfo{},
+	)
+	require.Len(t, plan.selectionOrder, 2)
+	require.Equal(t, probeBackupWithoutRuntime.ID, plan.selectionOrder[0].account.ID)
+
+	ranking := svc.BuildPoolAutoPriorityRanking([]*Account{&accounts[0], &accounts[1]}, time.Now())
+	require.Len(t, ranking, 2)
+	require.Equal(t, probeBackupWithoutRuntime.ID, ranking[0].AccountID)
+	require.Equal(t, PoolAutoPriorityRankingSourceRealTraffic, ranking[0].RankingSource)
+	require.False(t, ranking[0].RuntimeMature)
+	selection.ReleaseFunc()
+}
+
 func TestOpenAIGatewayLoadAwareSelectionMatchesDisplayedRankInsideProbeCohort(t *testing.T) {
 	displayedFirst := openAIPoolProbeTestAccount(7171, 0, UpstreamBillingProbeStatusOK, 1000)
 	displayedSecond := openAIPoolProbeTestAccount(7172, 0, UpstreamBillingProbeStatusOK, 1050)
@@ -261,11 +306,11 @@ func TestOpenAIStickyFailedProbeIsClearedAndReboundToHealthyAccount(t *testing.T
 	}
 }
 
-func TestOpenAIStickySlowRealTrafficIsClearedAndRebound(t *testing.T) {
+func TestOpenAIStickyMixedRuntimeAndProbeTTFTIsClearedAndRebound(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(7450)
-	probeWinner := openAIPoolProbeTestAccount(7451, 0, UpstreamBillingProbeStatusOK, 1000)
-	productionWinner := openAIPoolProbeTestAccount(7452, 20, UpstreamBillingProbeStatusOK, 2200)
+	probeWinner := openAIPoolProbeTestAccount(7451, 0, UpstreamBillingProbeStatusOK, 1750)
+	productionWinner := openAIPoolProbeTestAccount(7452, 20, UpstreamBillingProbeStatusOK, 2381)
 	probeWinner.GroupIDs = []int64{groupID}
 	productionWinner.GroupIDs = []int64{groupID}
 
@@ -274,8 +319,7 @@ func TestOpenAIStickySlowRealTrafficIsClearedAndRebound(t *testing.T) {
 	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{cacheKey: probeWinner.ID}}
 	stats := newOpenAIAccountRuntimeStats()
 	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
-		stats.report(probeWinner.ID, true, intPtrForTest(30000))
-		stats.report(productionWinner.ID, true, intPtrForTest(4000))
+		stats.report(probeWinner.ID, true, intPtrForTest(8125))
 	}
 	svc := &OpenAIGatewayService{
 		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{probeWinner, productionWinner}},
