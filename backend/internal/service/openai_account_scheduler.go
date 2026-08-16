@@ -673,7 +673,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	if s.service.poolAutoPriorityGloballyEnabled(ctx) {
 		if poolAutoPriorityEnabled(account) {
 			realTTFTState := s.realTrafficTTFTState(account, time.Now())
-			if realTTFTState.RecentFailure || (!req.SessionExplicit && realTTFTState.UsesRuntime && realTTFTState.Degraded) {
+			if shouldEscapeOpenAIStickyForRuntime(req.Platform, req.SessionExplicit, realTTFTState) {
 				_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 				logOpenAIStickyRealTTFTEscape(accountID, realTTFTState)
 				return nil, false, nil
@@ -815,6 +815,22 @@ type openAIRealTrafficTTFTState struct {
 	RecentFailure bool
 	UsesRuntime   bool
 	rankingTTFTMS float64
+}
+
+func shouldEscapeOpenAIStickyForRuntime(
+	platform string,
+	sessionExplicit bool,
+	state openAIRealTrafficTTFTState,
+) bool {
+	if state.RecentFailure {
+		return true
+	}
+	if !state.UsesRuntime || !state.Degraded {
+		return false
+	}
+	// Grok explicit sessions can carry an account-local previous_response_id.
+	// Keep those bindings intact; this latency escape is for GPT/OpenAI traffic.
+	return !sessionExplicit || normalizeOpenAICompatiblePlatform(platform) == PlatformOpenAI
 }
 
 func (s *defaultOpenAIAccountScheduler) realTrafficTTFTState(account *Account, now time.Time) openAIRealTrafficTTFTState {

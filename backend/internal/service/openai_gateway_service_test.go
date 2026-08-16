@@ -350,6 +350,7 @@ func TestOpenAIGatewayService_GenerateSessionHash_Priority(t *testing.T) {
 	if h1 == "" {
 		t.Fatalf("expected non-empty hash")
 	}
+	require.Equal(t, openAISessionAffinityExplicit, openAISessionAffinitySourceFromContext(c.Request.Context()))
 
 	// 2) conversation_id used when session_id absent
 	c.Request.Header.Del("session_id")
@@ -360,6 +361,7 @@ func TestOpenAIGatewayService_GenerateSessionHash_Priority(t *testing.T) {
 	if h1 == h2 {
 		t.Fatalf("expected different hashes for different keys")
 	}
+	require.Equal(t, openAISessionAffinityExplicit, openAISessionAffinitySourceFromContext(c.Request.Context()))
 
 	// 3) prompt_cache_key used when both headers absent
 	c.Request.Header.Del("conversation_id")
@@ -370,6 +372,7 @@ func TestOpenAIGatewayService_GenerateSessionHash_Priority(t *testing.T) {
 	if h2 == h3 {
 		t.Fatalf("expected different hashes for different keys")
 	}
+	require.Equal(t, openAISessionAffinityExplicit, openAISessionAffinitySourceFromContext(c.Request.Context()))
 
 	// 4) empty when no signals
 	h4 := svc.GenerateSessionHash(c, []byte(`{}`))

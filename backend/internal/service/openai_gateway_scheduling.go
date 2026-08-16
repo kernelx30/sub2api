@@ -845,7 +845,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	if s.poolAutoPriorityGloballyEnabled(ctx) {
 		if poolAutoPriorityEnabled(account) {
 			realTTFTState := s.openAIRealTrafficTTFTState(account, time.Now())
-			if realTTFTState.RecentFailure || (!sessionExplicit && realTTFTState.UsesRuntime && realTTFTState.Degraded) {
+			if shouldEscapeOpenAIStickyForRuntime(account.Platform, sessionExplicit, realTTFTState) {
 				_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 				logOpenAIStickyRealTTFTEscape(account.ID, realTTFTState)
 				return nil
@@ -1085,7 +1085,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 					} else if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
-					} else if realTTFTState := s.openAIRealTrafficTTFTState(account, time.Now()); s.poolAutoPriorityGloballyEnabled(ctx) && poolAutoPriorityEnabled(account) && (realTTFTState.RecentFailure || (!sessionExplicit && realTTFTState.UsesRuntime && realTTFTState.Degraded)) {
+					} else if realTTFTState := s.openAIRealTrafficTTFTState(account, time.Now()); s.poolAutoPriorityGloballyEnabled(ctx) && poolAutoPriorityEnabled(account) && shouldEscapeOpenAIStickyForRuntime(account.Platform, sessionExplicit, realTTFTState) {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 						logOpenAIStickyRealTTFTEscape(account.ID, realTTFTState)
 					} else if reason, metrics := s.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, OpenAIAccountScheduleRequest{
