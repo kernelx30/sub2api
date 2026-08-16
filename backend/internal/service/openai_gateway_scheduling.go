@@ -843,25 +843,35 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	}
 	sessionExplicit := openAISessionAffinitySourceFromContext(ctx) == openAISessionAffinityExplicit
 	if s.poolAutoPriorityGloballyEnabled(ctx) {
+		realTTFTState := openAIRealTrafficTTFTState{}
 		if poolAutoPriorityEnabled(account) {
-			realTTFTState := s.openAIRealTrafficTTFTState(account, time.Now())
+			realTTFTState = s.openAIRealTrafficTTFTState(account, time.Now())
 			if shouldEscapeOpenAIStickyForRuntime(account.Platform, sessionExplicit, realTTFTState) {
 				_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 				logOpenAIStickyRealTTFTEscape(account.ID, realTTFTState)
 				return nil
 			}
 		}
-		if !sessionExplicit {
+		checkRelativeExplicit := shouldEvaluateOpenAIExplicitStickyRelativeRuntime(platform, sessionExplicit, realTTFTState)
+		if !sessionExplicit || checkRelativeExplicit {
 			if accounts, listErr := s.listSchedulableAccounts(ctx, groupID, platform); listErr == nil {
-				reason, metrics := s.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, OpenAIAccountScheduleRequest{
+				req := OpenAIAccountScheduleRequest{
 					GroupID:            groupID,
 					Platform:           platform,
+					SessionExplicit:    sessionExplicit,
 					RequestedModel:     requestedModel,
 					ExcludedIDs:        excludedIDs,
 					RequireCompact:     requireCompact,
 					RequiredCapability: requiredCapability,
-				}, nil)
-				if reason != "" {
+				}
+				if checkRelativeExplicit {
+					decision := s.openAIExplicitStickyRuntimeEscapeForCandidates(ctx, account, accounts, req, nil)
+					if decision.ShouldEscape {
+						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						logOpenAIExplicitStickyRelativeRuntimeEscape(account.ID, decision)
+						return nil
+					}
+				} else if reason, metrics := s.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, req, nil); reason != "" {
 					_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 					logOpenAIStickyProbeEscape(account.ID, reason, metrics)
 					return nil
@@ -1088,6 +1098,17 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 					} else if realTTFTState := s.openAIRealTrafficTTFTState(account, time.Now()); s.poolAutoPriorityGloballyEnabled(ctx) && poolAutoPriorityEnabled(account) && shouldEscapeOpenAIStickyForRuntime(account.Platform, sessionExplicit, realTTFTState) {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 						logOpenAIStickyRealTTFTEscape(account.ID, realTTFTState)
+					} else if relativeDecision := s.openAIExplicitStickyRuntimeEscapeForCandidates(ctx, account, accounts, OpenAIAccountScheduleRequest{
+						GroupID:            groupID,
+						Platform:           platform,
+						SessionExplicit:    sessionExplicit,
+						RequestedModel:     requestedModel,
+						ExcludedIDs:        excludedIDs,
+						RequireCompact:     requireCompact,
+						RequiredCapability: requiredCapability,
+					}, nil); relativeDecision.ShouldEscape {
+						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						logOpenAIExplicitStickyRelativeRuntimeEscape(account.ID, relativeDecision)
 					} else if reason, metrics := s.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, OpenAIAccountScheduleRequest{
 						GroupID:            groupID,
 						Platform:           platform,
@@ -1750,15 +1771,24 @@ func (s *OpenAIGatewayService) openAIEffectiveAutoPriorityRanking(
 	return effectiveRanks, states, usedRealTraffic, true
 }
 
-func (s *OpenAIGatewayService) openAIStickyProbeEscapeReasonForCandidates(
+type openAIExplicitStickyRuntimeEscapeDecision struct {
+	ShouldEscape         bool
+	CandidateAccountID   int64
+	StickyTTFTMS         float64
+	CandidateTTFTMS      float64
+	StickySampleCount    int64
+	CandidateSampleCount int64
+}
+
+func (s *OpenAIGatewayService) openAIStickyEligibleCandidates(
 	ctx context.Context,
 	account *Account,
 	accounts []Account,
 	req OpenAIAccountScheduleRequest,
 	extraEligible func(*Account) bool,
-) (string, upstreamModelProbeMetrics) {
-	if s == nil || account == nil || !s.poolAutoPriorityGloballyEnabled(ctx) {
-		return "", upstreamModelProbeMetrics{}
+) []*Account {
+	if s == nil || account == nil {
+		return nil
 	}
 
 	platform := normalizeOpenAICompatiblePlatform(req.Platform)
@@ -1803,6 +1833,21 @@ func (s *OpenAIGatewayService) openAIStickyProbeEscapeReasonForCandidates(
 		}
 		candidates = append(candidates, candidate)
 	}
+	return candidates
+}
+
+func (s *OpenAIGatewayService) openAIStickyProbeEscapeReasonForCandidates(
+	ctx context.Context,
+	account *Account,
+	accounts []Account,
+	req OpenAIAccountScheduleRequest,
+	extraEligible func(*Account) bool,
+) (string, upstreamModelProbeMetrics) {
+	if s == nil || account == nil || !s.poolAutoPriorityGloballyEnabled(ctx) {
+		return "", upstreamModelProbeMetrics{}
+	}
+
+	candidates := s.openAIStickyEligibleCandidates(ctx, account, accounts, req, extraEligible)
 
 	now := time.Now()
 	reason, metrics := accountProbeStickyEscapeReasonWithinPool(account, candidates, now)
@@ -1822,6 +1867,63 @@ func (s *OpenAIGatewayService) openAIStickyProbeEscapeReasonForCandidates(
 	return "", metrics
 }
 
+func (s *OpenAIGatewayService) openAIExplicitStickyRuntimeEscapeForCandidates(
+	ctx context.Context,
+	account *Account,
+	accounts []Account,
+	req OpenAIAccountScheduleRequest,
+	extraEligible func(*Account) bool,
+) openAIExplicitStickyRuntimeEscapeDecision {
+	decision := openAIExplicitStickyRuntimeEscapeDecision{}
+	if s == nil || account == nil || !poolAutoPriorityEnabled(account) || !req.SessionExplicit ||
+		normalizeOpenAICompatiblePlatform(req.Platform) != PlatformOpenAI ||
+		!s.poolAutoPriorityGloballyEnabled(ctx) {
+		return decision
+	}
+
+	now := time.Now()
+	stickyState := s.openAIRealTrafficTTFTState(account, now)
+	if !shouldEvaluateOpenAIExplicitStickyRelativeRuntime(req.Platform, req.SessionExplicit, stickyState) {
+		return decision
+	}
+	candidates := s.openAIStickyEligibleCandidates(ctx, account, accounts, req, extraEligible)
+	ranks, states, usedRealTraffic, ranked := s.openAIEffectiveAutoPriorityRanking(candidates, now)
+	currentRank, currentRanked := ranks[account.ID]
+	stickyState = states[account.ID]
+	if !ranked || !usedRealTraffic || !currentRanked ||
+		!shouldEvaluateOpenAIExplicitStickyRelativeRuntime(req.Platform, req.SessionExplicit, stickyState) {
+		return decision
+	}
+
+	var bestAccountID int64
+	bestState := openAIRealTrafficTTFTState{}
+	for _, candidate := range candidates {
+		if candidate == nil || candidate.ID == account.ID {
+			continue
+		}
+		candidateRank, candidateRanked := ranks[candidate.ID]
+		candidateState := states[candidate.ID]
+		if !candidateRanked || candidateRank >= currentRank ||
+			!candidateState.UsesRuntime || !candidateState.Mature || !candidateState.Fresh || candidateState.Degraded || candidateState.TTFTMS <= 0 {
+			continue
+		}
+		if bestAccountID == 0 || candidateState.TTFTMS < bestState.TTFTMS {
+			bestAccountID = candidate.ID
+			bestState = candidateState
+		}
+	}
+	if bestAccountID == 0 || !shouldEscapeOpenAIExplicitStickyForRelativeRuntime(stickyState, bestState) {
+		return decision
+	}
+	decision.ShouldEscape = true
+	decision.CandidateAccountID = bestAccountID
+	decision.StickyTTFTMS = stickyState.TTFTMS
+	decision.CandidateTTFTMS = bestState.TTFTMS
+	decision.StickySampleCount = stickyState.SampleCount
+	decision.CandidateSampleCount = bestState.SampleCount
+	return decision
+}
+
 func logOpenAIStickyProbeEscape(accountID int64, reason string, metrics upstreamModelProbeMetrics) {
 	slog.Info("sticky_probe_escape_triggered",
 		"account_id", accountID,
@@ -1839,6 +1941,19 @@ func logOpenAIStickyRealTTFTEscape(accountID int64, state openAIRealTrafficTTFTS
 		"sample_count", state.SampleCount,
 		"ttft_ms", state.TTFTMS,
 		"threshold_ms", state.ThresholdMS,
+	)
+}
+
+func logOpenAIExplicitStickyRelativeRuntimeEscape(accountID int64, decision openAIExplicitStickyRuntimeEscapeDecision) {
+	slog.Info("sticky_relative_real_ttft_escape_triggered",
+		"account_id", accountID,
+		"candidate_account_id", decision.CandidateAccountID,
+		"ttft_ms", decision.StickyTTFTMS,
+		"candidate_ttft_ms", decision.CandidateTTFTMS,
+		"ttft_gap_ms", decision.StickyTTFTMS-decision.CandidateTTFTMS,
+		"ttft_ratio", decision.StickyTTFTMS/decision.CandidateTTFTMS,
+		"sample_count", decision.StickySampleCount,
+		"candidate_sample_count", decision.CandidateSampleCount,
 	)
 }
 

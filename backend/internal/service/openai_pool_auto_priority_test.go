@@ -20,6 +20,55 @@ func TestShouldEscapeOpenAIStickyForRuntime(t *testing.T) {
 	require.True(t, shouldEscapeOpenAIStickyForRuntime(PlatformGrok, true, openAIRealTrafficTTFTState{RecentFailure: true}))
 }
 
+func TestShouldEscapeOpenAIExplicitStickyForRelativeRuntime(t *testing.T) {
+	sticky := openAIRealTrafficTTFTState{UsesRuntime: true, Mature: true, Fresh: true, TTFTMS: 6589.52}
+	fast := openAIRealTrafficTTFTState{UsesRuntime: true, Mature: true, Fresh: true, TTFTMS: 3000}
+	require.True(t, shouldEvaluateOpenAIExplicitStickyRelativeRuntime(PlatformOpenAI, true, sticky))
+	require.True(t, shouldEscapeOpenAIExplicitStickyForRelativeRuntime(sticky, fast))
+
+	nearby := openAIRealTrafficTTFTState{UsesRuntime: true, Mature: true, Fresh: true, TTFTMS: 4500}
+	require.False(t, shouldEscapeOpenAIExplicitStickyForRelativeRuntime(sticky, nearby))
+
+	immature := fast
+	immature.Mature = false
+	require.False(t, shouldEscapeOpenAIExplicitStickyForRelativeRuntime(sticky, immature))
+	require.False(t, shouldEscapeOpenAIExplicitStickyForRelativeRuntime(
+		openAIRealTrafficTTFTState{UsesRuntime: true, Mature: true, Fresh: true, TTFTMS: 6000},
+		openAIRealTrafficTTFTState{UsesRuntime: true, Mature: true, Fresh: true, TTFTMS: 5000},
+	))
+	require.False(t, shouldEvaluateOpenAIExplicitStickyRelativeRuntime(PlatformGrok, true, sticky))
+	require.False(t, shouldEvaluateOpenAIExplicitStickyRelativeRuntime(PlatformOpenAI, true, openAIRealTrafficTTFTState{UsesRuntime: true, TTFTMS: 6589.52}))
+	require.False(t, shouldEvaluateOpenAIExplicitStickyRelativeRuntime(PlatformOpenAI, false, sticky))
+	require.False(t, shouldEvaluateOpenAIExplicitStickyRelativeRuntime(
+		PlatformOpenAI, true,
+		openAIRealTrafficTTFTState{UsesRuntime: true, Mature: true, Fresh: true, TTFTMS: 4999},
+	))
+	require.True(t, shouldEvaluateOpenAIExplicitStickyRelativeRuntime(
+		PlatformOpenAI, true,
+		openAIRealTrafficTTFTState{UsesRuntime: true, Mature: true, Fresh: true, TTFTMS: 5000},
+	))
+
+	for _, tc := range []struct {
+		name        string
+		stickyTTFT  float64
+		peerTTFT    float64
+		shouldBreak bool
+	}{
+		{name: "gap_below", stickyTTFT: 5499, peerTTFT: 3000, shouldBreak: false},
+		{name: "gap_boundary", stickyTTFT: 5500, peerTTFT: 3000, shouldBreak: true},
+		{name: "ratio_below", stickyTTFT: 8999, peerTTFT: 6000, shouldBreak: false},
+		{name: "ratio_boundary", stickyTTFT: 9000, peerTTFT: 6000, shouldBreak: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := shouldEscapeOpenAIExplicitStickyForRelativeRuntime(
+				openAIRealTrafficTTFTState{UsesRuntime: true, Mature: true, Fresh: true, TTFTMS: tc.stickyTTFT},
+				openAIRealTrafficTTFTState{UsesRuntime: true, Mature: true, Fresh: true, TTFTMS: tc.peerTTFT},
+			)
+			require.Equal(t, tc.shouldBreak, got)
+		})
+	}
+}
+
 func openAIPoolProbeTestAccount(id int64, manualPriority int, status string, latencyMS int64) Account {
 	now := time.Now()
 	return Account{
@@ -217,6 +266,100 @@ func TestOpenAILegacySchedulerAutoPoolEscapesExplicitSessionWithDegradedRuntime(
 	require.False(t, decision.StickySessionHit)
 	require.Positive(t, cache.deletedSessions[cacheKey])
 	require.Equal(t, fastRanked.ID, cache.sessionBindings[cacheKey])
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAILegacySchedulerAutoPoolEscapesExplicitSessionForFasterRuntimePeer(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	groupID := int64(7128)
+	slowSticky := openAIPoolProbeTestAccount(7129, 0, UpstreamBillingProbeStatusOK, 1800)
+	fastRanked := openAIPoolProbeTestAccount(7130, 20, UpstreamBillingProbeStatusOK, 2400)
+	slowSticky.GroupIDs = []int64{groupID}
+	fastRanked.GroupIDs = []int64{groupID}
+	sessionHash := "explicit-session-relative-runtime"
+	cacheKey := "openai:" + sessionHash
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{cacheKey: slowSticky.ID}}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{slowSticky, fastRanked}},
+		cache:              cache,
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("false"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		svc.ReportOpenAIAccountScheduleResult(slowSticky.ID, "gpt-5.6-sol", true, intPtrForTest(6500))
+		svc.ReportOpenAIAccountScheduleResult(fastRanked.ID, "gpt-5.6-sol", true, intPtrForTest(3000))
+	}
+	ctx := context.WithValue(context.Background(), openAISessionAffinitySourceContextKey{}, openAISessionAffinityExplicit)
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx, &groupID, "", sessionHash, "gpt-5.6-sol", nil, OpenAIUpstreamTransportAny, false,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, fastRanked.ID, selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.False(t, decision.StickySessionHit)
+	require.Positive(t, cache.deletedSessions[cacheKey])
+	require.Equal(t, fastRanked.ID, cache.sessionBindings[cacheKey])
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+
+	deletedAfterRebind := cache.deletedSessions[cacheKey]
+	selection, _, err = svc.SelectAccountWithScheduler(
+		ctx, &groupID, "", sessionHash, "gpt-5.6-sol", nil, OpenAIUpstreamTransportAny, false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, fastRanked.ID, selection.Account.ID)
+	require.Equal(t, deletedAfterRebind, cache.deletedSessions[cacheKey])
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAILegacySchedulerAutoPoolKeepsExplicitSessionForProbeOnlyPeer(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	groupID := int64(7131)
+	slowSticky := openAIPoolProbeTestAccount(7132, 0, UpstreamBillingProbeStatusOK, 1800)
+	probeOnlyPeer := openAIPoolProbeTestAccount(7133, 20, UpstreamBillingProbeStatusOK, 500)
+	slowSticky.GroupIDs = []int64{groupID}
+	probeOnlyPeer.GroupIDs = []int64{groupID}
+	sessionHash := "explicit-session-probe-only-peer"
+	cacheKey := "openai:" + sessionHash
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{cacheKey: slowSticky.ID}}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{slowSticky, probeOnlyPeer}},
+		cache:              cache,
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("false"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		svc.ReportOpenAIAccountScheduleResult(slowSticky.ID, "gpt-5.6-sol", true, intPtrForTest(6500))
+	}
+	ctx := context.WithValue(context.Background(), openAISessionAffinitySourceContextKey{}, openAISessionAffinityExplicit)
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx, &groupID, "", sessionHash, "gpt-5.6-sol", nil, OpenAIUpstreamTransportAny, false,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, slowSticky.ID, selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Zero(t, cache.deletedSessions[cacheKey])
+	require.Equal(t, slowSticky.ID, cache.sessionBindings[cacheKey])
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
@@ -1046,6 +1189,55 @@ func TestOpenAIAdvancedExplicitStickySlowRealTrafficIsClearedAndRebound(t *testi
 	}
 }
 
+func TestOpenAIAdvancedExplicitStickyRelativeRealTrafficIsClearedAndRebound(t *testing.T) {
+	ctx := context.WithValue(context.Background(), openAISessionAffinitySourceContextKey{}, openAISessionAffinityExplicit)
+	groupID := int64(7466)
+	slowSticky := openAIPoolProbeTestAccount(7467, 0, UpstreamBillingProbeStatusOK, 1200)
+	fastPeer := openAIPoolProbeTestAccount(7468, 20, UpstreamBillingProbeStatusOK, 2400)
+	slowSticky.GroupIDs = []int64{groupID}
+	fastPeer.GroupIDs = []int64{groupID}
+
+	sessionHash := "advanced_relative_runtime_escape"
+	cacheKey := "openai:" + sessionHash
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{cacheKey: slowSticky.ID}}
+	stats := newOpenAIAccountRuntimeStats()
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		stats.report(slowSticky.ID, true, intPtrForTest(6500), "gpt-5.6-sol")
+		stats.report(fastPeer.ID, true, intPtrForTest(3000), "gpt-5.6-sol")
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{slowSticky, fastPeer}},
+		cache:              cache,
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		openaiAccountStats: stats,
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		sessionHash,
+		"gpt-5.6-sol",
+		nil,
+		OpenAIUpstreamTransportAny,
+		false,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, fastPeer.ID, selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.False(t, decision.StickySessionHit)
+	require.Positive(t, cache.deletedSessions[cacheKey])
+	require.Equal(t, fastPeer.ID, cache.sessionBindings[cacheKey])
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestOpenAILegacyLoadAwareExplicitStickySlowRealTrafficIsClearedAndRebound(t *testing.T) {
 	ctx := context.WithValue(context.Background(), openAISessionAffinitySourceContextKey{}, openAISessionAffinityExplicit)
 	groupID := int64(7460)
@@ -1078,6 +1270,81 @@ func TestOpenAILegacyLoadAwareExplicitStickySlowRealTrafficIsClearedAndRebound(t
 	require.Equal(t, productionWinner.ID, selection.Account.ID)
 	require.Positive(t, cache.deletedSessions[cacheKey])
 	require.Equal(t, productionWinner.ID, cache.sessionBindings[cacheKey])
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAILegacyLoadAwareExplicitStickyRelativeRealTrafficIsClearedAndRebound(t *testing.T) {
+	ctx := context.WithValue(context.Background(), openAISessionAffinitySourceContextKey{}, openAISessionAffinityExplicit)
+	groupID := int64(7469)
+	slowSticky := openAIPoolProbeTestAccount(7470, 0, UpstreamBillingProbeStatusOK, 1000)
+	fastPeer := openAIPoolProbeTestAccount(7471, 20, UpstreamBillingProbeStatusOK, 2200)
+	slowSticky.GroupIDs = []int64{groupID}
+	fastPeer.GroupIDs = []int64{groupID}
+
+	sessionHash := "legacy_relative_runtime_escape"
+	cacheKey := "openai:" + sessionHash
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{cacheKey: slowSticky.ID}}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = true
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{slowSticky, fastPeer}},
+		cache:              cache,
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		svc.ReportOpenAIAccountScheduleResult(slowSticky.ID, "gpt-5.6-sol", true, intPtrForTest(6500))
+		svc.ReportOpenAIAccountScheduleResult(fastPeer.ID, "gpt-5.6-sol", true, intPtrForTest(3000))
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(ctx, &groupID, sessionHash, "gpt-5.6-sol", nil)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, fastPeer.ID, selection.Account.ID)
+	require.Positive(t, cache.deletedSessions[cacheKey])
+	require.Equal(t, fastPeer.ID, cache.sessionBindings[cacheKey])
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAILegacyLoadAwareExplicitStickyOptOutIsPreserved(t *testing.T) {
+	ctx := context.WithValue(context.Background(), openAISessionAffinitySourceContextKey{}, openAISessionAffinityExplicit)
+	groupID := int64(7463)
+	slowSticky := openAIPoolProbeTestAccount(7464, 0, UpstreamBillingProbeStatusOK, 1000)
+	fastPeer := openAIPoolProbeTestAccount(7465, 20, UpstreamBillingProbeStatusOK, 2200)
+	slowSticky.Extra[PoolAutoPriorityEnabledExtraKey] = false
+	slowSticky.GroupIDs = []int64{groupID}
+	fastPeer.GroupIDs = []int64{groupID}
+
+	sessionHash := "legacy_relative_ttft_opt_out"
+	cacheKey := "openai:" + sessionHash
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{cacheKey: slowSticky.ID}}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = true
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{slowSticky, fastPeer}},
+		cache:              cache,
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		svc.ReportOpenAIAccountScheduleResult(slowSticky.ID, "gpt-5.6-sol", true, intPtrForTest(6500))
+		svc.ReportOpenAIAccountScheduleResult(fastPeer.ID, "gpt-5.6-sol", true, intPtrForTest(3000))
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(ctx, &groupID, sessionHash, "gpt-5.6-sol", nil)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, slowSticky.ID, selection.Account.ID)
+	require.Zero(t, cache.deletedSessions[cacheKey])
+	require.Equal(t, slowSticky.ID, cache.sessionBindings[cacheKey])
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}

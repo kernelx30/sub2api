@@ -207,6 +207,12 @@ const (
 	openAIRealTrafficTTFTProbeMultiplier = 2.0
 	openAIRealTrafficTTFTMaxThresholdMS  = 30000.0
 	openAIRealTrafficMaxErrorRate        = 0.25
+	// Explicit prompt-cache/session affinity should survive small latency
+	// differences, but it must not pin traffic to an account that is materially
+	// slower than another account serving the same real request shape.
+	openAIExplicitStickyRelativeTTFTFloorMS = 5000.0
+	openAIExplicitStickyRelativeTTFTGapMS   = 2500.0
+	openAIExplicitStickyRelativeTTFTRatio   = 1.5
 )
 
 func newOpenAIAccountRuntimeStats() *openAIAccountRuntimeStats {
@@ -671,20 +677,29 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		return nil, false, nil
 	}
 	if s.service.poolAutoPriorityGloballyEnabled(ctx) {
+		realTTFTState := openAIRealTrafficTTFTState{}
 		if poolAutoPriorityEnabled(account) {
-			realTTFTState := s.realTrafficTTFTState(account, time.Now())
+			realTTFTState = s.realTrafficTTFTState(account, time.Now())
 			if shouldEscapeOpenAIStickyForRuntime(req.Platform, req.SessionExplicit, realTTFTState) {
 				_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 				logOpenAIStickyRealTTFTEscape(accountID, realTTFTState)
 				return nil, false, nil
 			}
 		}
-		if !req.SessionExplicit {
+		checkRelativeExplicit := shouldEvaluateOpenAIExplicitStickyRelativeRuntime(req.Platform, req.SessionExplicit, realTTFTState)
+		if !req.SessionExplicit || checkRelativeExplicit {
 			if accounts, listErr := s.service.listSchedulableAccounts(ctx, req.GroupID, req.Platform); listErr == nil {
-				reason, metrics := s.service.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, req, func(candidate *Account) bool {
+				extraEligible := func(candidate *Account) bool {
 					return s.isAccountRequestCompatible(ctx, candidate, req) && s.isAccountTransportCompatible(candidate, req.RequiredTransport)
-				})
-				if reason != "" {
+				}
+				if checkRelativeExplicit {
+					decision := s.service.openAIExplicitStickyRuntimeEscapeForCandidates(ctx, account, accounts, req, extraEligible)
+					if decision.ShouldEscape {
+						_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+						logOpenAIExplicitStickyRelativeRuntimeEscape(accountID, decision)
+						return nil, false, nil
+					}
+				} else if reason, metrics := s.service.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, req, extraEligible); reason != "" {
 					_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 					logOpenAIStickyProbeEscape(accountID, reason, metrics)
 					// Returning escapedSticky=false lets load balancing bind the newly
@@ -831,6 +846,31 @@ func shouldEscapeOpenAIStickyForRuntime(
 	// Grok explicit sessions can carry an account-local previous_response_id.
 	// Keep those bindings intact; this latency escape is for GPT/OpenAI traffic.
 	return !sessionExplicit || normalizeOpenAICompatiblePlatform(platform) == PlatformOpenAI
+}
+
+func shouldEvaluateOpenAIExplicitStickyRelativeRuntime(
+	platform string,
+	sessionExplicit bool,
+	state openAIRealTrafficTTFTState,
+) bool {
+	return sessionExplicit &&
+		normalizeOpenAICompatiblePlatform(platform) == PlatformOpenAI &&
+		state.UsesRuntime && state.Mature && state.Fresh &&
+		state.TTFTMS >= openAIExplicitStickyRelativeTTFTFloorMS
+}
+
+func shouldEscapeOpenAIExplicitStickyForRelativeRuntime(
+	stickyState openAIRealTrafficTTFTState,
+	candidateState openAIRealTrafficTTFTState,
+) bool {
+	if !stickyState.UsesRuntime || !stickyState.Mature || !stickyState.Fresh ||
+		!candidateState.UsesRuntime || !candidateState.Mature || !candidateState.Fresh || candidateState.Degraded ||
+		stickyState.TTFTMS < openAIExplicitStickyRelativeTTFTFloorMS || candidateState.TTFTMS <= 0 {
+		return false
+	}
+	threshold := math.Max(openAIExplicitStickyRelativeTTFTFloorMS, candidateState.TTFTMS*openAIExplicitStickyRelativeTTFTRatio)
+	threshold = math.Max(threshold, candidateState.TTFTMS+openAIExplicitStickyRelativeTTFTGapMS)
+	return stickyState.TTFTMS >= threshold
 }
 
 func (s *defaultOpenAIAccountScheduler) realTrafficTTFTState(account *Account, now time.Time) openAIRealTrafficTTFTState {
