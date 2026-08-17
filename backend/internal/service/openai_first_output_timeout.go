@@ -347,6 +347,48 @@ type openAIRequestContextReadCloser struct {
 	err     error
 }
 
+// openAIFirstOutputBodyGuard interrupts a streaming response body when the
+// request-wide first-output deadline expires. Closing the body is what wakes a
+// scanner that is blocked waiting for the next SSE frame.
+type openAIFirstOutputBodyGuard struct {
+	body  io.Closer
+	timer *time.Timer
+	fired chan struct{}
+	once  sync.Once
+}
+
+func newOpenAIFirstOutputBodyGuard(body io.Closer, deadline time.Time) *openAIFirstOutputBodyGuard {
+	guard := &openAIFirstOutputBodyGuard{body: body, fired: make(chan struct{})}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		remaining = time.Nanosecond
+	}
+	guard.timer = time.AfterFunc(remaining, func() {
+		close(guard.fired)
+		_ = guard.body.Close()
+	})
+	return guard
+}
+
+// stop returns true when the deadline won the race. It is idempotent so the
+// semantic-output path and deferred cleanup can both call it.
+func (g *openAIFirstOutputBodyGuard) stop() bool {
+	if g == nil {
+		return false
+	}
+	g.once.Do(func() {
+		if !g.timer.Stop() {
+			<-g.fired
+		}
+	})
+	select {
+	case <-g.fired:
+		return true
+	default:
+		return false
+	}
+}
+
 func (r *openAIRequestContextReadCloser) Close() error {
 	r.once.Do(func() {
 		r.cleanup()

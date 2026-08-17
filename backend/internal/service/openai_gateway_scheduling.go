@@ -853,7 +853,8 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 			}
 		}
 		checkRelativeExplicit := shouldEvaluateOpenAIExplicitStickyRelativeRuntime(platform, sessionExplicit, realTTFTState)
-		if !sessionExplicit || checkRelativeExplicit {
+		checkProbeFallback := shouldEvaluateOpenAIExplicitStickyProbeFallback(platform, sessionExplicit, realTTFTState)
+		if !sessionExplicit || checkRelativeExplicit || checkProbeFallback {
 			if accounts, listErr := s.listSchedulableAccounts(ctx, groupID, platform); listErr == nil {
 				req := OpenAIAccountScheduleRequest{
 					GroupID:            groupID,
@@ -871,10 +872,20 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 						logOpenAIExplicitStickyRelativeRuntimeEscape(account.ID, decision)
 						return nil
 					}
-				} else if reason, metrics := s.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, req, nil); reason != "" {
-					_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
-					logOpenAIStickyProbeEscape(account.ID, reason, metrics)
-					return nil
+				}
+				if checkProbeFallback {
+					if reason, metrics := s.openAIExplicitStickyProbeEscapeReasonForCandidates(ctx, account, accounts, req, nil, realTTFTState); reason != "" {
+						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						logOpenAIStickyProbeEscape(account.ID, reason, metrics)
+						return nil
+					}
+				}
+				if !sessionExplicit {
+					if reason, metrics := s.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, req, nil); reason != "" {
+						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						logOpenAIStickyProbeEscape(account.ID, reason, metrics)
+						return nil
+					}
 				}
 			}
 		}
@@ -1109,9 +1120,21 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 					}, nil); relativeDecision.ShouldEscape {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 						logOpenAIExplicitStickyRelativeRuntimeEscape(account.ID, relativeDecision)
+					} else if reason, metrics := s.openAIExplicitStickyProbeEscapeReasonForCandidates(ctx, account, accounts, OpenAIAccountScheduleRequest{
+						GroupID:            groupID,
+						Platform:           platform,
+						SessionExplicit:    sessionExplicit,
+						RequestedModel:     requestedModel,
+						ExcludedIDs:        excludedIDs,
+						RequireCompact:     requireCompact,
+						RequiredCapability: requiredCapability,
+					}, nil, s.openAIRealTrafficTTFTState(account, time.Now())); reason != "" {
+						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+						logOpenAIStickyProbeEscape(account.ID, reason, metrics)
 					} else if reason, metrics := s.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, OpenAIAccountScheduleRequest{
 						GroupID:            groupID,
 						Platform:           platform,
+						SessionExplicit:    sessionExplicit,
 						RequestedModel:     requestedModel,
 						ExcludedIDs:        excludedIDs,
 						RequireCompact:     requireCompact,
@@ -1863,6 +1886,92 @@ func (s *OpenAIGatewayService) openAIStickyProbeEscapeReasonForCandidates(
 		if candidate != nil && candidate.ID != account.ID && ranks[candidate.ID] < currentRank {
 			return "real_traffic_ttft", metrics
 		}
+	}
+	return "", metrics
+}
+
+func openAIProbeTypicalLatencyMS(info probeAutoPriorityInfo) float64 {
+	for _, latencyMS := range []int64{info.p50LatencyMS, info.latencyMS, info.p95LatencyMS} {
+		if latencyMS > 0 {
+			return float64(latencyMS)
+		}
+	}
+	return 0
+}
+
+// openAIExplicitStickyProbeEscapeReasonForCandidates is the probe fallback for
+// explicit OpenAI sessions. It intentionally ignores manual priority: a sticky
+// binding is only broken by a healthy peer when the current probe is unhealthy
+// or exceeds the same material ratio and gap used by real-traffic comparison.
+func (s *OpenAIGatewayService) openAIExplicitStickyProbeEscapeReasonForCandidates(
+	ctx context.Context,
+	account *Account,
+	accounts []Account,
+	req OpenAIAccountScheduleRequest,
+	extraEligible func(*Account) bool,
+	runtimeState openAIRealTrafficTTFTState,
+) (string, upstreamModelProbeMetrics) {
+	metrics := upstreamModelProbeMetrics{}
+	if s == nil || account == nil || !poolAutoPriorityEnabled(account) ||
+		!shouldEvaluateOpenAIExplicitStickyProbeFallback(req.Platform, req.SessionExplicit, runtimeState) ||
+		!s.poolAutoPriorityGloballyEnabled(ctx) {
+		return "", metrics
+	}
+
+	candidates := s.openAIStickyEligibleCandidates(ctx, account, accounts, req, extraEligible)
+	now := time.Now()
+	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
+	if snapshot == nil || !isModelProbeSnapshotFresh(snapshot, now) {
+		return "", metrics
+	}
+	stickyInfo, stickySignal := accountProbeAutoPriority(account, now)
+	if !stickySignal {
+		return "", metrics
+	}
+	stickyReason, metrics := accountProbeStickyEscapeReason(account, now)
+
+	hasHealthyPeer := false
+	bestPeerLatencyMS := float64(0)
+	var bestPeer *Account
+	for _, candidate := range candidates {
+		if candidate == nil || candidate.ID == account.ID {
+			continue
+		}
+		candidateInfo, candidateSignal := accountProbeAutoPriority(candidate, now)
+		if !candidateSignal || candidateInfo.tier != probeAutoPriorityTierHealthy {
+			continue
+		}
+		if reason, _ := accountProbeStickyEscapeReason(candidate, now); reason != "" {
+			continue
+		}
+		// The normal probe ranker promotes established evidence over a lucky
+		// single sample. Match that gate here so clearing the binding does not
+		// immediately select the same account again on the next layer.
+		if stickyInfo.tier == probeAutoPriorityTierHealthy &&
+			stickyInfo.sampleCount >= probeAutoPriorityStableSampleCount &&
+			candidateInfo.sampleCount < probeAutoPriorityStableSampleCount {
+			continue
+		}
+		hasHealthyPeer = true
+		latencyMS := openAIProbeTypicalLatencyMS(candidateInfo)
+		if latencyMS > 0 && (bestPeerLatencyMS == 0 || latencyMS < bestPeerLatencyMS) {
+			bestPeerLatencyMS = latencyMS
+			bestPeer = candidate
+		}
+	}
+	if stickyReason != "" && hasHealthyPeer {
+		return stickyReason, metrics
+	}
+	if stickyInfo.tier != probeAutoPriorityTierHealthy || bestPeerLatencyMS <= 0 {
+		return "", metrics
+	}
+	stickyLatencyMS := openAIProbeTypicalLatencyMS(stickyInfo)
+	if !shouldEscapeOpenAIExplicitStickyForRelativeLatency(stickyLatencyMS, bestPeerLatencyMS) || bestPeer == nil {
+		return "", metrics
+	}
+	probeRanks, ranked := probeAutoPriorityRanks([]*Account{account, bestPeer}, now)
+	if ranked && probeRanks[bestPeer.ID] < probeRanks[account.ID] {
+		return "model_probe_materially_slower", metrics
 	}
 	return "", metrics
 }

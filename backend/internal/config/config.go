@@ -2261,7 +2261,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.response_header_timeout", 600) // 600秒(10分钟)等待上游响应头，LLM高负载时可能排队较久
 	viper.SetDefault("gateway.openai_response_header_timeout", 0)
 	viper.SetDefault("gateway.openai_first_output_timeout_seconds", 15)
-	viper.SetDefault("gateway.openai_high_effort_first_output_timeout_seconds", 60)
+	// Keep high-effort requests responsive when a sticky upstream stalls before
+	// producing semantic output. Deployments can raise this independently when
+	// their upstreams are known to need a longer reasoning warm-up.
+	viper.SetDefault("gateway.openai_high_effort_first_output_timeout_seconds", 20)
 	viper.SetDefault("gateway.log_upstream_error_body", true)
 	viper.SetDefault("gateway.log_upstream_error_body_max_bytes", 2048)
 	viper.SetDefault("gateway.inject_beta_for_apikey", false)

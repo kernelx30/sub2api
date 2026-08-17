@@ -687,7 +687,8 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 			}
 		}
 		checkRelativeExplicit := shouldEvaluateOpenAIExplicitStickyRelativeRuntime(req.Platform, req.SessionExplicit, realTTFTState)
-		if !req.SessionExplicit || checkRelativeExplicit {
+		checkProbeFallback := shouldEvaluateOpenAIExplicitStickyProbeFallback(req.Platform, req.SessionExplicit, realTTFTState)
+		if !req.SessionExplicit || checkRelativeExplicit || checkProbeFallback {
 			if accounts, listErr := s.service.listSchedulableAccounts(ctx, req.GroupID, req.Platform); listErr == nil {
 				extraEligible := func(candidate *Account) bool {
 					return s.isAccountRequestCompatible(ctx, candidate, req) && s.isAccountTransportCompatible(candidate, req.RequiredTransport)
@@ -699,12 +700,22 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 						logOpenAIExplicitStickyRelativeRuntimeEscape(accountID, decision)
 						return nil, false, nil
 					}
-				} else if reason, metrics := s.service.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, req, extraEligible); reason != "" {
-					_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
-					logOpenAIStickyProbeEscape(accountID, reason, metrics)
-					// Returning escapedSticky=false lets load balancing bind the newly
-					// selected healthy account instead of preserving the stale binding.
-					return nil, false, nil
+				}
+				if checkProbeFallback {
+					if reason, metrics := s.service.openAIExplicitStickyProbeEscapeReasonForCandidates(ctx, account, accounts, req, extraEligible, realTTFTState); reason != "" {
+						_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+						logOpenAIStickyProbeEscape(accountID, reason, metrics)
+						return nil, false, nil
+					}
+				}
+				if !req.SessionExplicit {
+					if reason, metrics := s.service.openAIStickyProbeEscapeReasonForCandidates(ctx, account, accounts, req, extraEligible); reason != "" {
+						_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+						logOpenAIStickyProbeEscape(accountID, reason, metrics)
+						// Returning escapedSticky=false lets load balancing bind the newly
+						// selected healthy account instead of preserving the stale binding.
+						return nil, false, nil
+					}
 				}
 			}
 		}
@@ -859,6 +870,30 @@ func shouldEvaluateOpenAIExplicitStickyRelativeRuntime(
 		state.TTFTMS >= openAIExplicitStickyRelativeTTFTFloorMS
 }
 
+// Explicit affinity is useful for prompt-cache locality, but it must still be
+// able to leave an upstream whose fresh probe is clearly unhealthy or
+// materially slower. A mature sticky with a material TTFT floor is also
+// eligible: its peer may have fresh probe evidence before runtime samples
+// mature, so runtime comparison must fall through to probe comparison.
+func shouldEvaluateOpenAIExplicitStickyProbeFallback(
+	platform string,
+	sessionExplicit bool,
+	state openAIRealTrafficTTFTState,
+) bool {
+	return sessionExplicit &&
+		normalizeOpenAICompatiblePlatform(platform) == PlatformOpenAI &&
+		(!state.UsesRuntime || !state.Mature || !state.Fresh || state.TTFTMS >= openAIExplicitStickyRelativeTTFTFloorMS)
+}
+
+func shouldEscapeOpenAIExplicitStickyForRelativeLatency(stickyTTFTMS, candidateTTFTMS float64) bool {
+	if stickyTTFTMS < openAIExplicitStickyRelativeTTFTFloorMS || candidateTTFTMS <= 0 {
+		return false
+	}
+	threshold := math.Max(openAIExplicitStickyRelativeTTFTFloorMS, candidateTTFTMS*openAIExplicitStickyRelativeTTFTRatio)
+	threshold = math.Max(threshold, candidateTTFTMS+openAIExplicitStickyRelativeTTFTGapMS)
+	return stickyTTFTMS >= threshold
+}
+
 func shouldEscapeOpenAIExplicitStickyForRelativeRuntime(
 	stickyState openAIRealTrafficTTFTState,
 	candidateState openAIRealTrafficTTFTState,
@@ -868,9 +903,7 @@ func shouldEscapeOpenAIExplicitStickyForRelativeRuntime(
 		stickyState.TTFTMS < openAIExplicitStickyRelativeTTFTFloorMS || candidateState.TTFTMS <= 0 {
 		return false
 	}
-	threshold := math.Max(openAIExplicitStickyRelativeTTFTFloorMS, candidateState.TTFTMS*openAIExplicitStickyRelativeTTFTRatio)
-	threshold = math.Max(threshold, candidateState.TTFTMS+openAIExplicitStickyRelativeTTFTGapMS)
-	return stickyState.TTFTMS >= threshold
+	return shouldEscapeOpenAIExplicitStickyForRelativeLatency(stickyState.TTFTMS, candidateState.TTFTMS)
 }
 
 func (s *defaultOpenAIAccountScheduler) realTrafficTTFTState(account *Account, now time.Time) openAIRealTrafficTTFTState {
