@@ -32,6 +32,7 @@ type openAISessionAffinitySource uint8
 const (
 	openAISessionAffinityUnknown openAISessionAffinitySource = iota
 	openAISessionAffinityExplicit
+	openAISessionAffinityCacheKey
 	openAISessionAffinityDerived
 )
 
@@ -52,9 +53,18 @@ func openAISessionAffinitySourceFromContext(ctx context.Context) openAISessionAf
 	return source
 }
 
-func (s *OpenAIGatewayService) shouldRouteDerivedOpenAISessionByAutoPriority(ctx context.Context, sessionHash string) bool {
+func openAISessionAffinityCanMoveWithAutoPriority(source openAISessionAffinitySource) bool {
+	return source == openAISessionAffinityCacheKey || source == openAISessionAffinityDerived
+}
+
+func openAISessionAffinityIsExplicit(source openAISessionAffinitySource, autoPriorityEnabled bool) bool {
+	return source == openAISessionAffinityExplicit ||
+		(source == openAISessionAffinityCacheKey && !autoPriorityEnabled)
+}
+
+func (s *OpenAIGatewayService) shouldRouteMovableOpenAISessionByAutoPriority(ctx context.Context, sessionHash string) bool {
 	return strings.TrimSpace(sessionHash) != "" &&
-		openAISessionAffinitySourceFromContext(ctx) == openAISessionAffinityDerived &&
+		openAISessionAffinityCanMoveWithAutoPriority(openAISessionAffinitySourceFromContext(ctx)) &&
 		s.poolAutoPriorityGloballyEnabled(ctx)
 }
 
@@ -130,6 +140,41 @@ func explicitOpenAIRequestSessionID(c *gin.Context, body []byte) string {
 	return sessionID
 }
 
+// openAIRequestSchedulingSessionID resolves the sticky-routing seed together
+// with its strength. Stable client session headers remain hard affinity. A
+// regular OpenAI prompt_cache_key keeps the same hash for upstream cache reuse,
+// but is movable when pool auto-priority is enabled so a stale binding cannot
+// bypass the current ranking forever. Grok keeps prompt_cache_key as hard
+// affinity because its multi-turn OAuth routing depends on that identity.
+func openAIRequestSchedulingSessionID(c *gin.Context, body []byte) (string, openAISessionAffinitySource) {
+	if c == nil {
+		return "", openAISessionAffinityUnknown
+	}
+
+	if sessionID := explicitOpenAIHeaderSessionID(c); sessionID != "" {
+		return sessionID, openAISessionAffinityExplicit
+	}
+	if isGrokRequestContext(c) {
+		if sessionID := strings.TrimSpace(c.GetHeader(grokConversationIDHeader)); sessionID != "" {
+			return sessionID, openAISessionAffinityExplicit
+		}
+	}
+	if len(body) > 0 {
+		if sessionID := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String()); sessionID != "" {
+			if isGrokRequestContext(c) {
+				return sessionID, openAISessionAffinityExplicit
+			}
+			return sessionID, openAISessionAffinityCacheKey
+		}
+	}
+	if isGrokRequestContext(c) && len(body) > 0 {
+		if sessionID := grokPreviousResponseSessionSeed(body); sessionID != "" {
+			return sessionID, openAISessionAffinityExplicit
+		}
+	}
+	return "", openAISessionAffinityUnknown
+}
+
 // grokPreviousResponseSessionSeed returns a stable sticky seed from a Responses
 // previous_response_id. Only resp_* response ids are accepted; message ids and
 // unknown shapes must not pin sticky routing or prompt-cache identity.
@@ -182,8 +227,7 @@ func (s *OpenAIGatewayService) GenerateSessionHash(c *gin.Context, body []byte) 
 		return ""
 	}
 
-	sessionID := explicitOpenAIRequestSessionID(c, body)
-	source := openAISessionAffinityExplicit
+	sessionID, source := openAIRequestSchedulingSessionID(c, body)
 	if sessionID == "" && len(body) > 0 {
 		sessionID = deriveOpenAIContentSessionSeed(body)
 		source = openAISessionAffinityDerived
@@ -788,7 +832,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	if sessionHash == "" {
 		return nil
 	}
-	if s.shouldRouteDerivedOpenAISessionByAutoPriority(ctx, sessionHash) {
+	if s.shouldRouteMovableOpenAISessionByAutoPriority(ctx, sessionHash) {
 		return nil
 	}
 	platform = normalizeOpenAICompatiblePlatform(platform)
@@ -841,8 +885,9 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
 	}
-	sessionExplicit := openAISessionAffinitySourceFromContext(ctx) == openAISessionAffinityExplicit
-	if s.poolAutoPriorityGloballyEnabled(ctx) {
+	autoPriorityEnabled := s.poolAutoPriorityGloballyEnabled(ctx)
+	sessionExplicit := openAISessionAffinityIsExplicit(openAISessionAffinitySourceFromContext(ctx), autoPriorityEnabled)
+	if autoPriorityEnabled {
 		realTTFTState := openAIRealTrafficTTFTState{}
 		if poolAutoPriorityEnabled(account) {
 			realTTFTState = s.openAIRealTrafficTTFTState(account, time.Now())
@@ -1033,7 +1078,8 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	cfg := s.schedulingConfig()
 	preferLowUpstreamRate := useUpstreamTokenCost && s.isOpenAILowUpstreamRatePriorityEnabled(ctx)
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
-	sessionExplicit := openAISessionAffinitySourceFromContext(ctx) == openAISessionAffinityExplicit
+	autoPriorityEnabled := s.poolAutoPriorityGloballyEnabled(ctx)
+	sessionExplicit := openAISessionAffinityIsExplicit(openAISessionAffinitySourceFromContext(ctx), autoPriorityEnabled)
 	var stickyAccountID int64
 	if sessionHash != "" && s.cache != nil {
 		if accountID, err := s.getStickySessionAccountID(ctx, groupID, sessionHash); err == nil {
@@ -1085,7 +1131,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	}
 
 	// ============ Layer 1: Sticky session ============
-	if sessionHash != "" && !s.shouldRouteDerivedOpenAISessionByAutoPriority(ctx, sessionHash) {
+	if sessionHash != "" && !s.shouldRouteMovableOpenAISessionByAutoPriority(ctx, sessionHash) {
 		accountID := stickyAccountID
 		if accountID > 0 && !isExcluded(accountID) {
 			account, err := s.getSchedulableAccount(ctx, accountID)

@@ -417,6 +417,120 @@ func TestOpenAILegacySchedulerAutoPoolRoutesDerivedSessionWithoutLoadBatch(t *te
 	}
 }
 
+func TestOpenAIPromptCacheKeySessionFollowsCurrentRankingAcrossSchedulers(t *testing.T) {
+	modes := []struct {
+		name             string
+		advancedEnabled  string
+		loadBatchEnabled bool
+	}{
+		{name: "advanced", advancedEnabled: "true", loadBatchEnabled: false},
+		{name: "legacy_direct", advancedEnabled: "false", loadBatchEnabled: false},
+		{name: "legacy_load_aware", advancedEnabled: "false", loadBatchEnabled: true},
+	}
+
+	for modeIndex, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			baseID := int64(7130 + modeIndex*10)
+			groupID := baseID
+			slowSticky := openAIPoolProbeTestAccount(baseID+1, 0, UpstreamBillingProbeStatusOK, 9000)
+			fastRanked := openAIPoolProbeTestAccount(baseID+2, 20, UpstreamBillingProbeStatusOK, 1200)
+			slowSticky.GroupIDs = []int64{groupID}
+			fastRanked.GroupIDs = []int64{groupID}
+			sessionHash := "prompt-cache-key-auto-pool-" + mode.name
+			cacheKey := "openai:" + sessionHash
+			cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{cacheKey: slowSticky.ID}}
+			cfg := &config.Config{RunMode: config.RunModeSimple}
+			cfg.Gateway.Scheduling.LoadBatchEnabled = mode.loadBatchEnabled
+			svc := &OpenAIGatewayService{
+				accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{slowSticky, fastRanked}},
+				cache:              cache,
+				cfg:                cfg,
+				rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService(mode.advancedEnabled),
+				concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+			}
+			ctx := context.WithValue(context.Background(), openAISessionAffinitySourceContextKey{}, openAISessionAffinityCacheKey)
+
+			selection, decision, err := svc.SelectAccountWithScheduler(
+				ctx, &groupID, "", sessionHash, "gpt-5.6-sol", nil, OpenAIUpstreamTransportAny, false,
+			)
+
+			require.NoError(t, err)
+			require.NotNil(t, selection)
+			require.NotNil(t, selection.Account)
+			require.Equal(t, fastRanked.ID, selection.Account.ID)
+			require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+			require.False(t, decision.StickySessionHit)
+			require.Equal(t, fastRanked.ID, cache.sessionBindings[cacheKey])
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+			}
+		})
+	}
+}
+
+func TestOpenAIPromptCacheKeyAffinityStrengthTracksAutoPrioritySwitch(t *testing.T) {
+	require.True(t, openAISessionAffinityIsExplicit(openAISessionAffinityCacheKey, false))
+	require.False(t, openAISessionAffinityIsExplicit(openAISessionAffinityCacheKey, true))
+	require.False(t, openAISessionAffinityCanMoveWithAutoPriority(openAISessionAffinityExplicit))
+	require.True(t, openAISessionAffinityCanMoveWithAutoPriority(openAISessionAffinityCacheKey))
+}
+
+func TestOpenAIPromptCacheKeySessionKeepsStickyWhenAutoPriorityDisabled(t *testing.T) {
+	modes := []struct {
+		name             string
+		advancedEnabled  string
+		loadBatchEnabled bool
+	}{
+		{name: "advanced", advancedEnabled: "true", loadBatchEnabled: false},
+		{name: "legacy_direct", advancedEnabled: "false", loadBatchEnabled: false},
+		{name: "legacy_load_aware", advancedEnabled: "false", loadBatchEnabled: true},
+	}
+
+	for modeIndex, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			baseID := int64(7170 + modeIndex*10)
+			groupID := baseID
+			sticky := openAIPoolProbeTestAccount(baseID+1, 0, UpstreamBillingProbeStatusOK, 9000)
+			fastRanked := openAIPoolProbeTestAccount(baseID+2, 20, UpstreamBillingProbeStatusOK, 1200)
+			sticky.GroupIDs = []int64{groupID}
+			fastRanked.GroupIDs = []int64{groupID}
+			sessionHash := "prompt-cache-key-auto-pool-off-" + mode.name
+			cacheKey := "openai:" + sessionHash
+			cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{cacheKey: sticky.ID}}
+			cfg := &config.Config{RunMode: config.RunModeSimple}
+			cfg.Gateway.Scheduling.LoadBatchEnabled = mode.loadBatchEnabled
+			settingRepo := &upstreamBillingProbeSettingRepo{values: map[string]string{
+				SettingKeyPoolAutoPrioritySettings: `{"enabled":false,"interval_minutes":5}`,
+			}}
+			svc := &OpenAIGatewayService{
+				accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{sticky, fastRanked}},
+				cache:              cache,
+				cfg:                cfg,
+				settingService:     NewSettingService(settingRepo, cfg),
+				rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService(mode.advancedEnabled),
+				concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+			}
+			ctx := context.WithValue(context.Background(), openAISessionAffinitySourceContextKey{}, openAISessionAffinityCacheKey)
+
+			selection, decision, err := svc.SelectAccountWithScheduler(
+				ctx, &groupID, "", sessionHash, "gpt-5.6-sol", nil, OpenAIUpstreamTransportAny, false,
+			)
+
+			require.NoError(t, err)
+			require.NotNil(t, selection)
+			require.NotNil(t, selection.Account)
+			require.Equal(t, sticky.ID, selection.Account.ID)
+			if mode.advancedEnabled == "true" {
+				require.True(t, decision.StickySessionHit)
+			}
+			require.Equal(t, sticky.ID, cache.sessionBindings[cacheKey])
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+			}
+		})
+	}
+}
+
 func TestOpenAILegacySchedulerAutoPoolEscapesExplicitSessionForMateriallySlowProbe(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 

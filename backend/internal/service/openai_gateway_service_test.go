@@ -372,13 +372,47 @@ func TestOpenAIGatewayService_GenerateSessionHash_Priority(t *testing.T) {
 	if h2 == h3 {
 		t.Fatalf("expected different hashes for different keys")
 	}
-	require.Equal(t, openAISessionAffinityExplicit, openAISessionAffinitySourceFromContext(c.Request.Context()))
+	require.Equal(t, openAISessionAffinityCacheKey, openAISessionAffinitySourceFromContext(c.Request.Context()))
 
 	// 4) empty when no signals
 	h4 := svc.GenerateSessionHash(c, []byte(`{}`))
 	if h4 != "" {
 		t.Fatalf("expected empty hash when no signals")
 	}
+}
+
+func TestOpenAIGatewayService_GenerateSessionHash_PromptCacheKeyAffinitySource(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{}
+	body := []byte(`{"model":"gpt-5.6-sol","prompt_cache_key":"cache-session"}`)
+
+	t.Run("regular OpenAI cache key is movable", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+		require.NotEmpty(t, svc.GenerateSessionHash(c, body))
+		require.Equal(t, openAISessionAffinityCacheKey, openAISessionAffinitySourceFromContext(c.Request.Context()))
+	})
+
+	t.Run("Grok cache key stays explicit", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		c.Set("api_key", &APIKey{ID: 902, Group: &Group{Platform: PlatformGrok}})
+
+		require.NotEmpty(t, svc.GenerateSessionHash(c, body))
+		require.Equal(t, openAISessionAffinityExplicit, openAISessionAffinitySourceFromContext(c.Request.Context()))
+	})
+
+	t.Run("explicit hash API keeps cache key hard", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+
+		require.NotEmpty(t, svc.GenerateExplicitSessionHash(c, body))
+		require.Equal(t, openAISessionAffinityExplicit, openAISessionAffinitySourceFromContext(c.Request.Context()))
+	})
 }
 
 func TestOpenAIGatewayService_ClientSessionHeaderPriority(t *testing.T) {

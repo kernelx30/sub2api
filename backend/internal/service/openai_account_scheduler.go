@@ -2752,8 +2752,8 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 	stickyWeighted := s.isOpenAIAdvancedSchedulerStickyWeightedEnabled(ctx)
 	autoPriorityEnabled := s.poolAutoPriorityGloballyEnabled(ctx)
 	sessionSource := openAISessionAffinitySourceFromContext(ctx)
-	sessionExplicit := sessionSource == openAISessionAffinityExplicit
-	sessionCanMove := autoPriorityEnabled && sessionSource == openAISessionAffinityDerived
+	sessionExplicit := openAISessionAffinityIsExplicit(sessionSource, autoPriorityEnabled)
+	sessionCanMove := autoPriorityEnabled && openAISessionAffinityCanMoveWithAutoPriority(sessionSource)
 	subscriptionPriority := s.isOpenAIAdvancedSchedulerSubscriptionPriorityEnabled(ctx)
 	stickyPreviousAccountID := int64(0)
 	if stickyWeighted && previousResponseCanMove && strings.TrimSpace(previousResponseID) != "" && platform == PlatformOpenAI {
