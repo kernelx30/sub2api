@@ -984,6 +984,18 @@ func (s *OpenAIGatewayService) handleChatStreamingResponseWithFirstOutputGuard(
 		}
 		return nil
 	}
+	firstOutputReadFailoverError := func(err error) error {
+		if err == nil || !guardFirstOutput || firstOutputSeen || clientDisconnected ||
+			errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil
+		}
+		failoverErr := s.newOpenAIStreamFailoverError(
+			c, account, false, requestID, nil,
+			"OpenAI Chat stream read failed before semantic output", resp.Header,
+		)
+		failoverErr.SafeToFailoverAfterWrite = true
+		return failoverErr
+	}
 	missingTerminalErr := func() (*OpenAIForwardResult, error) {
 		return resultWithUsage(), fmt.Errorf("stream usage incomplete: missing terminal event")
 	}
@@ -1020,6 +1032,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponseWithFirstOutputGuard(
 		if err := scanner.Err(); err != nil {
 			if timeoutErr := firstOutputTimeoutError(); timeoutErr != nil {
 				return nil, timeoutErr
+			}
+			if failoverErr := firstOutputReadFailoverError(err); failoverErr != nil {
+				return nil, failoverErr
 			}
 			handleScanErr(err)
 			if clientDisconnected || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -1107,6 +1122,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponseWithFirstOutputGuard(
 			if ev.err != nil {
 				if timeoutErr := firstOutputTimeoutError(); timeoutErr != nil {
 					return nil, timeoutErr
+				}
+				if failoverErr := firstOutputReadFailoverError(ev.err); failoverErr != nil {
+					return nil, failoverErr
 				}
 				handleScanErr(ev.err)
 				if clientDisconnected || errors.Is(ev.err, context.Canceled) || errors.Is(ev.err, context.DeadlineExceeded) {

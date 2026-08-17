@@ -870,6 +870,13 @@ func openAIStreamItemHasVisibleOutput(item gjson.Result) bool {
 	if item.Get("arguments").String() != "" || item.Get("input").String() != "" || item.Get("result").String() != "" {
 		return true
 	}
+	// A declared tool call is already actionable model output even when its
+	// arguments/input arrive in later delta events. Waiting for those deltas can
+	// incorrectly time out and replay the same tool selection on another account.
+	switch strings.TrimSpace(item.Get("type").String()) {
+	case "function_call", "custom_tool_call":
+		return item.Get("name").String() != "" || item.Get("call_id").String() != ""
+	}
 	for _, path := range []string{"content", "summary"} {
 		for _, part := range item.Get(path).Array() {
 			if part.Get("text").String() != "" || part.Get("transcript").String() != "" {

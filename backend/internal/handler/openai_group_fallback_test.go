@@ -457,37 +457,45 @@ func TestOpenAIGroupFallback_AutoPriorityPoolSkipsSameAccountRetries(t *testing.
 
 func TestOpenAIGroupFallback_FirstOutputTimeoutBudgetDoesNotReset(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	primaryFirst := openAIGroupFallbackAccount(openAIGroupFallbackPrimaryAcc, openAIGroupFallbackPrimaryID, nil)
-	primaryFirst.Priority = 1
-	primaryFirst.Extra["openai_responses_supported"] = true
-	primarySecond := openAIGroupFallbackAccount(openAIGroupFallbackPrimaryAcc+1, openAIGroupFallbackPrimaryID, nil)
-	primarySecond.Priority = 2
-	primarySecond.Extra["openai_responses_supported"] = true
-	fixture := newOpenAIGroupFallbackFixture(t, []service.Account{primaryFirst, primarySecond}, config.RunModeStandard)
-	fixture.handler.cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 1
-
-	fallbackFirst := openAIGroupFallbackAccount(openAIGroupFallbackTargetAcc, openAIGroupFallbackTargetID, nil)
-	fallbackFirst.Priority = 1
-	fallbackFirst.Extra["openai_responses_supported"] = true
-	fallbackSecond := openAIGroupFallbackAccount(openAIGroupFallbackTargetAcc+1, openAIGroupFallbackTargetID, nil)
-	fallbackSecond.Priority = 2
-	fallbackSecond.Extra["openai_responses_supported"] = true
-	fixture.accountRepo.accountsByGroup[openAIGroupFallbackTargetID] = []service.Account{fallbackFirst, fallbackSecond}
-
-	for _, accountID := range []int64{primaryFirst.ID, primarySecond.ID, fallbackFirst.ID, fallbackSecond.ID} {
-		fixture.upstream.hangs[accountID] = true
+	tests := []struct {
+		name     string
+		endpoint string
+		body     string
+	}{
+		{name: "responses", endpoint: EndpointResponses, body: `{"model":"gpt-5.5","input":"hello","stream":true}`},
+		{name: "chat_completions", endpoint: EndpointChatCompletions, body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"stream":true}`},
 	}
 
-	recorder, _ := runOpenAIGroupFallbackRequest(
-		t,
-		fixture,
-		EndpointResponses,
-		`{"model":"gpt-5.5","input":"hello","stream":true}`,
-	)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			primaryFirst := openAIGroupFallbackAccount(openAIGroupFallbackPrimaryAcc, openAIGroupFallbackPrimaryID, nil)
+			primaryFirst.Priority = 1
+			primaryFirst.Extra["openai_responses_supported"] = true
+			primarySecond := openAIGroupFallbackAccount(openAIGroupFallbackPrimaryAcc+1, openAIGroupFallbackPrimaryID, nil)
+			primarySecond.Priority = 2
+			primarySecond.Extra["openai_responses_supported"] = true
+			fixture := newOpenAIGroupFallbackFixture(t, []service.Account{primaryFirst, primarySecond}, config.RunModeStandard)
+			fixture.handler.cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 1
 
-	require.Equal(t, http.StatusBadGateway, recorder.Code, recorder.Body.String())
-	require.Contains(t, recorder.Body.String(), "temporarily unavailable")
-	require.Equal(t, []int64{primaryFirst.ID, primarySecond.ID, fallbackFirst.ID}, fixture.upstream.accountCalls())
+			fallbackFirst := openAIGroupFallbackAccount(openAIGroupFallbackTargetAcc, openAIGroupFallbackTargetID, nil)
+			fallbackFirst.Priority = 1
+			fallbackFirst.Extra["openai_responses_supported"] = true
+			fallbackSecond := openAIGroupFallbackAccount(openAIGroupFallbackTargetAcc+1, openAIGroupFallbackTargetID, nil)
+			fallbackSecond.Priority = 2
+			fallbackSecond.Extra["openai_responses_supported"] = true
+			fixture.accountRepo.accountsByGroup[openAIGroupFallbackTargetID] = []service.Account{fallbackFirst, fallbackSecond}
+
+			for _, accountID := range []int64{primaryFirst.ID, primarySecond.ID, fallbackFirst.ID, fallbackSecond.ID} {
+				fixture.upstream.hangs[accountID] = true
+			}
+
+			recorder, _ := runOpenAIGroupFallbackRequest(t, fixture, tt.endpoint, tt.body)
+
+			require.Equal(t, http.StatusBadGateway, recorder.Code, recorder.Body.String())
+			require.Contains(t, recorder.Body.String(), "temporarily unavailable")
+			require.Equal(t, []int64{primaryFirst.ID, primarySecond.ID, fallbackFirst.ID}, fixture.upstream.accountCalls())
+		})
+	}
 }
 
 func TestOpenAIGroupFallback_ModelUnsupportedDoesNotSwitch(t *testing.T) {

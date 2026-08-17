@@ -829,6 +829,36 @@ func TestOpenAIRawChatFirstOutputTimeoutDisarmsAfterSemanticOutput(t *testing.T)
 	require.Contains(t, rec.Body.String(), "data: [DONE]")
 }
 
+func TestOpenAIRawChatFirstOutputReadErrorFailsOver(t *testing.T) {
+	cfg := rawChatCompletionsTestConfig()
+	cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 5
+	cfg.Gateway.MaxLineSize = defaultMaxLineSize
+	svc := &OpenAIGatewayService{cfg: cfg, responseHeaderFilter: compileResponseHeaderFilter(cfg)}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"X-Request-Id": []string{"raw-read-error"}},
+		Body: &openAIChatStreamReadErrorCloser{
+			payload: []byte("data: {\"id\":\"chatcmpl_role\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n"),
+			err:     errors.New("synthetic upstream read failure"),
+		},
+	}
+	account := rawChatCompletionsTestAccount()
+
+	_, err := svc.streamRawChatCompletions(
+		context.Background(), c, resp, account, "gpt-5.5", "gpt-5.5", "gpt-5.5",
+		nil, nil, time.Now(), 0, 5*time.Second,
+	)
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
+	require.False(t, c.Writer.Written())
+	require.Empty(t, rec.Body.String())
+}
+
 func TestIsOpenAIChatUsageOnlyStreamChunk(t *testing.T) {
 	t.Parallel()
 

@@ -200,6 +200,69 @@ func TestOpenAIChatBridgeFirstOutputTimeoutDisarmsAfterSemanticOutput(t *testing
 	require.Contains(t, rec.Body.String(), "data: [DONE]")
 }
 
+func TestOpenAIChatBridgeFirstOutputTimeoutDisarmsAfterToolDeclaration(t *testing.T) {
+	cfg := &config.Config{Gateway: config.GatewayConfig{
+		OpenAIFirstOutputTimeoutSeconds: 1,
+		MaxLineSize:                     defaultMaxLineSize,
+	}}
+	svc := &OpenAIGatewayService{cfg: cfg, responseHeaderFilter: compileResponseHeaderFilter(cfg)}
+	pr, pw := io.Pipe()
+	go func() {
+		defer func() { _ = pw.Close() }()
+		_, _ = pw.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_chat_tool\"}}\n\n"))
+		_, _ = pw.Write([]byte("data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"exec\",\"arguments\":\"\"}}\n\n"))
+		time.Sleep(1100 * time.Millisecond)
+		_, _ = pw.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_chat_tool\",\"output\":[{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"exec\",\"arguments\":\"{}\"}],\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n"))
+	}()
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Request-Id": []string{"chat-tool"}}, Body: pr}
+	account := &Account{ID: 14, Name: "chat-tool", Platform: PlatformOpenAI}
+
+	result, err := svc.handleChatStreamingResponseWithFirstOutputGuard(
+		context.Background(), resp, c, account, "gpt-5.5", "gpt-5.5", "gpt-5.5",
+		time.Now(), 0, "low", time.Second,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.FirstTokenMs)
+	require.Contains(t, rec.Body.String(), `"tool_calls"`)
+	require.Contains(t, rec.Body.String(), `"name":"exec"`)
+}
+
+func TestOpenAIChatBridgeFirstOutputReadErrorFailsOver(t *testing.T) {
+	cfg := &config.Config{Gateway: config.GatewayConfig{
+		OpenAIFirstOutputTimeoutSeconds: 5,
+		MaxLineSize:                     defaultMaxLineSize,
+	}}
+	svc := &OpenAIGatewayService{cfg: cfg, responseHeaderFilter: compileResponseHeaderFilter(cfg)}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"X-Request-Id": []string{"chat-read-error"}},
+		Body: &openAIChatStreamReadErrorCloser{
+			payload: []byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_read_error\"}}\n\n"),
+			err:     errors.New("synthetic upstream read failure"),
+		},
+	}
+	account := &Account{ID: 15, Name: "chat-read-error", Platform: PlatformOpenAI}
+
+	_, err := svc.handleChatStreamingResponseWithFirstOutputGuard(
+		context.Background(), resp, c, account, "gpt-5.5", "gpt-5.5", "gpt-5.5",
+		time.Now(), 0, "low", 5*time.Second,
+	)
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
+	require.False(t, c.Writer.Written())
+	require.Empty(t, rec.Body.String())
+}
+
 func TestOpenAIFirstOutputTimeoutImmediatelyBlocksAutoPriorityPoolAccount(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := &OpenAIGatewayService{cfg: &config.Config{}}

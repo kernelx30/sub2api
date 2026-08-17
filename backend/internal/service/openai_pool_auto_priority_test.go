@@ -192,7 +192,8 @@ func TestOpenAIExplicitStickyProbeFallbackBeforeRuntimeMatures(t *testing.T) {
 				sticky := openAIPoolProbeTestAccount(baseID+1, 0, testCase.stickyStatus, testCase.stickyLatency)
 				peer := openAIPoolProbeTestAccount(baseID+2, 20, UpstreamBillingProbeStatusOK, testCase.peerLatency)
 				if testCase.staleSticky {
-					probe := sticky.Extra[UpstreamBillingProbeExtraKey].(map[string]any)
+					probe, ok := sticky.Extra[UpstreamBillingProbeExtraKey].(map[string]any)
+					require.True(t, ok)
 					probe["model_probe_fresh_until"] = time.Now().Add(-time.Second)
 				}
 				for _, sample := range []struct {
@@ -206,7 +207,8 @@ func TestOpenAIExplicitStickyProbeFallbackBeforeRuntimeMatures(t *testing.T) {
 					if sample.count <= 1 {
 						continue
 					}
-					probe := sample.account.Extra[UpstreamBillingProbeExtraKey].(map[string]any)
+					probe, ok := sample.account.Extra[UpstreamBillingProbeExtraKey].(map[string]any)
+					require.True(t, ok)
 					history := make([]map[string]any, 0, sample.count)
 					for i := 0; i < sample.count; i++ {
 						history = append(history, map[string]any{

@@ -445,6 +445,15 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				zap.String("request_id", requestID),
 			)
 		}
+		if guardFirstOutput && !firstOutputSeen && !clientDisconnected &&
+			!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			failoverErr := s.newOpenAIStreamFailoverError(
+				c, account, false, requestID, nil,
+				"OpenAI raw Chat stream read failed before semantic output", resp.Header,
+			)
+			failoverErr.SafeToFailoverAfterWrite = true
+			return nil, failoverErr
+		}
 	} else if guardFirstOutput && !firstOutputSeen {
 		if firstOutputGuard.stop() {
 			return nil, s.newOpenAIFirstOutputTimeoutError(

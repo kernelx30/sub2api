@@ -26,6 +26,8 @@ func TestOpenAIVisibleOutputClassification(t *testing.T) {
 		{name: "empty delta", data: `{"type":"response.output_text.delta","delta":""}`, want: false},
 		{name: "text delta", data: `{"type":"response.output_text.delta","delta":"test output"}`, want: true},
 		{name: "tool arguments", data: `{"type":"response.function_call_arguments.delta","delta":"{}"}`, want: true},
+		{name: "function call declaration", data: `{"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_1","name":"exec","arguments":""}}`, want: true},
+		{name: "custom tool declaration", data: `{"type":"response.output_item.added","item":{"type":"custom_tool_call","call_id":"call_2","name":"apply_patch","input":""}}`, want: true},
 		{name: "partial image", data: `{"type":"response.image_generation_call.partial_image","partial_image_b64":"dGVzdA=="}`, want: true},
 		{name: "completed image item", data: `{"type":"response.output_item.done","item":{"id":"item_test","type":"image_generation_call","result":"dGVzdA=="}}`, want: true},
 		{name: "empty completed", data: `{"type":"response.completed","response":{"id":"resp_test","output":[]}}`, want: false},
