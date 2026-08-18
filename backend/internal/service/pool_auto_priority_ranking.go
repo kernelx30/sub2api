@@ -52,9 +52,18 @@ func IsPoolAutoPriorityEnabled(account *Account) bool {
 }
 
 // BuildPoolAutoPriorityRanking converts runtime probe cohorts into a stable,
-// deterministic leaderboard. Probe cohort wins first, then the scheduler's
-// manual account priority, then account ID as a presentation-only tie-breaker.
+// deterministic leaderboard. It keeps the generic view used by older callers;
+// request-specific views should use BuildPoolAutoPriorityRankingForModel so
+// model-scoped runtime evidence is selected exactly like gateway routing.
 func BuildPoolAutoPriorityRanking(accounts []*Account, now time.Time) []PoolAutoPriorityRankingSnapshot {
+	return BuildPoolAutoPriorityRankingForModel(accounts, now, "")
+}
+
+// BuildPoolAutoPriorityRankingForModel builds the persisted probe leaderboard
+// for a requested model. The standalone view has no runtime samples, but the
+// requested model is kept in the API so callers can use one contract for the
+// generic and effective gateway-backed projections.
+func BuildPoolAutoPriorityRankingForModel(accounts []*Account, now time.Time, requestedModel string) []PoolAutoPriorityRankingSnapshot {
 	if len(accounts) == 0 {
 		return []PoolAutoPriorityRankingSnapshot{}
 	}
@@ -92,12 +101,27 @@ func BuildPoolAutoPriorityRanking(accounts []*Account, now time.Time) []PoolAuto
 // BuildPoolAutoPriorityRanking returns the exact effective order consumed by
 // OpenAI scheduling, including mature production TTFT feedback.
 func (s *OpenAIGatewayService) BuildPoolAutoPriorityRanking(accounts []*Account, now time.Time) []PoolAutoPriorityRankingSnapshot {
-	result := BuildPoolAutoPriorityRanking(accounts, now)
+	return s.BuildPoolAutoPriorityRankingForModel(accounts, now, "")
+}
+
+// BuildPoolAutoPriorityRankingForModel returns the exact effective order
+// consumed by OpenAI scheduling for requestedModel, including mature
+// production TTFT feedback for each account's mapped upstream model.
+func (s *OpenAIGatewayService) BuildPoolAutoPriorityRankingForModel(accounts []*Account, now time.Time, requestedModel string) []PoolAutoPriorityRankingSnapshot {
+	return s.BuildPoolAutoPriorityRankingForRequest(accounts, now, requestedModel, false)
+}
+
+// BuildPoolAutoPriorityRankingForRequest returns the exact effective order used
+// by a request, including compact-only model remapping when requiredCompact is
+// true. Keeping this contract beside the scheduler prevents the admin view
+// from presenting a different winner than the request path.
+func (s *OpenAIGatewayService) BuildPoolAutoPriorityRankingForRequest(accounts []*Account, now time.Time, requestedModel string, requireCompact bool) []PoolAutoPriorityRankingSnapshot {
+	result := BuildPoolAutoPriorityRankingForModel(accounts, now, requestedModel)
 	if len(result) == 0 || s == nil {
 		return result
 	}
 
-	ranks, states, _, ranked := s.openAIEffectiveAutoPriorityRanking(accounts, now)
+	ranks, states, _, ranked := s.openAIEffectiveAutoPriorityRankingForRequest(accounts, now, requestedModel, requireCompact)
 	for i := range result {
 		state := states[result[i].AccountID]
 		result[i].RankingSource = PoolAutoPriorityRankingSourceProbe

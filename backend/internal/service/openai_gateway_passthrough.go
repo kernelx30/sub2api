@@ -38,18 +38,23 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	reqStream bool,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
-	upstreamPassthroughModel := ""
-	if isOpenAIResponsesCompactPath(c) {
-		compactMappedModel := resolveOpenAICompactForwardModel(account, reqModel)
-		if compactMappedModel != "" && compactMappedModel != reqModel {
-			nextBody, setErr := sjson.SetBytes(body, "model", compactMappedModel)
-			if setErr != nil {
-				return nil, fmt.Errorf("set compact passthrough model: %w", setErr)
-			}
-			body = nextBody
-			upstreamPassthroughModel = compactMappedModel
-			attemptImageIntentInvalidated = true
-		}
+	// Resolve the final model before any OAuth/body normalization.  The normal
+	// forward path applies account mapping first, then compact-only mapping, and
+	// finally OAuth alias normalization.  Passthrough must use that exact order;
+	// otherwise the body sent upstream, the result's UpstreamModel, and the
+	// runtime TTFT key can diverge (especially for aliases such as
+	// gpt-5.4-high).
+	body, upstreamPassthroughModel, compactMapped, modelErr := rewriteOpenAIPassthroughModel(
+		account,
+		body,
+		reqModel,
+		isOpenAIResponsesCompactPath(c),
+	)
+	if modelErr != nil {
+		return nil, modelErr
+	}
+	if compactMapped {
+		attemptImageIntentInvalidated = true
 	}
 
 	if account != nil && account.Type == AccountTypeOAuth {
@@ -355,6 +360,41 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		)
 	}
 	return forwardResult, nil
+}
+
+// rewriteOpenAIPassthroughModel preserves passthrough's contract of changing
+// only the fields required by the endpoint. A compact-only mapping is the one
+// deliberate model rewrite; ordinary OAuth aliases stay exactly as supplied
+// by the client. The returned model is the model present in the body that is
+// actually sent upstream, so runtime scheduling evidence uses the same key.
+func rewriteOpenAIPassthroughModel(
+	account *Account,
+	body []byte,
+	requestedModel string,
+	compact bool,
+
+) (nextBody []byte, upstreamModel string, compactMapped bool, err error) {
+	upstreamModel = strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if upstreamModel == "" {
+		upstreamModel = strings.TrimSpace(requestedModel)
+	}
+	if compact {
+		compactModel := resolveOpenAICompactForwardModel(account, upstreamModel)
+		if compactModel != "" && compactModel != upstreamModel {
+			upstreamModel = compactModel
+			compactMapped = true
+		}
+	}
+
+	currentModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if currentModel == strings.TrimSpace(upstreamModel) {
+		return body, strings.TrimSpace(upstreamModel), compactMapped, nil
+	}
+	updated, setErr := sjson.SetBytes(body, "model", strings.TrimSpace(upstreamModel))
+	if setErr != nil {
+		return body, "", compactMapped, fmt.Errorf("set passthrough model: %w", setErr)
+	}
+	return updated, strings.TrimSpace(upstreamModel), compactMapped, nil
 }
 
 func logOpenAIPassthroughInstructionsRejected(

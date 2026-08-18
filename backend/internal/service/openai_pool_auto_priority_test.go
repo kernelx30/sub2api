@@ -1039,6 +1039,97 @@ func TestOpenAIEffectiveRankingFallsBackToAggregateRuntimeForMappedModel(t *test
 	require.Equal(t, PoolAutoPriorityRankingSourceRealTraffic, ranking[0].RankingSource)
 }
 
+func TestOpenAIEffectiveRankingForModelMatchesMappedSelection(t *testing.T) {
+	accountA := openAIPoolProbeTestAccount(7417, 0, UpstreamBillingProbeStatusOK, 2000)
+	accountB := openAIPoolProbeTestAccount(7418, 20, UpstreamBillingProbeStatusOK, 2000)
+	accountA.Credentials["model_mapping"] = map[string]any{"client-model": "up-a"}
+	accountB.Credentials["model_mapping"] = map[string]any{"client-model": "up-b"}
+	accounts := []Account{accountA, accountB}
+	stats := newOpenAIAccountRuntimeStats()
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		// The aggregate account history intentionally points in the opposite
+		// direction from the model that this request will actually use.
+		stats.report(accountA.ID, true, intPtrForTest(9000), "up-a")
+		stats.report(accountA.ID, true, intPtrForTest(100), "unrelated-a")
+		stats.report(accountB.ID, true, intPtrForTest(1000), "up-b")
+		stats.report(accountB.ID, true, intPtrForTest(30000), "unrelated-b")
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
+
+	generic := svc.BuildPoolAutoPriorityRanking([]*Account{&accounts[0], &accounts[1]}, time.Now())
+	require.Len(t, generic, 2)
+	require.Equal(t, accountA.ID, generic[0].AccountID, "generic views may use aggregate evidence")
+
+	requestedModel := "client-model"
+	ranking := svc.BuildPoolAutoPriorityRankingForModel(
+		[]*Account{&accounts[0], &accounts[1]},
+		time.Now(),
+		requestedModel,
+	)
+	require.Len(t, ranking, 2)
+	require.Equal(t, accountB.ID, ranking[0].AccountID)
+	require.Equal(t, PoolAutoPriorityRankingSourceRealTraffic, ranking[0].RankingSource)
+	require.Equal(t, 1000.0, ranking[0].RuntimeTTFTMS)
+
+	scheduler := &defaultOpenAIAccountScheduler{service: svc, stats: stats}
+	plan := scheduler.buildOpenAIAccountLoadPlan(
+		context.Background(),
+		OpenAIAccountScheduleRequest{RequestedModel: requestedModel},
+		[]*Account{&accounts[0], &accounts[1]},
+		map[int64]*AccountLoadInfo{},
+	)
+	require.Len(t, plan.selectionOrder, 2)
+	require.Equal(t, accountB.ID, plan.selectionOrder[0].account.ID)
+}
+
+func TestOpenAIEffectiveRankingForModelUsesPassthroughWireModel(t *testing.T) {
+	fastPassthrough := openAIPoolProbeTestAccount(7419, 20, UpstreamBillingProbeStatusOK, 9000)
+	regular := openAIPoolProbeTestAccount(7420, 0, UpstreamBillingProbeStatusOK, 2500)
+	fastPassthrough.Extra["openai_passthrough"] = true
+	fastPassthrough.Credentials["model_mapping"] = map[string]any{
+		"gpt-5.4-high": "gpt-5.4",
+	}
+	fastPassthrough.Credentials["compact_model_mapping"] = map[string]any{
+		"gpt-5.4-high": "gpt-5.4-openai-compact",
+	}
+	regular.Credentials["model_mapping"] = map[string]any{
+		"gpt-5.4-high": "gpt-5.4",
+	}
+
+	stats := newOpenAIAccountRuntimeStats()
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		// HTTP passthrough sends the body model unchanged. The regular mapped
+		// account sends the account-mapped upstream model.
+		stats.report(fastPassthrough.ID, true, intPtrForTest(500), "gpt-5.4-high")
+		stats.report(regular.ID, true, intPtrForTest(2000), "gpt-5.4")
+	}
+
+	require.Equal(t, "gpt-5.4-high", resolveOpenAIAccountUpstreamModelForRequest(&fastPassthrough, "gpt-5.4-high", false))
+	require.Equal(t, "gpt-5.4-openai-compact", resolveOpenAIAccountUpstreamModelForRequest(&fastPassthrough, "gpt-5.4-high", true))
+	require.Equal(t, "gpt-5.4", resolveOpenAIAccountUpstreamModelForRequest(&regular, "gpt-5.4-high", false))
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
+	ranking := svc.BuildPoolAutoPriorityRankingForModel(
+		[]*Account{&fastPassthrough, &regular},
+		time.Now(),
+		"gpt-5.4-high",
+	)
+	require.Len(t, ranking, 2)
+	require.Equal(t, fastPassthrough.ID, ranking[0].AccountID)
+	require.Equal(t, PoolAutoPriorityRankingSourceRealTraffic, ranking[0].RankingSource)
+	require.Equal(t, 500.0, ranking[0].RuntimeTTFTMS)
+
+	scheduler := &defaultOpenAIAccountScheduler{service: svc, stats: stats}
+	plan := scheduler.buildOpenAIAccountLoadPlan(
+		context.Background(),
+		OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.4-high"},
+		[]*Account{&fastPassthrough, &regular},
+		map[int64]*AccountLoadInfo{},
+	)
+	require.Len(t, plan.selectionOrder, 2)
+	require.Equal(t, fastPassthrough.ID, plan.selectionOrder[0].account.ID)
+}
+
 func TestOpenAIEffectiveRankingDemotesHighRuntimeErrorRateAfterFailureHoldDown(t *testing.T) {
 	probeWinner := openAIPoolProbeTestAccount(7427, 0, UpstreamBillingProbeStatusOK, 1000)
 	probeBackup := openAIPoolProbeTestAccount(7428, 20, UpstreamBillingProbeStatusOK, 2200)
@@ -1379,6 +1470,73 @@ func TestOpenAIStickyMixedRuntimeAndProbeTTFTIsClearedAndRebound(t *testing.T) {
 	require.False(t, decision.StickySessionHit)
 	require.Positive(t, cache.deletedSessions[cacheKey])
 	require.Equal(t, productionWinner.ID, cache.sessionBindings[cacheKey])
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIExplicitStickyRuntimeUsesSchedulingModel(t *testing.T) {
+	ctx := context.WithValue(context.Background(), openAISessionAffinitySourceContextKey{}, openAISessionAffinityExplicit)
+	groupID := int64(7460)
+	sticky := openAIPoolProbeTestAccount(7461, 0, UpstreamBillingProbeStatusOK, 1800)
+	peer := openAIPoolProbeTestAccount(7462, 20, UpstreamBillingProbeStatusOK, 2200)
+	sticky.GroupIDs = []int64{groupID}
+	peer.GroupIDs = []int64{groupID}
+	sticky.Credentials["model_mapping"] = map[string]any{
+		"public-model":  "gpt-5.6-sol",
+		"channel-model": "gpt-5.4",
+	}
+	peer.Credentials["model_mapping"] = map[string]any{
+		"public-model":  "gpt-5.6-sol",
+		"channel-model": "gpt-5.5",
+	}
+
+	stats := newOpenAIAccountRuntimeStats()
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		// RequestedModel says the sticky account is faster, while the model that
+		// the channel actually forwards says the peer is faster. Sticky escape
+		// must follow the latter.
+		stats.report(sticky.ID, true, intPtrForTest(900), "gpt-5.6-sol")
+		stats.report(peer.ID, true, intPtrForTest(9000), "gpt-5.6-sol")
+		stats.report(sticky.ID, true, intPtrForTest(9000), "gpt-5.4")
+		stats.report(peer.ID, true, intPtrForTest(900), "gpt-5.5")
+	}
+
+	sessionHash := "explicit_scheduling_model_runtime"
+	cacheKey := "openai:" + sessionHash
+	cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{cacheKey: sticky.ID}}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{sticky, peer}},
+		cache:              cache,
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		openaiAccountStats: stats,
+	}
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForCapabilityAndSchedulingModel(
+		ctx,
+		&groupID,
+		"",
+		sessionHash,
+		"public-model",
+		"channel-model",
+		nil,
+		OpenAIUpstreamTransportAny,
+		"",
+		false,
+		false,
+		true,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, peer.ID, selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.False(t, decision.StickySessionHit)
+	require.Positive(t, cache.deletedSessions[cacheKey])
+	require.Equal(t, peer.ID, cache.sessionBindings[cacheKey])
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}

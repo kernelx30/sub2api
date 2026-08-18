@@ -570,14 +570,25 @@ func (s *OpenAIGatewayService) refreshOpenAIAccountRuntimeStats(
 	stats *openAIAccountRuntimeStats,
 	account *Account,
 ) {
+	s.refreshOpenAIAccountRuntimeStatsForModel(stats, account, "")
+}
+
+// refreshOpenAIAccountRuntimeStatsForModel loads the model-scoped runtime
+// sample used by the current request. The probe model is only the fallback for
+// generic leaderboard views; routing must refresh the mapped request model.
+func (s *OpenAIGatewayService) refreshOpenAIAccountRuntimeStatsForModel(
+	stats *openAIAccountRuntimeStats,
+	account *Account,
+	requestedUpstreamModel string,
+) {
 	if s == nil || s.openaiRuntimePersistence == nil || stats == nil || account == nil {
 		return
 	}
 	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
-	if snapshot == nil {
-		return
+	model := NormalizeOpenAIAccountRuntimeModel(requestedUpstreamModel)
+	if model == "" && snapshot != nil {
+		model = NormalizeOpenAIAccountRuntimeModel(snapshot.ModelProbeModel)
 	}
-	model := NormalizeOpenAIAccountRuntimeModel(snapshot.ModelProbeModel)
 	if model == "" {
 		return
 	}

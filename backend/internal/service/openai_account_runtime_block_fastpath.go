@@ -264,6 +264,14 @@ func canonicalOpenAIAccountSchedulingModel(account *Account, requestedModel stri
 	if account == nil || model == "" {
 		return model
 	}
+	// HTTP OpenAI passthrough is an authentication-only relay: ordinary
+	// requests keep the model already present on the wire.  Re-applying a
+	// stale account model_mapping here would put transient failures, timeout
+	// cooldowns, and subsequent eligibility checks in a different model bucket
+	// from the request/runtimes used by the scheduler.
+	if account.IsOpenAIPassthroughEnabled() {
+		return model
+	}
 	if mapped := strings.TrimSpace(account.GetMappedModel(model)); mapped != "" {
 		return mapped
 	}

@@ -399,10 +399,23 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 	requiredCapability OpenAIEndpointCapability,
 	requireCompact bool,
 ) (*AccountSelectionResult, error) {
+	return s.selectAccountByPreviousResponseIDForSchedulingModel(ctx, groupID, previousResponseID, requestedModel, requestedModel, excludedIDs, requiredCapability, requireCompact)
+}
+
+func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForSchedulingModel(
+	ctx context.Context,
+	groupID *int64,
+	previousResponseID string,
+	requestedModel string,
+	schedulingModel string,
+	excludedIDs map[int64]struct{},
+	requiredCapability OpenAIEndpointCapability,
+	requireCompact bool,
+) (*AccountSelectionResult, error) {
 	if s == nil {
 		return nil, nil
 	}
-	accountID, account, responseID, store := s.resolveAccountByPreviousResponseIDForCapability(ctx, groupID, previousResponseID, requestedModel, excludedIDs, requiredCapability, requireCompact)
+	accountID, account, responseID, store := s.resolveAccountByPreviousResponseIDForSchedulingModel(ctx, groupID, previousResponseID, requestedModel, schedulingModel, excludedIDs, requiredCapability, requireCompact)
 	if accountID <= 0 || account == nil || store == nil {
 		return nil, nil
 	}
@@ -446,7 +459,20 @@ func (s *OpenAIGatewayService) ResolveAccountIDByPreviousResponseIDForScheduler(
 	requiredCapability OpenAIEndpointCapability,
 	requireCompact bool,
 ) int64 {
-	accountID, _, _, _ := s.resolveAccountByPreviousResponseIDForCapability(ctx, groupID, previousResponseID, requestedModel, excludedIDs, requiredCapability, requireCompact)
+	return s.ResolveAccountIDByPreviousResponseIDForSchedulerForSchedulingModel(ctx, groupID, previousResponseID, requestedModel, requestedModel, excludedIDs, requiredCapability, requireCompact)
+}
+
+func (s *OpenAIGatewayService) ResolveAccountIDByPreviousResponseIDForSchedulerForSchedulingModel(
+	ctx context.Context,
+	groupID *int64,
+	previousResponseID string,
+	requestedModel string,
+	schedulingModel string,
+	excludedIDs map[int64]struct{},
+	requiredCapability OpenAIEndpointCapability,
+	requireCompact bool,
+) int64 {
+	accountID, _, _, _ := s.resolveAccountByPreviousResponseIDForSchedulingModel(ctx, groupID, previousResponseID, requestedModel, schedulingModel, excludedIDs, requiredCapability, requireCompact)
 	return accountID
 }
 
@@ -455,6 +481,19 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 	groupID *int64,
 	previousResponseID string,
 	requestedModel string,
+	excludedIDs map[int64]struct{},
+	requiredCapability OpenAIEndpointCapability,
+	requireCompact bool,
+) (int64, *Account, string, OpenAIWSStateStore) {
+	return s.resolveAccountByPreviousResponseIDForSchedulingModel(ctx, groupID, previousResponseID, requestedModel, requestedModel, excludedIDs, requiredCapability, requireCompact)
+}
+
+func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForSchedulingModel(
+	ctx context.Context,
+	groupID *int64,
+	previousResponseID string,
+	requestedModel string,
+	schedulingModel string,
 	excludedIDs map[int64]struct{},
 	requiredCapability OpenAIEndpointCapability,
 	requireCompact bool,
@@ -518,6 +557,9 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 	if vetoed, _ := openAIProfitControlVetoReason(ctx, account); vetoed {
 		return 0, nil, "", nil
 	}
+	if s.isOpenAIAccountRequestRuntimeBlocked(account, schedulingModel) {
+		return 0, nil, "", nil
+	}
 	if s.schedulerSnapshot != nil && s.accountRepo != nil {
 		latest, latestErr := s.accountRepo.GetByID(ctx, account.ID)
 		if latestErr != nil || latest == nil {
@@ -545,7 +587,7 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 		if vetoed, _ := openAIProfitControlVetoReason(ctx, latest); vetoed {
 			return 0, nil, "", nil
 		}
-		if s.isOpenAIAccountRequestRuntimeBlocked(latest, requestedModel) {
+		if s.isOpenAIAccountRequestRuntimeBlocked(latest, schedulingModel) {
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
 			return 0, nil, "", nil
 		}

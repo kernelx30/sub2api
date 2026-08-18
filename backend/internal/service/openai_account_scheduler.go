@@ -82,11 +82,23 @@ type OpenAIAccountScheduleRequest struct {
 	PreviousResponseCanMove bool
 	UseUpstreamTokenCost    bool
 	RequestedModel          string
+	// SchedulingModel is the model that the selected account will receive
+	// after channel-level routing has been applied. RequestedModel remains the
+	// client-visible model used for eligibility and error reporting; all
+	// model-scoped runtime evidence must use SchedulingModel.
+	SchedulingModel         string
 	RequiredTransport       OpenAIUpstreamTransport
 	RequiredCapability      OpenAIEndpointCapability
 	RequiredImageCapability OpenAIImagesCapability
 	RequireCompact          bool
 	ExcludedIDs             map[int64]struct{}
+}
+
+func (r OpenAIAccountScheduleRequest) effectiveSchedulingModel() string {
+	if model := strings.TrimSpace(r.SchedulingModel); model != "" {
+		return model
+	}
+	return strings.TrimSpace(r.RequestedModel)
 }
 
 type OpenAIAccountScheduleDecision struct {
@@ -557,11 +569,12 @@ func (s *defaultOpenAIAccountScheduler) Select(
 	previousResponseID := strings.TrimSpace(req.PreviousResponseID)
 	previousResponseCanRank := req.PreviousResponseCanMove && (req.StickyWeighted || req.AutoPriorityEnabled)
 	if previousResponseID != "" && normalizeOpenAICompatiblePlatform(req.Platform) == PlatformOpenAI && !previousResponseCanRank {
-		selection, err := s.service.selectAccountByPreviousResponseIDForCapability(
+		selection, err := s.service.selectAccountByPreviousResponseIDForSchedulingModel(
 			ctx,
 			req.GroupID,
 			previousResponseID,
 			req.RequestedModel,
+			req.effectiveSchedulingModel(),
 			req.ExcludedIDs,
 			req.RequiredCapability,
 			req.RequireCompact,
@@ -671,7 +684,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
 	}
-	account = s.service.recheckSelectedOpenAIAccountFromDB(ctx, account, req.GroupID, req.Platform, req.RequestedModel, req.RequireCompact, req.RequiredCapability)
+	account = s.service.recheckSelectedOpenAIAccountFromDBForSchedulingModel(ctx, account, req.GroupID, req.Platform, req.RequestedModel, req.effectiveSchedulingModel(), req.RequireCompact, req.RequiredCapability)
 	if account == nil || !s.service.openAIAccountMatchesSchedulingGroup(account, req.GroupID) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
@@ -679,7 +692,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	if s.service.poolAutoPriorityGloballyEnabled(ctx) {
 		realTTFTState := openAIRealTrafficTTFTState{}
 		if poolAutoPriorityEnabled(account) {
-			realTTFTState = s.realTrafficTTFTState(account, time.Now())
+			realTTFTState = s.realTrafficTTFTStateForRequest(account, time.Now(), req.effectiveSchedulingModel(), req.RequireCompact)
 			if shouldEscapeOpenAIStickyForRuntime(req.Platform, req.SessionExplicit, realTTFTState) {
 				_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 				logOpenAIStickyRealTTFTEscape(accountID, realTTFTState)
@@ -728,7 +741,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	}
 	// Team+model cool: sticky must not pin a sibling under the same team 429 window.
 	now := time.Now()
-	upstreamModel := canonicalOpenAIAccountSchedulingModel(account, req.RequestedModel)
+	upstreamModel := canonicalOpenAIAccountSchedulingModel(account, req.effectiveSchedulingModel())
 	if account != nil && isGrokTeamModelRateLimited(account, upstreamModel, now) {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
@@ -907,28 +920,82 @@ func shouldEscapeOpenAIExplicitStickyForRelativeRuntime(
 }
 
 func (s *defaultOpenAIAccountScheduler) realTrafficTTFTState(account *Account, now time.Time) openAIRealTrafficTTFTState {
+	return s.realTrafficTTFTStateForRequest(account, now, "", false)
+}
+
+func (s *defaultOpenAIAccountScheduler) realTrafficTTFTStateForModel(account *Account, now time.Time, requestedModel string) openAIRealTrafficTTFTState {
+	return s.realTrafficTTFTStateForRequest(account, now, requestedModel, false)
+}
+
+func (s *defaultOpenAIAccountScheduler) realTrafficTTFTStateForRequest(account *Account, now time.Time, requestedModel string, requireCompact bool) openAIRealTrafficTTFTState {
 	if s == nil {
 		return openAIRealTrafficTTFTState{}
 	}
 	if s.service != nil {
-		s.service.refreshOpenAIAccountRuntimeStats(s.stats, account)
+		upstreamModel := resolveOpenAIAccountUpstreamModelForRequest(account, requestedModel, requireCompact)
+		s.service.refreshOpenAIAccountRuntimeStatsForModel(s.stats, account, upstreamModel)
+		return openAIRealTrafficTTFTStateFromStatsForModel(s.stats, account, now, upstreamModel)
 	}
 	return openAIRealTrafficTTFTStateFromStats(s.stats, account, now)
 }
 
 func openAIRealTrafficTTFTStateFromStats(stats *openAIAccountRuntimeStats, account *Account, now time.Time) openAIRealTrafficTTFTState {
+	return openAIRealTrafficTTFTStateFromStatsForModel(stats, account, now, "")
+}
+
+// openAIRealTrafficTTFTStateFromStatsForModel returns runtime evidence for the
+// upstream model that this account will actually receive. The old aggregate
+// view remains available for the leaderboard, but request routing must not use
+// a fast sample from one mapped model to rank a different mapped model.
+func openAIRealTrafficTTFTStateFromStatsForModel(
+	stats *openAIAccountRuntimeStats,
+	account *Account,
+	now time.Time,
+	requestedUpstreamModel string,
+) openAIRealTrafficTTFTState {
 	state := openAIRealTrafficTTFTState{rankingTTFTMS: openAIProbeRankingTTFTMS(account, now)}
 	if stats == nil || account == nil {
 		return state
 	}
+	requestedUpstreamModel = NormalizeOpenAIAccountRuntimeModel(requestedUpstreamModel)
 	if value, ok := stats.accounts.Load(account.ID); ok {
 		stat, _ := value.(*openAIAccountRuntimeStat)
+		// A recent account-level failure is a transport/auth/quota signal for
+		// the whole account. Keep it effective even when the next request is
+		// mapped to another upstream model; only latency evidence is model
+		// scoped below.
 		state.RecentFailure, state.UpdatedAt = openAIAccountRuntimeStatRecentFailure(stat, now)
-		state.Degraded = state.RecentFailure
+		if state.RecentFailure {
+			state.Degraded = true
+		}
 	}
 	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
-	if snapshot == nil || snapshot.ModelProbeLastAttemptAt == nil {
+	probeModel := ""
+	var probeLastAttemptAt *time.Time
+	if snapshot != nil {
+		probeModel = NormalizeOpenAIAccountRuntimeModel(snapshot.ModelProbeModel)
+		probeLastAttemptAt = snapshot.ModelProbeLastAttemptAt
+	}
+	model := requestedUpstreamModel
+	if model == "" {
+		model = probeModel
+	}
+	if model == "" && probeLastAttemptAt == nil {
 		return state
+	}
+	if requestedUpstreamModel != "" {
+		if key, ok := openAIAccountModelTransientKey(account.ID, requestedUpstreamModel); ok {
+			if value, loaded := stats.models.Load(key); loaded {
+				stat, _ := value.(*openAIAccountRuntimeStat)
+				if recentFailure, failedAt := openAIAccountRuntimeStatRecentFailure(stat, now); recentFailure {
+					state.RecentFailure = true
+					state.Degraded = true
+					if failedAt.After(state.UpdatedAt) {
+						state.UpdatedAt = failedAt
+					}
+				}
+			}
+		}
 	}
 
 	// Prefer model-scoped production samples when the probe model has enough
@@ -937,7 +1004,7 @@ func openAIRealTrafficTTFTStateFromStats(stats *openAIAccountRuntimeStats, accou
 	// A failed/unsupported probe does not get promoted by an unrelated model's
 	// aggregate; it still needs a matching successful sample to recover.
 	modelErrorRate, modelTTFT, modelHasTTFT, modelSampleCount, modelUpdatedAt :=
-		stats.snapshotModelWithMeta(account.ID, snapshot.ModelProbeModel)
+		stats.snapshotModelWithMeta(account.ID, model)
 	accountErrorRate, accountTTFT, accountHasTTFT, accountSampleCount, accountUpdatedAt :=
 		stats.snapshotWithMeta(account.ID)
 	errorRate, ttft, hasTTFT, sampleCount, updatedAt :=
@@ -948,7 +1015,7 @@ func openAIRealTrafficTTFTStateFromStats(stats *openAIAccountRuntimeStats, accou
 		!modelUpdatedAt.IsZero() && modelAge >= 0 && modelAge <= openAIRealTrafficSlowEvidenceTTL
 	accountEligible := accountHasTTFT && accountSampleCount >= openAIRealTrafficTTFTMinSamples &&
 		!accountUpdatedAt.IsZero() && accountAge >= 0 && accountAge <= openAIRealTrafficSlowEvidenceTTL
-	if !modelEligible && accountEligible {
+	if requestedUpstreamModel == "" && !modelEligible && accountEligible {
 		probeInfo, probeSignal := accountProbeAutoPriority(account, now)
 		probeAllowsAggregate := !probeSignal ||
 			(probeInfo.tier != probeAutoPriorityTierFailed && probeInfo.tier != probeAutoPriorityTierUnsupported)
@@ -957,7 +1024,7 @@ func openAIRealTrafficTTFTStateFromStats(stats *openAIAccountRuntimeStats, accou
 				accountErrorRate, accountTTFT, accountHasTTFT, accountSampleCount, accountUpdatedAt
 		}
 	}
-	if key, ok := openAIAccountModelTransientKey(account.ID, snapshot.ModelProbeModel); ok {
+	if key, ok := openAIAccountModelTransientKey(account.ID, model); ok {
 		if value, loaded := stats.models.Load(key); loaded {
 			stat, _ := value.(*openAIAccountRuntimeStat)
 			if recentFailure, failedAt := openAIAccountRuntimeStatRecentFailure(stat, now); recentFailure {
@@ -987,9 +1054,11 @@ func openAIRealTrafficTTFTStateFromStats(stats *openAIAccountRuntimeStats, accou
 	age := now.Sub(updatedAt)
 	state.Fresh = age >= 0 && age <= openAIRealTrafficTTFTFreshTTL
 	probeAllowsPromotion := true
-	if updatedAt.Before(*snapshot.ModelProbeLastAttemptAt) {
+	if probeLastAttemptAt != nil && updatedAt.Before(*probeLastAttemptAt) {
 		probeInfo, probeSignal := accountProbeAutoPriority(account, now)
-		if !probeSignal || probeInfo.tier != probeAutoPriorityTierHealthy {
+		// A sample for the actual mapped request model is direct production
+		// evidence even when the synthetic probe uses another model.
+		if requestedUpstreamModel == "" && (!probeSignal || probeInfo.tier != probeAutoPriorityTierHealthy) {
 			probeAllowsPromotion = false
 		}
 	}
@@ -1185,7 +1254,7 @@ func deriveOpenAISelectionSeed(req OpenAIAccountScheduleRequest) uint64 {
 
 	writeValue(req.SessionHash)
 	writeValue(req.PreviousResponseID)
-	writeValue(req.RequestedModel)
+	writeValue(req.effectiveSchedulingModel())
 	if req.GroupID != nil {
 		_, _ = hasher.Write([]byte(strconv.FormatInt(*req.GroupID, 10)))
 	}
@@ -1262,7 +1331,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 	filtered []*Account,
 	loadMap map[int64]*AccountLoadInfo,
 ) openAIAccountLoadPlan {
-	probeRanks, probeRanked := s.service.openAIProbeAutoPriorityRanks(ctx, filtered)
+	probeRanks, probeRanked := s.service.openAIProbeAutoPriorityRanksForRequest(ctx, filtered, req.effectiveSchedulingModel(), req.RequireCompact)
 	allCandidates := make([]openAIAccountCandidateScore, 0, len(filtered))
 	for _, account := range filtered {
 		loadInfo, loadKnown := loadMap[account.ID]
@@ -1273,7 +1342,12 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		errorRate, ttft, hasTTFT := 0.0, 0.0, false
 		if s.stats != nil {
 			var ttftUpdatedAt time.Time
-			errorRate, ttft, hasTTFT, _, ttftUpdatedAt = s.stats.snapshotWithMeta(account.ID)
+			upstreamModel := resolveOpenAIAccountUpstreamModelForRequest(account, req.effectiveSchedulingModel(), req.RequireCompact)
+			if upstreamModel != "" {
+				errorRate, ttft, hasTTFT, _, ttftUpdatedAt = s.stats.snapshotModelWithMeta(account.ID, upstreamModel)
+			} else {
+				errorRate, ttft, hasTTFT, _, ttftUpdatedAt = s.stats.snapshotWithMeta(account.ID)
+			}
 			now := time.Now()
 			ttftAge := now.Sub(ttftUpdatedAt)
 			if ttftUpdatedAt.IsZero() || ttftAge < 0 || ttftAge > openAIRealTrafficSlowEvidenceTTL {
@@ -1655,7 +1729,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithBudget
 			continue
 		}
 
-		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.Platform, req.RequestedModel, false, req.RequiredCapability)
+		fresh := s.service.resolveFreshSchedulableOpenAIAccountForSchedulingModel(ctx, candidate.account, req.Platform, req.RequestedModel, req.effectiveSchedulingModel(), false, req.RequiredCapability)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			release(result)
 			continue
@@ -1664,7 +1738,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrderWithBudget
 			release(result)
 			break
 		}
-		fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.GroupID, req.Platform, req.RequestedModel, false, req.RequiredCapability)
+		fresh = s.service.recheckSelectedOpenAIAccountFromDBForSchedulingModel(ctx, fresh, req.GroupID, req.Platform, req.RequestedModel, req.effectiveSchedulingModel(), false, req.RequiredCapability)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			release(result)
 			continue
@@ -1743,7 +1817,7 @@ func (s *defaultOpenAIAccountScheduler) tryFallbackToWeightedSticky(
 		if !s.isAccountRequestCompatible(ctx, account, req) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
 			continue
 		}
-		account = s.service.recheckSelectedOpenAIAccountFromDB(ctx, account, req.GroupID, req.Platform, req.RequestedModel, req.RequireCompact, req.RequiredCapability)
+		account = s.service.recheckSelectedOpenAIAccountFromDBForSchedulingModel(ctx, account, req.GroupID, req.Platform, req.RequestedModel, req.effectiveSchedulingModel(), req.RequireCompact, req.RequiredCapability)
 		if account == nil {
 			if accountID == req.StickyAccountID && strings.TrimSpace(req.SessionHash) != "" {
 				_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, req.SessionHash)
@@ -1768,7 +1842,7 @@ func (s *defaultOpenAIAccountScheduler) tryFallbackToWeightedSticky(
 		if len(s.filterGrokFreeQuotaAccounts(ctx, []Account{*account})) == 0 {
 			continue
 		}
-		upstreamModel := canonicalOpenAIAccountSchedulingModel(account, req.RequestedModel)
+		upstreamModel := canonicalOpenAIAccountSchedulingModel(account, req.effectiveSchedulingModel())
 		now := time.Now()
 		if isGrokTeamModelRateLimited(account, upstreamModel, now) ||
 			isGrokModelQuotaBlocked(account.ID, upstreamModel, now) {
@@ -1911,7 +1985,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			filterStats.exclude("platform_mismatch")
 			continue
 		}
-		if s.service.isOpenAIAccountRequestRuntimeBlocked(account, req.RequestedModel) {
+		if s.service.isOpenAIAccountRequestRuntimeBlocked(account, req.effectiveSchedulingModel()) {
 			filterStats.exclude("runtime_blocked")
 			continue
 		}
@@ -2162,14 +2236,14 @@ func (s *defaultOpenAIAccountScheduler) finishLoadBalanceSelectionFallback(
 					continue
 				}
 			}
-			fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.Platform, req.RequestedModel, false, req.RequiredCapability)
+			fresh := s.service.resolveFreshSchedulableOpenAIAccountForSchedulingModel(ctx, candidate.account, req.Platform, req.RequestedModel, req.effectiveSchedulingModel(), false, req.RequiredCapability)
 			if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 				continue
 			}
 			if !s.consumeOpenAISelectionDBRecheck(budget) {
 				return nil, candidateCount, topK, loadSkew, noAvailableOpenAISelectionError(req.RequestedModel, compactBlocked, filterStats.summary("selection_order_exhausted"))
 			}
-			fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.GroupID, req.Platform, req.RequestedModel, false, req.RequiredCapability)
+			fresh = s.service.recheckSelectedOpenAIAccountFromDBForSchedulingModel(ctx, fresh, req.GroupID, req.Platform, req.RequestedModel, req.effectiveSchedulingModel(), false, req.RequiredCapability)
 			if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 				continue
 			}
@@ -2231,7 +2305,7 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	if account == nil {
 		return false, "account_nil"
 	}
-	if s != nil && s.service != nil && s.service.isOpenAIAccountRequestRuntimeBlocked(account, req.RequestedModel) {
+	if s != nil && s.service != nil && s.service.isOpenAIAccountRequestRuntimeBlocked(account, req.effectiveSchedulingModel()) {
 		return false, "runtime_blocked"
 	}
 	if s != nil && s.service != nil && s.service.isOpenAIProxyStreamQuarantined(ctx, account) {
@@ -2545,9 +2619,18 @@ func (s *OpenAIGatewayService) getOpenAIAccountRuntimeStats() *openAIAccountRunt
 }
 
 func (s *OpenAIGatewayService) openAIRealTrafficTTFTState(account *Account, now time.Time) openAIRealTrafficTTFTState {
+	return s.openAIRealTrafficTTFTStateForRequest(account, now, "", false)
+}
+
+func (s *OpenAIGatewayService) openAIRealTrafficTTFTStateForModel(account *Account, now time.Time, requestedModel string) openAIRealTrafficTTFTState {
+	return s.openAIRealTrafficTTFTStateForRequest(account, now, requestedModel, false)
+}
+
+func (s *OpenAIGatewayService) openAIRealTrafficTTFTStateForRequest(account *Account, now time.Time, requestedModel string, requireCompact bool) openAIRealTrafficTTFTState {
 	stats := s.getOpenAIAccountRuntimeStats()
-	s.refreshOpenAIAccountRuntimeStats(stats, account)
-	return openAIRealTrafficTTFTStateFromStats(stats, account, now)
+	upstreamModel := resolveOpenAIAccountUpstreamModelForRequest(account, requestedModel, requireCompact)
+	s.refreshOpenAIAccountRuntimeStatsForModel(stats, account, upstreamModel)
+	return openAIRealTrafficTTFTStateFromStatsForModel(stats, account, now, upstreamModel)
 }
 
 func resetOpenAIAdvancedSchedulerSettingCacheForTest() {
@@ -2585,11 +2668,46 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapability(
 	useUpstreamTokenCost bool,
 	platformOverride ...string,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	return s.SelectAccountWithSchedulerForCapabilityAndSchedulingModel(
+		ctx,
+		groupID,
+		previousResponseID,
+		sessionHash,
+		requestedModel,
+		requestedModel,
+		excludedIDs,
+		requiredTransport,
+		requiredCapability,
+		requireCompact,
+		previousResponseCanMove,
+		useUpstreamTokenCost,
+		platformOverride...,
+	)
+}
+
+// SelectAccountWithSchedulerForCapabilityAndSchedulingModel keeps the
+// client-visible model separate from the channel-routed model used for
+// model-scoped runtime evidence and auto-priority ranking.
+func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapabilityAndSchedulingModel(
+	ctx context.Context,
+	groupID *int64,
+	previousResponseID string,
+	sessionHash string,
+	requestedModel string,
+	schedulingModel string,
+	excludedIDs map[int64]struct{},
+	requiredTransport OpenAIUpstreamTransport,
+	requiredCapability OpenAIEndpointCapability,
+	requireCompact bool,
+	previousResponseCanMove bool,
+	useUpstreamTokenCost bool,
+	platformOverride ...string,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	platform := PlatformOpenAI
 	if len(platformOverride) > 0 {
 		platform = platformOverride[0]
 	}
-	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
+	return s.selectAccountWithSchedulerForSchedulingModel(ctx, groupID, previousResponseID, sessionHash, requestedModel, schedulingModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
 }
 
 func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
@@ -2600,13 +2718,27 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
 	excludedIDs map[int64]struct{},
 	requiredCapability OpenAIImagesCapability,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false, PlatformOpenAI, false, false)
+	return s.SelectAccountWithSchedulerForImagesAndSchedulingModel(ctx, groupID, sessionHash, requestedModel, requestedModel, excludedIDs, requiredCapability)
+}
+
+// SelectAccountWithSchedulerForImagesAndSchedulingModel is the image endpoint
+// counterpart of SelectAccountWithSchedulerForCapabilityAndSchedulingModel.
+func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImagesAndSchedulingModel(
+	ctx context.Context,
+	groupID *int64,
+	sessionHash string,
+	requestedModel string,
+	schedulingModel string,
+	excludedIDs map[int64]struct{},
+	requiredCapability OpenAIImagesCapability,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	selection, decision, err := s.selectAccountWithSchedulerForSchedulingModel(ctx, groupID, "", sessionHash, requestedModel, schedulingModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false, PlatformOpenAI, false, false)
 	if err == nil && selection != nil && selection.Account != nil {
 		return selection, decision, nil
 	}
 	// 如果要求 native 能力（如指定了模型）但没有可用的 APIKey 账号，回退到 basic（OAuth 账号）
 	if requiredCapability == OpenAIImagesCapabilityNative {
-		return s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false, PlatformOpenAI, false, false)
+		return s.selectAccountWithSchedulerForSchedulingModel(ctx, groupID, "", sessionHash, requestedModel, schedulingModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false, PlatformOpenAI, false, false)
 	}
 	return selection, decision, err
 }
@@ -2633,7 +2765,26 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	previousResponseCanMove bool,
 	useUpstreamTokenCost bool,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	selection, decision, err := s.selectAccountWithSchedulerOnce(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
+	return s.selectAccountWithSchedulerForSchedulingModel(ctx, groupID, previousResponseID, sessionHash, requestedModel, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
+}
+
+func (s *OpenAIGatewayService) selectAccountWithSchedulerForSchedulingModel(
+	ctx context.Context,
+	groupID *int64,
+	previousResponseID string,
+	sessionHash string,
+	requestedModel string,
+	schedulingModel string,
+	excludedIDs map[int64]struct{},
+	requiredTransport OpenAIUpstreamTransport,
+	requiredCapability OpenAIEndpointCapability,
+	requiredImageCapability OpenAIImagesCapability,
+	requireCompact bool,
+	platform string,
+	previousResponseCanMove bool,
+	useUpstreamTokenCost bool,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	selection, decision, err := s.selectAccountWithSchedulerOnce(ctx, groupID, previousResponseID, sessionHash, requestedModel, schedulingModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
 	if err == nil || openAIProxyStreamQuarantineBypassed(ctx) {
 		return selection, decision, err
 	}
@@ -2649,7 +2800,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 		return selection, decision, err
 	}
 	s.logOpenAIProxyStreamQuarantineFailOpen(requestedModel, blocked)
-	return s.selectAccountWithSchedulerOnce(withOpenAIProxyStreamQuarantineBypass(ctx), groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
+	return s.selectAccountWithSchedulerOnce(withOpenAIProxyStreamQuarantineBypass(ctx), groupID, previousResponseID, sessionHash, requestedModel, schedulingModel, excludedIDs, requiredTransport, requiredCapability, requiredImageCapability, requireCompact, platform, previousResponseCanMove, useUpstreamTokenCost)
 }
 
 func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
@@ -2658,6 +2809,7 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 	previousResponseID string,
 	sessionHash string,
 	requestedModel string,
+	schedulingModel string,
 	excludedIDs map[int64]struct{},
 	requiredTransport OpenAIUpstreamTransport,
 	requiredCapability OpenAIEndpointCapability,
@@ -2687,7 +2839,7 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 		if requiredTransport == OpenAIUpstreamTransportAny || requiredTransport == OpenAIUpstreamTransportHTTPSSE {
 			effectiveExcludedIDs := cloneExcludedAccountIDs(excludedIDs)
 			for {
-				selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, platform, sessionHash, requestedModel, effectiveExcludedIDs, requireCompact, requiredCapability, useUpstreamTokenCost)
+				selection, err := s.selectAccountWithLoadAwarenessForSchedulingModel(ctx, groupID, platform, sessionHash, requestedModel, schedulingModel, effectiveExcludedIDs, requireCompact, requiredCapability, useUpstreamTokenCost)
 				if err != nil {
 					return nil, decision, err
 				}
@@ -2712,7 +2864,7 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 
 		effectiveExcludedIDs := cloneExcludedAccountIDs(excludedIDs)
 		for {
-			selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, platform, sessionHash, requestedModel, effectiveExcludedIDs, requireCompact, requiredCapability, useUpstreamTokenCost)
+			selection, err := s.selectAccountWithLoadAwarenessForSchedulingModel(ctx, groupID, platform, sessionHash, requestedModel, schedulingModel, effectiveExcludedIDs, requireCompact, requiredCapability, useUpstreamTokenCost)
 			if err != nil {
 				return nil, decision, err
 			}
@@ -2757,7 +2909,7 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 	subscriptionPriority := s.isOpenAIAdvancedSchedulerSubscriptionPriorityEnabled(ctx)
 	stickyPreviousAccountID := int64(0)
 	if stickyWeighted && previousResponseCanMove && strings.TrimSpace(previousResponseID) != "" && platform == PlatformOpenAI {
-		stickyPreviousAccountID = s.ResolveAccountIDByPreviousResponseIDForScheduler(ctx, groupID, previousResponseID, requestedModel, excludedIDs, requiredCapability, requireCompact)
+		stickyPreviousAccountID = s.ResolveAccountIDByPreviousResponseIDForSchedulerForSchedulingModel(ctx, groupID, previousResponseID, requestedModel, schedulingModel, excludedIDs, requiredCapability, requireCompact)
 	}
 
 	return scheduler.Select(ctx, OpenAIAccountScheduleRequest{
@@ -2775,6 +2927,7 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 		PreviousResponseCanMove: previousResponseCanMove,
 		UseUpstreamTokenCost:    useUpstreamTokenCost,
 		RequestedModel:          requestedModel,
+		SchedulingModel:         schedulingModel,
 		RequiredTransport:       requiredTransport,
 		RequiredCapability:      requiredCapability,
 		RequiredImageCapability: requiredImageCapability,
@@ -2835,6 +2988,32 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(accountID int64
 	if s != nil && s.openaiRuntimePersistence != nil {
 		s.openaiRuntimePersistence.Report(accountID, model, success, firstTokenMs, observedAt)
 	}
+}
+
+// ReportOpenAIAccountScheduleResultFromForward records the model that the
+// upstream actually received. Handlers often start with a public/channel
+// model and only learn the final account/compact mapping inside Forward; using
+// that result here keeps model-scoped TTFT and failure evidence aligned with
+// the request that will be ranked next. When Forward returns no result (the
+// usual failover/timeout path), resolve the same model locally instead of
+// falling back to an unmapped public alias.
+func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResultFromForward(
+	accountID int64,
+	account *Account,
+	requestedModel string,
+	defaultMappedModel string,
+	requireCompact bool,
+	result *OpenAIForwardResult,
+	success bool,
+	firstTokenMs *int,
+) {
+	model := resolveOpenAIAccountUpstreamModel(account, requestedModel, defaultMappedModel, requireCompact)
+	if result != nil {
+		if upstreamModel := strings.TrimSpace(result.UpstreamModel); upstreamModel != "" {
+			model = upstreamModel
+		}
+	}
+	s.ReportOpenAIAccountScheduleResult(accountID, model, success, firstTokenMs)
 }
 
 func (s *OpenAIGatewayService) RecordOpenAIAccountSwitch() {
