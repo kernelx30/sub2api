@@ -1137,6 +1137,7 @@ export interface PoolAutoPriorityRankingResponse {
   enabled: boolean
   interval_minutes: number
   group_id: number
+  model?: string
   generated_at: string
   total: number
   items: PoolAutoPriorityRankingEntry[]
