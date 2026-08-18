@@ -157,12 +157,13 @@ func (h *OpenAIGatewayHandler) CountTokens(c *gin.Context) {
 	if preferredMappedModel != "" {
 		currentRoutingModel = preferredMappedModel
 	}
-	selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
+	selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapabilityAndSchedulingModel(
 		c.Request.Context(),
 		apiKey.GroupID,
 		"",
 		sessionHash,
-		currentRoutingModel,
+		reqModel,
+		openAIMessagesSchedulingModel(routingModel, preferredMappedModel, channelMapping),
 		nil,
 		service.OpenAIUpstreamTransportAny,
 		service.OpenAIEndpointCapabilityChatCompletions,

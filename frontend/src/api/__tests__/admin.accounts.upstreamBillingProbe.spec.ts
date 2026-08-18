@@ -13,6 +13,7 @@ vi.mock('@/api/client', () => ({
 import {
   getUpstreamBillingProbeSettings,
   getPoolAutoPrioritySettings,
+  getPoolAutoPriorityRanking,
   probeUpstreamBilling,
   probeUpstreamBillingBatch,
   setUpstreamBillingProbeEnabled,
@@ -41,6 +42,16 @@ describe('admin account upstream billing probe API', () => {
     expect(get).toHaveBeenCalledWith('/admin/accounts/pool-auto-priority/settings')
     expect(put).toHaveBeenNthCalledWith(1, '/admin/accounts/pool-auto-priority/settings', settings)
     expect(put).toHaveBeenNthCalledWith(2, '/admin/accounts/7/pool-auto-priority', { enabled: false })
+  })
+
+  it('passes an optional requested model to the ranking endpoint', async () => {
+    const ranking = { enabled: true, interval_minutes: 5, group_id: 7, model: 'gpt-5.6-sol', items: [] }
+    get.mockResolvedValueOnce({ data: ranking })
+
+    await expect(getPoolAutoPriorityRanking(7, 20, '  gpt-5.6-sol  ')).resolves.toEqual(ranking)
+    expect(get).toHaveBeenCalledWith('/admin/accounts/pool-auto-priority/ranking', {
+      params: { group_id: 7, limit: 20, model: 'gpt-5.6-sol' }
+    })
   })
 
   it('reads and updates global settings', async () => {

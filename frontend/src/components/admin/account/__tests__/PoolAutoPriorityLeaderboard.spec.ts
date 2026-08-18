@@ -57,6 +57,11 @@ function rankingEntry(overrides: Partial<PoolAutoPriorityRankingEntry>): PoolAut
     consecutive_failures: 0,
     last_probe_at: '2026-08-14T08:00:00Z',
     balance_unlimited: false,
+    runtime_ttft_ms: 1450,
+    runtime_sample_count: 4,
+    runtime_updated_at: '2026-08-14T08:00:30Z',
+    runtime_mature: true,
+    ranking_source: 'real_traffic',
     ...overrides
   }
 }
@@ -113,8 +118,8 @@ describe('PoolAutoPriorityLeaderboard', () => {
         rank: 2,
         account_id: 9,
         account_name: 'backup-upstream',
-        balance_unlimited: true,
-        balance_source: 'local_account_quota'
+        available_balance: -0.11810209,
+        balance_source: 'upstream_wallet'
       }),
       rankingEntry({
         rank: null,
@@ -143,9 +148,37 @@ describe('PoolAutoPriorityLeaderboard', () => {
       'pool-ranking-row-11'
     ])
     expect(rows[0].text()).toContain('$75.0')
-    expect(rows[1].text()).toContain('admin.accounts.poolRanking.localUnlimited')
+    expect(rows[1].text()).toContain('$-0.12')
+    expect(rows[1].find('[data-testid="pool-ranking-balance"]').attributes('title')).toBe(
+      'admin.accounts.poolRanking.upstreamWalletBalance'
+    )
+    expect(rows[0].find('[data-testid="pool-ranking-runtime-ttft"]').text()).toContain('1450 ms')
+    expect(rows[0].find('[data-testid="pool-ranking-runtime-ttft"]').text()).toContain(
+      'admin.accounts.poolRanking.realTrafficSource'
+    )
+    expect(rows[0].find('[data-testid="pool-ranking-runtime-ttft"]').text()).toContain(
+      '2026-08-14T08:00:30Z'
+    )
     expect(rows[2].find('[data-testid="pool-ranking-balance"]').text()).toBe('—')
     expect(wrapper.emitted('updated')?.at(-1)?.[0]).toEqual(entries)
+  })
+
+  it('hides legacy local balance estimates', async () => {
+    const entries = [
+      rankingEntry({
+        account_id: 7,
+        available_balance: 999,
+        balance_source: 'local_account_quota'
+      })
+    ]
+    getPoolAutoPriorityRanking.mockResolvedValue(rankingResponse(1, entries))
+
+    wrapper = mountLeaderboard()
+    await flushPromises()
+
+    const balance = wrapper.get('[data-testid="pool-ranking-balance"]')
+    expect(balance.text()).not.toContain('$')
+    expect(balance.attributes('title')).toBe('admin.accounts.poolRanking.unknownBalance')
   })
 
   it('renders a stable empty state when the selected group has no participants', async () => {

@@ -224,6 +224,9 @@ export default {
         notMeasured: '未测速'
       },
       poolRanking: {
+        runtimeTTFT: '实际首字',
+        realTrafficSource: '实际流量排序',
+        probeSource: '探针排序',
         title: '自动池速度排行榜',
         pageDescription: '按账号分组查看缓存探测排名、健康状态、延迟和可用余额',
         backToAccounts: '账户管理',
@@ -244,11 +247,12 @@ export default {
         empty: '该分组还没有参与自动优先级的 API Key 账号',
         displayed: '显示 {count} / {total} 个账号',
         cachedAt: '排行榜读取于 {time}',
-        localUnlimited: '本地不限',
-        unlimited: '不限',
-        upstreamBalance: '上游接口返回的 API Key 可用余额',
-        localBalance: '上游未返回余额，显示本地账号额度减去已用额度',
-        unknownBalance: '暂未取得可用余额',
+        keyUnlimited: '密钥不限',
+        subscriptionUnlimited: '订阅不限',
+        upstreamWalletBalance: '上游 /v1/usage 返回的真实钱包余额',
+        upstreamSubscriptionBalance: '上游 /v1/usage 返回的订阅剩余额度',
+        upstreamBalance: '上游返回的 API Key 剩余额度',
+        unknownBalance: '上游未返回可验证的真实余额',
         notSchedulable: '未参与调度',
         probeStatus: {
           ok: '正常',

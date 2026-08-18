@@ -243,6 +243,13 @@ func (s *OpenAIGatewayService) openAIFirstOutputTimeout(reasoningEffort string) 
 	return time.Duration(seconds) * time.Second
 }
 
+func (s *OpenAIGatewayService) openAIFirstOutputTimeoutForRequest(c *gin.Context, reasoningEffort string) time.Duration {
+	if imageIntent, known := getOpenAIImageIntentHint(c); known && imageIntent {
+		return 0
+	}
+	return s.openAIFirstOutputTimeout(reasoningEffort)
+}
+
 func (s *OpenAIGatewayService) newOpenAIFirstOutputTimeoutError(
 	ctx context.Context,
 	c *gin.Context,
@@ -269,6 +276,20 @@ func (s *OpenAIGatewayService) newOpenAIFirstOutputTimeoutError(
 	})
 	if s.rateLimitService != nil {
 		s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
+	}
+	cooldown := openAIAccountModelTransientDecision{}
+	if s.ShouldPreferOpenAIPoolFailover(ctx, account) {
+		cooldown = s.recordOpenAIFirstOutputTimeout(account, originalModel, time.Now())
+	}
+	if cooldown.Cooldown > 0 {
+		logger.LegacyPrintf(
+			"service.openai_gateway",
+			"OpenAI first output timeout cooldown: account=%d model=%s cooldown=%s block_until=%s",
+			account.ID,
+			canonicalOpenAIAccountSchedulingModel(account, originalModel),
+			cooldown.Cooldown,
+			cooldown.BlockUntil.Format(time.RFC3339Nano),
+		)
 	}
 	return &UpstreamFailoverError{
 		StatusCode:      http.StatusGatewayTimeout,
@@ -324,6 +345,48 @@ type openAIRequestContextReadCloser struct {
 	cleanup func()
 	once    sync.Once
 	err     error
+}
+
+// openAIFirstOutputBodyGuard interrupts a streaming response body when the
+// request-wide first-output deadline expires. Closing the body is what wakes a
+// scanner that is blocked waiting for the next SSE frame.
+type openAIFirstOutputBodyGuard struct {
+	body  io.Closer
+	timer *time.Timer
+	fired chan struct{}
+	once  sync.Once
+}
+
+func newOpenAIFirstOutputBodyGuard(body io.Closer, deadline time.Time) *openAIFirstOutputBodyGuard {
+	guard := &openAIFirstOutputBodyGuard{body: body, fired: make(chan struct{})}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		remaining = time.Nanosecond
+	}
+	guard.timer = time.AfterFunc(remaining, func() {
+		close(guard.fired)
+		_ = guard.body.Close()
+	})
+	return guard
+}
+
+// stop returns true when the deadline won the race. It is idempotent so the
+// semantic-output path and deferred cleanup can both call it.
+func (g *openAIFirstOutputBodyGuard) stop() bool {
+	if g == nil {
+		return false
+	}
+	g.once.Do(func() {
+		if !g.timer.Stop() {
+			<-g.fired
+		}
+	})
+	select {
+	case <-g.fired:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *openAIRequestContextReadCloser) Close() error {

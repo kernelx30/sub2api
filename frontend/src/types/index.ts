@@ -1027,23 +1027,25 @@ export interface TempUnschedulableStatus {
 }
 
 export interface UpstreamBillingData {
-  object: 'sub2api.key_billing'
-  schema_version: 1
-  billing_scope: 'token'
+  object?: 'sub2api.key_billing'
+  schema_version?: 1
+  billing_scope?: 'token'
   available_balance?: number
-  available_balance_source?: 'api_key_quota'
+  available_balance_source?: 'api_key_quota' | 'wallet_balance' | 'subscription_quota'
   available_balance_unlimited?: boolean
-  group_rate_multiplier: number
+  available_balance_observed_at?: string
+  available_balance_fresh_until?: string
+  group_rate_multiplier?: number
   user_rate_multiplier?: number
-  resolved_rate_multiplier: number
-  peak_rate_enabled: boolean
+  resolved_rate_multiplier?: number
+  peak_rate_enabled?: boolean
   peak_start?: string
   peak_end?: string
   peak_rate_multiplier?: number
   applied_peak_multiplier?: number
-  effective_rate_multiplier: number
+  effective_rate_multiplier?: number
   timezone?: string
-  observed_at: string
+  observed_at?: string
 }
 
 export type UpstreamBillingProbeStatus = 'ok' | 'unsupported' | 'failed'
@@ -1123,13 +1125,19 @@ export interface PoolAutoPriorityRankingEntry {
   next_probe_at?: string
   available_balance?: number
   balance_unlimited: boolean
-  balance_source?: 'upstream_api_key_quota' | 'local_account_quota'
+  balance_source?: 'upstream_api_key_quota' | 'upstream_wallet' | 'upstream_subscription' | 'local_account_quota'
+  runtime_ttft_ms: number
+  runtime_sample_count: number
+  runtime_updated_at?: string
+  runtime_mature: boolean
+  ranking_source: 'probe' | 'real_traffic'
 }
 
 export interface PoolAutoPriorityRankingResponse {
   enabled: boolean
   interval_minutes: number
   group_id: number
+  model?: string
   generated_at: string
   total: number
   items: PoolAutoPriorityRankingEntry[]

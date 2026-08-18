@@ -3,6 +3,7 @@ package admin
 import (
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -40,12 +41,19 @@ type poolAutoPriorityRankingItem struct {
 	AvailableBalance    *float64   `json:"available_balance,omitempty"`
 	BalanceUnlimited    bool       `json:"balance_unlimited"`
 	BalanceSource       string     `json:"balance_source,omitempty"`
+	RuntimeTTFTMS       float64    `json:"runtime_ttft_ms"`
+	RuntimeSampleCount  int64      `json:"runtime_sample_count"`
+	RuntimeUpdatedAt    *time.Time `json:"runtime_updated_at,omitempty"`
+	RuntimeMature       bool       `json:"runtime_mature"`
+	RankingSource       string     `json:"ranking_source"`
 }
 
 type poolAutoPriorityRankingResponse struct {
 	Enabled         bool                          `json:"enabled"`
 	IntervalMinutes int                           `json:"interval_minutes"`
 	GroupID         int64                         `json:"group_id"`
+	Model           string                        `json:"model,omitempty"`
+	Compact         bool                          `json:"compact"`
 	GeneratedAt     time.Time                     `json:"generated_at"`
 	Total           int                           `json:"total"`
 	Items           []poolAutoPriorityRankingItem `json:"items"`
@@ -122,6 +130,20 @@ func (h *AccountHandler) GetPoolAutoPriorityRanking(c *gin.Context) {
 		}
 		limit = parsedLimit
 	}
+	requestedModel := strings.TrimSpace(c.Query("model"))
+	if len(requestedModel) > 200 {
+		response.BadRequest(c, "model must be at most 200 characters")
+		return
+	}
+	requireCompact := false
+	if rawCompact := strings.TrimSpace(c.Query("compact")); rawCompact != "" {
+		parsedCompact, parseErr := strconv.ParseBool(rawCompact)
+		if parseErr != nil {
+			response.BadRequest(c, "compact must be a boolean")
+			return
+		}
+		requireCompact = parsedCompact
+	}
 
 	ctx := c.Request.Context()
 	settings, err := h.upstreamBillingProbe.GetPoolAutoPrioritySettings(ctx)
@@ -161,7 +183,7 @@ func (h *AccountHandler) GetPoolAutoPriorityRanking(c *gin.Context) {
 
 	items := make([]poolAutoPriorityRankingItem, 0, len(participating))
 	rankedIDs := make(map[int64]struct{}, len(schedulable))
-	for _, snapshot := range service.BuildPoolAutoPriorityRanking(schedulable, now) {
+	for _, snapshot := range h.buildPoolAutoPriorityRanking(schedulable, now, requestedModel, requireCompact) {
 		account := accountByID[snapshot.AccountID]
 		items = append(items, poolAutoPriorityRankingItemFromSnapshot(account, groupID, snapshot, true))
 		rankedIDs[snapshot.AccountID] = struct{}{}
@@ -170,7 +192,7 @@ func (h *AccountHandler) GetPoolAutoPriorityRanking(c *gin.Context) {
 		if _, ok := rankedIDs[account.ID]; ok {
 			continue
 		}
-		snapshots := service.BuildPoolAutoPriorityRanking([]*service.Account{account}, now)
+		snapshots := h.buildPoolAutoPriorityRanking([]*service.Account{account}, now, requestedModel, requireCompact)
 		if len(snapshots) == 0 {
 			continue
 		}
@@ -196,10 +218,19 @@ func (h *AccountHandler) GetPoolAutoPriorityRanking(c *gin.Context) {
 		Enabled:         settings.Enabled,
 		IntervalMinutes: settings.IntervalMinutes,
 		GroupID:         groupID,
+		Model:           requestedModel,
+		Compact:         requireCompact,
 		GeneratedAt:     now,
 		Total:           total,
 		Items:           items,
 	})
+}
+
+func (h *AccountHandler) buildPoolAutoPriorityRanking(accounts []*service.Account, now time.Time, requestedModel string, requireCompact bool) []service.PoolAutoPriorityRankingSnapshot {
+	if h != nil && h.openAIGatewayService != nil {
+		return h.openAIGatewayService.BuildPoolAutoPriorityRankingForRequest(accounts, now, requestedModel, requireCompact)
+	}
+	return service.BuildPoolAutoPriorityRankingForModel(accounts, now, requestedModel)
 }
 
 func poolAutoPriorityRankingItemFromSnapshot(
@@ -226,6 +257,11 @@ func poolAutoPriorityRankingItemFromSnapshot(
 		AvailableBalance:    snapshot.AvailableBalance,
 		BalanceUnlimited:    snapshot.BalanceUnlimited,
 		BalanceSource:       snapshot.BalanceSource,
+		RuntimeTTFTMS:       snapshot.RuntimeTTFTMS,
+		RuntimeSampleCount:  snapshot.RuntimeSampleCount,
+		RuntimeUpdatedAt:    snapshot.RuntimeUpdatedAt,
+		RuntimeMature:       snapshot.RuntimeMature,
+		RankingSource:       snapshot.RankingSource,
 	}
 	if ranked {
 		rank := snapshot.Rank

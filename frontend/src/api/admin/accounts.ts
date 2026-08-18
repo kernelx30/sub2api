@@ -935,11 +935,17 @@ export async function getPoolAutoPrioritySettings(): Promise<PoolAutoPrioritySet
 
 export async function getPoolAutoPriorityRanking(
   groupId: number,
-  limit: number = 50
+  limit: number = 50,
+  model?: string
 ): Promise<PoolAutoPriorityRankingResponse> {
+  const params: { group_id: number; limit: number; model?: string } = { group_id: groupId, limit }
+  const requestedModel = model?.trim()
+  if (requestedModel) {
+    params.model = requestedModel
+  }
   const { data } = await apiClient.get<PoolAutoPriorityRankingResponse>(
     '/admin/accounts/pool-auto-priority/ranking',
-    { params: { group_id: groupId, limit } }
+    { params }
   )
   return data
 }

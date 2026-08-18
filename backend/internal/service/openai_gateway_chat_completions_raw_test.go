@@ -112,6 +112,7 @@ func TestForwardAsRawChatCompletions_ForcesStreamUsageUpstreamAndPassesUsageDown
 	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
 	require.NoError(t, err)
 	require.NotNil(t, result)
+	require.NotNil(t, result.FirstTokenMs, "visible raw Chat output must record TTFT when the guard is disabled")
 	require.Equal(t, 9, result.Usage.InputTokens)
 	require.Equal(t, 4, result.Usage.OutputTokens)
 	require.Equal(t, 3, result.Usage.CacheReadInputTokens)
@@ -723,6 +724,139 @@ func TestForwardAsChatCompletions_UnknownResponsesSupportFallbackUsesVersionedCh
 	require.Equal(t, "https://open.bigmodel.cn/api/paas/v4/chat/completions", upstream.requests[1].URL.String())
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Body.String(), `"content":"ok"`)
+}
+
+func TestOpenAIRawChatFirstOutputTimeoutIncludesResponseHeaderWait(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := &blockingOpenAIResponseHeaderUpstream{canceled: make(chan struct{})}
+	cfg := rawChatCompletionsTestConfig()
+	cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 1
+	cfg.Gateway.MaxLineSize = defaultMaxLineSize
+	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+	body := []byte(`{"model":"gpt-5.5","stream":true,"reasoning_effort":"low","messages":[{"role":"user","content":"hello"}]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	account := rawChatCompletionsTestAccount()
+
+	started := time.Now()
+	_, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusGatewayTimeout, failoverErr.StatusCode)
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
+	require.Less(t, time.Since(started), 1300*time.Millisecond)
+	require.Empty(t, rec.Body.String())
+	select {
+	case <-upstream.canceled:
+	default:
+		t.Fatal("raw Chat response-header timeout did not cancel the upstream request context")
+	}
+}
+
+func TestOpenAIRawChatFirstOutputTimeoutDoesNotLeakRoleChunk(t *testing.T) {
+	cfg := rawChatCompletionsTestConfig()
+	cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 1
+	cfg.Gateway.MaxLineSize = defaultMaxLineSize
+	svc := &OpenAIGatewayService{cfg: cfg, responseHeaderFilter: compileResponseHeaderFilter(cfg)}
+	pr, pw := io.Pipe()
+	trackedBody := &firstOutputCloseTrackingBody{ReadCloser: pr, closed: make(chan struct{})}
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		defer func() { _ = pw.Close() }()
+		_, _ = pw.Write([]byte("data: {\"id\":\"chatcmpl_role\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n"))
+		select {
+		case <-trackedBody.closed:
+		case <-time.After(2 * time.Second):
+		}
+	}()
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Request-Id": []string{"raw-slow"}}, Body: trackedBody}
+	account := rawChatCompletionsTestAccount()
+
+	_, err := svc.streamRawChatCompletions(
+		context.Background(), c, resp, account, "gpt-5.5", "gpt-5.5", "gpt-5.5",
+		nil, nil, time.Now().Add(-2*time.Second), 0, time.Second,
+	)
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusGatewayTimeout, failoverErr.StatusCode)
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
+	require.False(t, c.Writer.Written())
+	require.Empty(t, rec.Body.String())
+	select {
+	case <-writerDone:
+	case <-time.After(time.Second):
+		t.Fatal("raw Chat role writer did not exit after timeout closed the body")
+	}
+}
+
+func TestOpenAIRawChatFirstOutputTimeoutDisarmsAfterSemanticOutput(t *testing.T) {
+	cfg := rawChatCompletionsTestConfig()
+	cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 1
+	cfg.Gateway.MaxLineSize = defaultMaxLineSize
+	svc := &OpenAIGatewayService{cfg: cfg, responseHeaderFilter: compileResponseHeaderFilter(cfg)}
+	pr, pw := io.Pipe()
+	go func() {
+		defer func() { _ = pw.Close() }()
+		_, _ = pw.Write([]byte("data: {\"id\":\"chatcmpl_ok\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n"))
+		_, _ = pw.Write([]byte("data: {\"id\":\"chatcmpl_ok\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		time.Sleep(1100 * time.Millisecond)
+		_, _ = pw.Write([]byte("data: {\"id\":\"chatcmpl_ok\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\ndata: [DONE]\n\n"))
+	}()
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Request-Id": []string{"raw-ok"}}, Body: pr}
+	account := rawChatCompletionsTestAccount()
+
+	result, err := svc.streamRawChatCompletions(
+		context.Background(), c, resp, account, "gpt-5.5", "gpt-5.5", "gpt-5.5",
+		nil, nil, time.Now(), 0, time.Second,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.FirstTokenMs)
+	require.Equal(t, 3, result.Usage.InputTokens)
+	require.Equal(t, 1, result.Usage.OutputTokens)
+	require.Contains(t, rec.Body.String(), `"content":"ok"`)
+	require.Contains(t, rec.Body.String(), "data: [DONE]")
+}
+
+func TestOpenAIRawChatFirstOutputReadErrorFailsOver(t *testing.T) {
+	cfg := rawChatCompletionsTestConfig()
+	cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 5
+	cfg.Gateway.MaxLineSize = defaultMaxLineSize
+	svc := &OpenAIGatewayService{cfg: cfg, responseHeaderFilter: compileResponseHeaderFilter(cfg)}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"X-Request-Id": []string{"raw-read-error"}},
+		Body: &openAIChatStreamReadErrorCloser{
+			payload: []byte("data: {\"id\":\"chatcmpl_role\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n"),
+			err:     errors.New("synthetic upstream read failure"),
+		},
+	}
+	account := rawChatCompletionsTestAccount()
+
+	_, err := svc.streamRawChatCompletions(
+		context.Background(), c, resp, account, "gpt-5.5", "gpt-5.5", "gpt-5.5",
+		nil, nil, time.Now(), 0, 5*time.Second,
+	)
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
+	require.False(t, c.Writer.Written())
+	require.Empty(t, rec.Body.String())
 }
 
 func TestIsOpenAIChatUsageOnlyStreamChunk(t *testing.T) {

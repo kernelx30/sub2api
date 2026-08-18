@@ -121,6 +121,7 @@ type openAIGroupFallbackHTTPUpstream struct {
 	service.HTTPUpstream
 	mu       sync.Mutex
 	statuses map[int64]int
+	hangs    map[int64]bool
 	calls    []int64
 }
 
@@ -128,9 +129,27 @@ func (u *openAIGroupFallbackHTTPUpstream) Do(req *http.Request, _ string, accoun
 	u.mu.Lock()
 	u.calls = append(u.calls, accountID)
 	status := u.statuses[accountID]
+	hang := u.hangs[accountID]
 	u.mu.Unlock()
 	if status == 0 {
 		status = http.StatusOK
+	}
+	if hang {
+		reader, writer := io.Pipe()
+		go func() {
+			defer func() { _ = writer.Close() }()
+			if _, err := io.WriteString(writer, `data: {"type":"response.created","response":{"id":"resp-stalled"}}`+"\n\n"); err != nil {
+				return
+			}
+			<-req.Context().Done()
+			_ = writer.CloseWithError(req.Context().Err())
+		}()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       reader,
+			Request:    req,
+		}, nil
 	}
 	body := `{"id":"chatcmpl-fallback","object":"chat.completion","created":1,"model":"gpt-5","choices":[{"index":0,"message":{"role":"assistant","content":"fallback-ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`
 	if status >= http.StatusBadRequest {
@@ -178,10 +197,11 @@ func (r *openAIGroupFallbackUsageRepo) Create(_ context.Context, log *service.Us
 }
 
 type openAIGroupFallbackFixture struct {
-	handler  *OpenAIGatewayHandler
-	apiKey   *service.APIKey
-	upstream *openAIGroupFallbackHTTPUpstream
-	usage    *openAIGroupFallbackUsageRepo
+	handler     *OpenAIGatewayHandler
+	apiKey      *service.APIKey
+	accountRepo *openAIGroupFallbackAccountRepo
+	upstream    *openAIGroupFallbackHTTPUpstream
+	usage       *openAIGroupFallbackUsageRepo
 }
 
 func newOpenAIGroupFallbackFixture(t *testing.T, primaryAccounts []service.Account, gatewayRunMode string) *openAIGroupFallbackFixture {
@@ -221,7 +241,7 @@ func newOpenAIGroupFallbackFixture(t *testing.T, primaryAccounts []service.Accou
 	billingCfg.Default.RateMultiplier = 1
 	billingCache := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, billingCfg, nil)
 	usageRepo := &openAIGroupFallbackUsageRepo{created: make(chan *service.UsageLog, 2)}
-	upstream := &openAIGroupFallbackHTTPUpstream{statuses: make(map[int64]int)}
+	upstream := &openAIGroupFallbackHTTPUpstream{statuses: make(map[int64]int), hangs: make(map[int64]bool)}
 	channelService := service.NewChannelService(&openAIGroupFallbackChannelRepo{}, groupRepo, nil, nil)
 	gatewaySvc := service.NewOpenAIGatewayService(
 		accountRepo,
@@ -270,7 +290,7 @@ func newOpenAIGroupFallbackFixture(t *testing.T, primaryAccounts []service.Accou
 		User:                              &service.User{ID: 8005, Status: service.StatusActive},
 		Status:                            service.StatusActive,
 	}
-	return &openAIGroupFallbackFixture{handler: h, apiKey: apiKey, upstream: upstream, usage: usageRepo}
+	return &openAIGroupFallbackFixture{handler: h, apiKey: apiKey, accountRepo: accountRepo, upstream: upstream, usage: usageRepo}
 }
 
 func openAIGroupFallbackAccount(id, groupID int64, modelMapping map[string]string) service.Account {
@@ -376,6 +396,104 @@ func TestOpenAIGroupFallback_RetryablePrimaryFailureUsesFallback(t *testing.T) {
 			require.Contains(t, recorder.Body.String(), "fallback-ok")
 			require.Equal(t, []int64{openAIGroupFallbackPrimaryAcc, openAIGroupFallbackTargetAcc}, fixture.upstream.accountCalls())
 			requireOpenAIGroupFallbackUsage(t, fixture)
+		})
+	}
+}
+
+func TestOpenAIGroupFallback_AutoPriorityPoolSkipsSameAccountRetries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name                string
+		endpoint            string
+		body                string
+		autoPriorityEnabled *bool
+		wantCalls           []int64
+	}{
+		{
+			name:      "responses_auto_priority",
+			endpoint:  EndpointResponses,
+			body:      `{"model":"gpt-5","input":"hello","stream":false}`,
+			wantCalls: []int64{openAIGroupFallbackPrimaryAcc, openAIGroupFallbackTargetAcc},
+		},
+		{
+			name:      "chat_completions_auto_priority",
+			endpoint:  "/v1/chat/completions",
+			body:      `{"model":"gpt-5","messages":[{"role":"user","content":"hello"}],"stream":false}`,
+			wantCalls: []int64{openAIGroupFallbackPrimaryAcc, openAIGroupFallbackTargetAcc},
+		},
+		{
+			name:                "responses_account_opt_out",
+			endpoint:            EndpointResponses,
+			body:                `{"model":"gpt-5","input":"hello","stream":false}`,
+			autoPriorityEnabled: boolPtr(false),
+			wantCalls: []int64{
+				openAIGroupFallbackPrimaryAcc,
+				openAIGroupFallbackPrimaryAcc,
+				openAIGroupFallbackPrimaryAcc,
+				openAIGroupFallbackTargetAcc,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			primary := openAIGroupFallbackAccount(openAIGroupFallbackPrimaryAcc, openAIGroupFallbackPrimaryID, nil)
+			primary.Credentials["pool_mode"] = true
+			primary.Credentials["pool_mode_retry_count"] = float64(2)
+			primary.Credentials["pool_mode_retry_status_codes"] = []any{float64(http.StatusBadGateway)}
+			if tt.autoPriorityEnabled != nil {
+				primary.Extra[service.PoolAutoPriorityEnabledExtraKey] = *tt.autoPriorityEnabled
+			}
+			fixture := newOpenAIGroupFallbackFixture(t, []service.Account{primary}, config.RunModeStandard)
+			fixture.upstream.statuses[openAIGroupFallbackPrimaryAcc] = http.StatusBadGateway
+
+			recorder, _ := runOpenAIGroupFallbackRequest(t, fixture, tt.endpoint, tt.body)
+
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			require.Equal(t, tt.wantCalls, fixture.upstream.accountCalls())
+			requireOpenAIGroupFallbackUsage(t, fixture)
+		})
+	}
+}
+
+func TestOpenAIGroupFallback_FirstOutputTimeoutBudgetDoesNotReset(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name     string
+		endpoint string
+		body     string
+	}{
+		{name: "responses", endpoint: EndpointResponses, body: `{"model":"gpt-5.5","input":"hello","stream":true}`},
+		{name: "chat_completions", endpoint: EndpointChatCompletions, body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}],"stream":true}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			primaryFirst := openAIGroupFallbackAccount(openAIGroupFallbackPrimaryAcc, openAIGroupFallbackPrimaryID, nil)
+			primaryFirst.Priority = 1
+			primaryFirst.Extra["openai_responses_supported"] = true
+			primarySecond := openAIGroupFallbackAccount(openAIGroupFallbackPrimaryAcc+1, openAIGroupFallbackPrimaryID, nil)
+			primarySecond.Priority = 2
+			primarySecond.Extra["openai_responses_supported"] = true
+			fixture := newOpenAIGroupFallbackFixture(t, []service.Account{primaryFirst, primarySecond}, config.RunModeStandard)
+			fixture.handler.cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 1
+
+			fallbackFirst := openAIGroupFallbackAccount(openAIGroupFallbackTargetAcc, openAIGroupFallbackTargetID, nil)
+			fallbackFirst.Priority = 1
+			fallbackFirst.Extra["openai_responses_supported"] = true
+			fallbackSecond := openAIGroupFallbackAccount(openAIGroupFallbackTargetAcc+1, openAIGroupFallbackTargetID, nil)
+			fallbackSecond.Priority = 2
+			fallbackSecond.Extra["openai_responses_supported"] = true
+			fixture.accountRepo.accountsByGroup[openAIGroupFallbackTargetID] = []service.Account{fallbackFirst, fallbackSecond}
+
+			for _, accountID := range []int64{primaryFirst.ID, primarySecond.ID, fallbackFirst.ID, fallbackSecond.ID} {
+				fixture.upstream.hangs[accountID] = true
+			}
+
+			recorder, _ := runOpenAIGroupFallbackRequest(t, fixture, tt.endpoint, tt.body)
+
+			require.Equal(t, http.StatusBadGateway, recorder.Code, recorder.Body.String())
+			require.Contains(t, recorder.Body.String(), "temporarily unavailable")
+			require.Equal(t, []int64{primaryFirst.ID, primarySecond.ID, fallbackFirst.ID}, fixture.upstream.accountCalls())
 		})
 	}
 }

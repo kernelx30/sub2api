@@ -33,6 +33,8 @@ func upstreamBillingProbeValidBody() io.ReadCloser {
 		"object":"sub2api.key_billing",
 		"schema_version":1,
 		"billing_scope":"token",
+		"available_balance":12.5,
+		"available_balance_source":"api_key_quota",
 		"group_rate_multiplier":0.02,
 		"resolved_rate_multiplier":0.02,
 		"peak_rate_enabled":false,

@@ -136,6 +136,32 @@ func (r *openAIResponseFlushReadError) Read(data []byte) (int, error) {
 
 func (r *openAIResponseFlushReadError) Close() error { return nil }
 
+type openAIResponseTerminalBlockingBody struct {
+	data      []byte
+	offset    int
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func newOpenAIResponseTerminalBlockingBody(data []byte) *openAIResponseTerminalBlockingBody {
+	return &openAIResponseTerminalBlockingBody{data: data, closed: make(chan struct{})}
+}
+
+func (r *openAIResponseTerminalBlockingBody) Read(p []byte) (int, error) {
+	if r.offset < len(r.data) {
+		n := copy(p, r.data[r.offset:])
+		r.offset += n
+		return n, nil
+	}
+	<-r.closed
+	return 0, io.EOF
+}
+
+func (r *openAIResponseTerminalBlockingBody) Close() error {
+	r.closeOnce.Do(func() { close(r.closed) })
+	return nil
+}
+
 func TestOpenAIResponseFlush_SlowEventsFlushOnceAtBoundaries(t *testing.T) {
 	events := []string{
 		`data: {"type":"response.output_text.delta","delta":"a"}`,
@@ -155,6 +181,46 @@ func TestOpenAIResponseFlush_SlowEventsFlushOnceAtBoundaries(t *testing.T) {
 	require.Len(t, flushes, len(events))
 	for _, flushed := range flushes {
 		require.True(t, strings.HasSuffix(flushed, "\n\n"), "flush must occur after a complete SSE event")
+	}
+}
+
+func TestOpenAIResponseFlush_ReturnsAtTerminalBoundaryWithoutUpstreamEOF(t *testing.T) {
+	terminalEvent := `data: {"type":"response.completed","response":{"id":"resp_held_open","output":[{"type":"message","id":"msg_1"}],"usage":{"input_tokens":11,"output_tokens":4,"total_tokens":15}}}` + "\n\n"
+	tests := []struct {
+		name string
+		cfg  config.GatewayConfig
+	}{
+		{name: "synchronous scanner"},
+		{name: "asynchronous scanner with keepalive", cfg: config.GatewayConfig{StreamDataIntervalTimeout: 180, StreamKeepaliveInterval: 10}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := newOpenAIResponseTerminalBlockingBody([]byte(terminalEvent))
+			defer func() { require.NoError(t, body.Close()) }()
+			recorder := newOpenAIResponseFlushRecorder()
+			resultCh, errCh := runOpenAIResponseFlushTestAsync(recorder, body, tt.cfg)
+
+			select {
+			case err := <-errCh:
+				require.NoError(t, err)
+			case <-time.After(time.Second):
+				t.Fatal("responses stream waited for upstream EOF after response.completed")
+			}
+			result := <-resultCh
+			require.NotNil(t, result)
+			require.Equal(t, 11, result.usage.InputTokens)
+			require.Equal(t, 4, result.usage.OutputTokens)
+			gotBody, flushes := recorder.snapshot()
+			require.Equal(t, terminalEvent, gotBody)
+			require.Equal(t, []string{terminalEvent}, flushes)
+
+			select {
+			case <-body.closed:
+			case <-time.After(time.Second):
+				t.Fatal("terminal handling did not close the upstream body")
+			}
+		})
 	}
 }
 

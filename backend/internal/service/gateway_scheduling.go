@@ -1799,6 +1799,41 @@ func probeAutoPriorityRanks(accounts []*Account, now time.Time) (map[int64]int, 
 	return ranks, true
 }
 
+// probeAutoPrioritySelectionRanks expands probe cohorts into the exact,
+// deterministic order shown by the account ranking page. Runtime OpenAI
+// scheduling uses these ranks so a displayed rank cannot silently diverge
+// from the account that is tried first.
+func probeAutoPrioritySelectionRanks(accounts []*Account, now time.Time) (map[int64]int, bool) {
+	cohortRanks, ranked := probeAutoPriorityRanks(accounts, now)
+	if !ranked {
+		return nil, false
+	}
+
+	ordered := make([]*Account, 0, len(accounts))
+	for _, account := range accounts {
+		if account == nil {
+			continue
+		}
+		ordered = append(ordered, account)
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left, right := ordered[i], ordered[j]
+		if cohortRanks[left.ID] != cohortRanks[right.ID] {
+			return cohortRanks[left.ID] < cohortRanks[right.ID]
+		}
+		if left.Priority != right.Priority {
+			return left.Priority < right.Priority
+		}
+		return left.ID < right.ID
+	})
+
+	selectionRanks := make(map[int64]int, len(ordered))
+	for rank, account := range ordered {
+		selectionRanks[account.ID] = rank
+	}
+	return selectionRanks, true
+}
+
 const poolAutoPrioritySettingsCacheTTL = 30 * time.Second
 
 func (s *GatewayService) poolAutoPriorityGloballyEnabled(ctx context.Context) bool {
@@ -1931,7 +1966,7 @@ func accountProbeStickyEscapeReasonWithinPool(account *Account, candidates []*Ac
 		rankedAccounts = append(rankedAccounts, account)
 	}
 
-	ranks, ranked := probeAutoPriorityRanks(rankedAccounts, now)
+	ranks, ranked := probeAutoPrioritySelectionRanks(rankedAccounts, now)
 	currentRank, currentRanked := ranks[account.ID]
 	if !ranked || !currentRanked {
 		return "", metrics

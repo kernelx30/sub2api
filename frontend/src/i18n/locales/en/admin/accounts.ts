@@ -278,6 +278,9 @@ export default {
         notMeasured: 'Not measured'
       },
       poolRanking: {
+        runtimeTTFT: 'Actual TTFT',
+        realTrafficSource: 'Real traffic order',
+        probeSource: 'Probe order',
         title: 'Automatic Pool Speed Ranking',
         pageDescription: 'Cached probe ranking, health, latency, and available balance by account group',
         backToAccounts: 'Account Management',
@@ -298,11 +301,12 @@ export default {
         empty: 'This group has no API key accounts participating in automatic priority yet',
         displayed: 'Showing {count} of {total} accounts',
         cachedAt: 'Ranking read {time}',
-        localUnlimited: 'Local unlimited',
-        unlimited: 'Unlimited',
-        upstreamBalance: 'Available API key balance reported by the upstream endpoint',
-        localBalance: 'The upstream did not report a balance; showing local account quota minus usage',
-        unknownBalance: 'Available balance has not been reported',
+        keyUnlimited: 'Key unlimited',
+        subscriptionUnlimited: 'Subscription unlimited',
+        upstreamWalletBalance: 'Real wallet balance reported by the upstream /v1/usage endpoint',
+        upstreamSubscriptionBalance: 'Remaining subscription quota reported by the upstream /v1/usage endpoint',
+        upstreamBalance: 'Remaining API key quota reported by the upstream',
+        unknownBalance: 'The upstream did not report a verifiable real balance',
         notSchedulable: 'Not schedulable',
         probeStatus: {
           ok: 'Healthy',

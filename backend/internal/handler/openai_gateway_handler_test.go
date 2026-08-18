@@ -929,6 +929,27 @@ func TestOpenAIResponsesWebSocket_SetsClientTransportWSWhenUpgradeValid(t *testi
 	require.Equal(t, service.OpenAIClientTransportWS, service.GetOpenAIClientTransport(c))
 }
 
+func TestOpenAIWSIngressSessionContextUsesUpdatedRequestContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	baseCtx := context.WithValue(context.Background(), struct{ name string }{"base"}, "preserved")
+	c.Request = httptest.NewRequest(http.MethodGet, "/openai/v1/responses", nil).WithContext(baseCtx)
+	gatewayService := &service.OpenAIGatewayService{}
+
+	sessionHash, routingCtx := generateOpenAIWSIngressSessionContext(
+		gatewayService,
+		c,
+		[]byte(`{"type":"response.create","model":"gpt-5.6-sol","input":"hello"}`),
+		"fallback-seed",
+	)
+
+	require.NotEmpty(t, sessionHash)
+	require.Equal(t, "preserved", routingCtx.Value(struct{ name string }{"base"}))
+	require.Equal(t, c.Request.Context(), routingCtx)
+	require.NotEqual(t, baseCtx, routingCtx)
+}
+
 func TestOpenAIResponsesWebSocket_InvalidUpgradeDoesNotSetTransport(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -2025,7 +2046,10 @@ func TestOpenAIResponses_APIKeyPassthroughPool5xxRetriesThenExhaustsMaxSwitches(
 				"pool_mode_retry_count":        float64(1),
 				"pool_mode_retry_status_codes": []any{float64(http.StatusBadGateway)},
 			},
-			Extra: map[string]any{"openai_passthrough": true},
+			Extra: map[string]any{
+				"openai_passthrough":                    true,
+				service.PoolAutoPriorityEnabledExtraKey: false,
+			},
 		},
 		{
 			ID: 9911, Name: "fallback-api-key", Platform: service.PlatformOpenAI,
@@ -2125,7 +2149,10 @@ func TestOpenAIResponses_APIKeyPassthroughPoolAuthFailureRetriesThenSwitchesToHe
 						"pool_mode_retry_count":        float64(1),
 						"pool_mode_retry_status_codes": []any{float64(tt.statusCode)},
 					},
-					Extra: map[string]any{"openai_passthrough": true},
+					Extra: map[string]any{
+						"openai_passthrough":                    true,
+						service.PoolAutoPriorityEnabledExtraKey: false,
+					},
 				},
 				{
 					ID: 9911, Name: "fallback-api-key", Platform: service.PlatformOpenAI,
@@ -2217,7 +2244,10 @@ func TestOpenAIResponses_APIKeyPassthroughSSERateLimitUsesConfiguredPoolRetry(t 
 				"pool_mode_retry_count":        float64(1),
 				"pool_mode_retry_status_codes": []any{float64(http.StatusTooManyRequests)},
 			},
-			Extra: map[string]any{"openai_passthrough": true},
+			Extra: map[string]any{
+				"openai_passthrough":                    true,
+				service.PoolAutoPriorityEnabledExtraKey: false,
+			},
 		},
 	}
 	cfg := &config.Config{RunMode: config.RunModeSimple}

@@ -2685,6 +2685,58 @@ func TestReportOpenAIAccountScheduleResult_SuccessClearsModelTransientState(t *t
 	require.False(t, svc.openaiModelTransient.isBlocked(21636, "gpt-5.5", now.Add(2*time.Millisecond)))
 }
 
+func TestReportOpenAIAccountScheduleResultFromForward_UsesActualUpstreamModel(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	ttft := 4321
+
+	svc.ReportOpenAIAccountScheduleResultFromForward(
+		21637,
+		&Account{ID: 21637, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+		"public-model",
+		"",
+		false,
+		&OpenAIForwardResult{UpstreamModel: " mapped-model "},
+		true,
+		&ttft,
+	)
+
+	stats := svc.getOpenAIAccountRuntimeStats()
+	_, mappedTTFT, mappedHasTTFT, mappedSamples, _ := stats.snapshotModelWithMeta(21637, "mapped-model")
+	require.True(t, mappedHasTTFT)
+	require.Equal(t, 4321.0, mappedTTFT)
+	require.Equal(t, int64(1), mappedSamples)
+
+	_, _, publicHasTTFT, publicSamples, _ := stats.snapshotModelWithMeta(21637, "public-model")
+	require.False(t, publicHasTTFT)
+	require.Zero(t, publicSamples)
+}
+
+func TestCanonicalOpenAIAccountSchedulingModel_PassthroughPreservesWireModel(t *testing.T) {
+	passthrough := &Account{
+		ID:       21638,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Extra: map[string]any{
+			"openai_passthrough": true,
+		},
+		Credentials: map[string]any{
+			// A stale mapping may remain after an account is switched to
+			// authentication-only passthrough; it must not affect runtime keys.
+			"model_mapping": map[string]any{"public-model": "old-upstream-model"},
+		},
+	}
+
+	require.Equal(t, "public-model", canonicalOpenAIAccountSchedulingModel(passthrough, "public-model"))
+
+	regular := &Account{
+		ID: 21639,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"public-model": "mapped-model"},
+		},
+	}
+	require.Equal(t, "mapped-model", canonicalOpenAIAccountSchedulingModel(regular, "public-model"))
+}
+
 func TestDefaultOpenAIAccountScheduler_ShouldEscapeStickyAccount_ThresholdBoundary(t *testing.T) {
 	stats := newOpenAIAccountRuntimeStats()
 	accountID := int64(21501)
@@ -2723,6 +2775,27 @@ func TestDefaultOpenAIAccountScheduler_ShouldEscapeStickyAccount_ThresholdBounda
 	require.Empty(t, reason)
 	require.InDelta(t, 0.655936, errorRate, 1e-9)
 	require.InDelta(t, 15000, observedTTFT, 1e-9)
+}
+
+func TestDefaultOpenAIAccountScheduler_ShouldEscapeStickyAccount_UsesOutcomeFreshnessForErrors(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	now := time.Now()
+	stats.reportAt(21502, false, nil, now, "gpt-5.6-sol")
+	stats.reportAt(21503, false, nil, now.Add(-openAIRealTrafficSlowEvidenceTTL-time.Second), "gpt-5.6-sol")
+	scheduler := &defaultOpenAIAccountScheduler{stats: stats}
+	cfg := openAIStickyEscapeConfig{enabled: true, ttftMs: 15000, errorRate: 0.1}
+
+	reason, errorRate, observedTTFT, shouldEscape := scheduler.shouldEscapeStickyAccount(21502, cfg)
+	require.True(t, shouldEscape)
+	require.Equal(t, "error_rate", reason)
+	require.InDelta(t, 0.2, errorRate, 1e-9)
+	require.Zero(t, observedTTFT)
+
+	reason, errorRate, observedTTFT, shouldEscape = scheduler.shouldEscapeStickyAccount(21503, cfg)
+	require.False(t, shouldEscape)
+	require.Empty(t, reason)
+	require.InDelta(t, 0.2, errorRate, 1e-9)
+	require.Zero(t, observedTTFT)
 }
 
 func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionSticky_ForceHTTP(t *testing.T) {
@@ -3168,6 +3241,9 @@ func TestOpenAIAccountRuntimeStats_ReportAndSnapshot(t *testing.T) {
 	require.True(t, hasTTFT)
 	require.InDelta(t, 0.36, errorRate, 1e-9)
 	require.InDelta(t, 120.0, ttft, 1e-9)
+	_, _, _, sampleCount, updatedAt := stats.snapshotWithMeta(1001)
+	require.Equal(t, int64(2), sampleCount)
+	require.False(t, updatedAt.IsZero())
 	require.Equal(t, 1, stats.size())
 }
 
@@ -3683,4 +3759,224 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SubscriptionPriorityWai
 	require.NotNil(t, selection.WaitPlan)
 	require.Equal(t, int64(38011), selection.WaitPlan.AccountID)
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+}
+
+func TestReportOpenAIAccountScheduleResultFromForward_FallbackUsesOAuthNormalizedAccountMapping(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	accountID := int64(38021)
+	account := &Account{
+		ID:   accountID,
+		Type: AccountTypeOAuth,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"public-alias": "gpt-5.4-high",
+			},
+		},
+	}
+	ttft := 321
+
+	// Forward may fail before returning a result. The fallback resolver must
+	// still use account mapping and OAuth normalization, otherwise this sample
+	// is stored under the public alias and never participates in the next rank.
+	svc.ReportOpenAIAccountScheduleResultFromForward(
+		accountID,
+		account,
+		"public-alias",
+		"",
+		false,
+		nil,
+		true,
+		&ttft,
+	)
+
+	stats := svc.getOpenAIAccountRuntimeStats()
+	_, normalizedTTFT, normalized, samples, _ := stats.snapshotModelWithMeta(accountID, "gpt-5.4")
+	require.True(t, normalized)
+	require.Equal(t, 321.0, normalizedTTFT)
+	require.Equal(t, int64(1), samples)
+	_, _, publicAlias, publicSamples, _ := stats.snapshotModelWithMeta(accountID, "public-alias")
+	require.False(t, publicAlias)
+	require.Zero(t, publicSamples)
+	_, _, preNormalize, preNormalizeSamples, _ := stats.snapshotModelWithMeta(accountID, "gpt-5.4-high")
+	require.False(t, preNormalize)
+	require.Zero(t, preNormalizeSamples)
+}
+
+func TestReportOpenAIAccountScheduleResultFromForward_FallbackUsesCompactMappingBeforeOAuthNormalization(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	accountID := int64(38022)
+	account := &Account{
+		ID:   accountID,
+		Type: AccountTypeOAuth,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"public-alias": "gpt-5.4-high",
+			},
+			"compact_model_mapping": map[string]any{
+				"gpt-5.4-high": "gpt-5.4-openai-compact",
+			},
+		},
+	}
+	ttft := 654
+
+	svc.ReportOpenAIAccountScheduleResultFromForward(
+		accountID,
+		account,
+		"public-alias",
+		"",
+		true,
+		nil,
+		true,
+		&ttft,
+	)
+
+	stats := svc.getOpenAIAccountRuntimeStats()
+	_, compactTTFT, compact, samples, _ := stats.snapshotModelWithMeta(accountID, "gpt-5.4-openai-compact")
+	require.True(t, compact)
+	require.Equal(t, 654.0, compactTTFT)
+	require.Equal(t, int64(1), samples)
+	_, _, normalizedBase, normalizedBaseSamples, _ := stats.snapshotModelWithMeta(accountID, "gpt-5.4")
+	require.False(t, normalizedBase)
+	require.Zero(t, normalizedBaseSamples)
+}
+
+func TestOpenAIAccountScheduler_ModelScopedRankingUsesAccountMappings(t *testing.T) {
+	fast := openAIPoolProbeTestAccount(38023, 20, UpstreamBillingProbeStatusOK, 2500)
+	slow := openAIPoolProbeTestAccount(38024, 0, UpstreamBillingProbeStatusOK, 1000)
+	fast.Credentials["model_mapping"] = map[string]any{"public-alias": "up-fast"}
+	slow.Credentials["model_mapping"] = map[string]any{"public-alias": "up-slow"}
+	accounts := []Account{fast, slow}
+	stats := newOpenAIAccountRuntimeStats()
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		stats.report(fast.ID, true, intPtrForTest(900), "up-fast")
+		stats.report(slow.ID, true, intPtrForTest(9000), "up-slow")
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
+	scheduler := &defaultOpenAIAccountScheduler{service: svc, stats: stats}
+	ranks, states, usedRuntime, ranked := svc.openAIEffectiveAutoPriorityRankingForRequest(
+		[]*Account{&accounts[0], &accounts[1]}, time.Now(), "public-alias", false,
+	)
+	require.True(t, ranked)
+	require.True(t, usedRuntime)
+	require.Equal(t, 0, ranks[fast.ID])
+	require.Equal(t, 1, ranks[slow.ID])
+	require.True(t, states[fast.ID].UsesRuntime)
+	require.True(t, states[slow.ID].UsesRuntime)
+
+	plan := scheduler.buildOpenAIAccountLoadPlan(
+		context.Background(),
+		OpenAIAccountScheduleRequest{RequestedModel: "public-alias"},
+		[]*Account{&accounts[0], &accounts[1]},
+		map[int64]*AccountLoadInfo{},
+	)
+	require.Len(t, plan.selectionOrder, 2)
+	require.Equal(t, fast.ID, plan.selectionOrder[0].account.ID)
+
+	state := openAIRealTrafficTTFTStateFromStatsForModel(stats, &accounts[0], time.Now(), "up-fast")
+	require.True(t, state.UsesRuntime)
+	require.Equal(t, 900.0, state.TTFTMS)
+}
+
+func TestOpenAIAccountScheduler_CompactRankingUsesCompactMappedModel(t *testing.T) {
+	fast := openAIPoolProbeTestAccount(38025, 20, UpstreamBillingProbeStatusOK, 2500)
+	slow := openAIPoolProbeTestAccount(38026, 0, UpstreamBillingProbeStatusOK, 1000)
+	fast.Credentials["model_mapping"] = map[string]any{"public-alias": "base-fast"}
+	slow.Credentials["model_mapping"] = map[string]any{"public-alias": "base-slow"}
+	fast.Credentials["compact_model_mapping"] = map[string]any{"base-fast": "compact-fast"}
+	slow.Credentials["compact_model_mapping"] = map[string]any{"base-slow": "compact-slow"}
+	accounts := []Account{fast, slow}
+	stats := newOpenAIAccountRuntimeStats()
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		stats.report(fast.ID, true, intPtrForTest(700), "compact-fast")
+		stats.report(slow.ID, true, intPtrForTest(8000), "compact-slow")
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
+	scheduler := &defaultOpenAIAccountScheduler{service: svc, stats: stats}
+
+	plan := scheduler.buildOpenAIAccountLoadPlan(
+		context.Background(),
+		OpenAIAccountScheduleRequest{RequestedModel: "public-alias", RequireCompact: true},
+		[]*Account{&accounts[0], &accounts[1]},
+		map[int64]*AccountLoadInfo{},
+	)
+	require.Len(t, plan.selectionOrder, 2)
+	require.Equal(t, fast.ID, plan.selectionOrder[0].account.ID)
+}
+
+func TestOpenAIAccountScheduler_ExplicitSchedulingModelOverridesRequestedModel(t *testing.T) {
+	fastForScheduling := openAIPoolProbeTestAccount(38027, 20, UpstreamBillingProbeStatusOK, 2500)
+	slowForScheduling := openAIPoolProbeTestAccount(38028, 0, UpstreamBillingProbeStatusOK, 1000)
+	fastForScheduling.Credentials["model_mapping"] = map[string]any{
+		"public-model":  "gpt-5.6-sol",
+		"channel-model": "gpt-5.4",
+	}
+	slowForScheduling.Credentials["model_mapping"] = map[string]any{
+		"public-model":  "gpt-5.6-sol",
+		"channel-model": "gpt-5.5",
+	}
+	accounts := []Account{fastForScheduling, slowForScheduling}
+	stats := newOpenAIAccountRuntimeStats()
+	for i := 0; i < openAIPoolProbeRuntimeSamples; i++ {
+		// The two model keys intentionally disagree on the winner. The explicit
+		// scheduling model must select fastForScheduling; reading RequestedModel
+		// would select slowForScheduling from the shared gpt-5.6-sol samples.
+		stats.report(fastForScheduling.ID, true, intPtrForTest(900), "gpt-5.4")
+		stats.report(slowForScheduling.ID, true, intPtrForTest(9000), "gpt-5.5")
+		stats.report(fastForScheduling.ID, true, intPtrForTest(9000), "gpt-5.6-sol")
+		stats.report(slowForScheduling.ID, true, intPtrForTest(900), "gpt-5.6-sol")
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, openaiAccountStats: stats}
+	scheduler := &defaultOpenAIAccountScheduler{service: svc, stats: stats}
+
+	plan := scheduler.buildOpenAIAccountLoadPlan(
+		context.Background(),
+		OpenAIAccountScheduleRequest{
+			RequestedModel:  "public-model",
+			SchedulingModel: "channel-model",
+		},
+		[]*Account{&accounts[0], &accounts[1]},
+		map[int64]*AccountLoadInfo{},
+	)
+	require.Len(t, plan.selectionOrder, 2)
+	require.Equal(t, fastForScheduling.ID, plan.selectionOrder[0].account.ID)
+}
+
+func TestOpenAIAccountSchedulingRecheckUsesEffectiveSchedulingModelForRuntimeBlock(t *testing.T) {
+	account := &Account{
+		ID:          38029,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"pool_mode": true,
+			"model_mapping": map[string]any{
+				"public-model":  "blocked-upstream",
+				"channel-model": "healthy-upstream",
+			},
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	state := svc.getOpenAIAccountModelTransientState()
+	state.recordImmediateFailure(account.ID, "blocked-upstream", time.Now(), time.Minute)
+
+	// Eligibility is intentionally evaluated against the public model, while
+	// runtime cooling must use the mapped model that the channel will send.
+	got := svc.resolveFreshSchedulableOpenAIAccountBeforeProfitForSchedulingModel(
+		context.Background(), account, PlatformOpenAI, "public-model", "channel-model", false, "",
+	)
+	require.Same(t, account, got)
+
+	// The compatibility wrapper still preserves the legacy single-model
+	// contract, so a direct request for the blocked public mapping is rejected.
+	blocked := svc.resolveFreshSchedulableOpenAIAccountBeforeProfitForSchedulingModel(
+		context.Background(), account, PlatformOpenAI, "public-model", "public-model", false, "",
+	)
+	require.Nil(t, blocked)
+
+	rechecked := svc.recheckSelectedOpenAIAccountFromDBBeforeProfitForSchedulingModel(
+		context.Background(), account, nil, PlatformOpenAI, "public-model", "channel-model", false, "",
+	)
+	require.Same(t, account, rechecked)
 }

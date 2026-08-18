@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -67,8 +68,11 @@ func runCheckForModel(ctx context.Context, provider, endpoint, apiKey, model str
 	mode := bodyOverrideMode(opts)
 
 	start := time.Now()
-	respText, rawBody, statusCode, err := callProvider(ctx, provider, endpoint, apiKey, model, challenge.Prompt, opts)
+	respText, rawBody, statusCode, firstOutputLatency, err := callProvider(ctx, provider, endpoint, apiKey, model, challenge.Prompt, opts)
 	latency := time.Since(start)
+	if firstOutputLatency > 0 {
+		latency = firstOutputLatency
+	}
 	latencyMs := int(latency / time.Millisecond)
 	res.LatencyMs = &latencyMs
 
@@ -220,7 +224,7 @@ func newOpenAICompatibleChatAdapter(path string) providerAdapter {
 				"model":      model,
 				"messages":   []map[string]string{{"role": "user", "content": prompt}},
 				"max_tokens": monitorChallengeMaxTokens,
-				"stream":     false,
+				"stream":     true,
 			})
 		},
 		buildHeaders: func(apiKey string) map[string]string {
@@ -239,7 +243,7 @@ var providerOpenAIResponsesAdapter = providerAdapter{
 			"instructions":      "You are a channel health-check endpoint. Answer the arithmetic challenge exactly and briefly.",
 			"input":             prompt,
 			"max_output_tokens": monitorChallengeMaxTokens,
-			"stream":            false,
+			"stream":            true,
 		})
 	},
 	buildHeaders: func(apiKey string) map[string]string {
@@ -272,29 +276,40 @@ func isSupportedProvider(p string) bool {
 //   - rawBody: 完整响应体的字符串形式（已被 monitorResponseMaxBytes 截断），用于错误路径保留上游真实回包
 //   - status: HTTP 状态码
 //   - err: 网络 / 序列化错误
-func callProvider(ctx context.Context, provider, endpoint, apiKey, model, prompt string, opts *CheckOptions) (extractedText, rawBody string, status int, err error) {
+func callProvider(ctx context.Context, provider, endpoint, apiKey, model, prompt string, opts *CheckOptions) (extractedText, rawBody string, status int, firstOutputLatency time.Duration, err error) {
+	startedAt := time.Now()
 	requestedAPIMode := checkAPIMode(opts)
 	if err := validateAPIMode(provider, requestedAPIMode); err != nil {
-		return "", "", 0, err
+		return "", "", 0, 0, err
 	}
 	adapter, apiMode, ok := providerAdapterFor(provider, requestedAPIMode)
 	if !ok {
-		return "", "", 0, fmt.Errorf("unsupported provider %q", provider)
+		return "", "", 0, 0, fmt.Errorf("unsupported provider %q", provider)
 	}
 	body, err := buildRequestBody(adapter, provider, apiMode, model, prompt, opts)
 	if err != nil {
-		return "", "", 0, err
+		return "", "", 0, 0, err
 	}
 	headers := mergeHeaders(adapter.buildHeaders(apiKey), opts)
 	full := joinURL(endpoint, adapter.buildPath(model))
-	respBytes, status, err := postRawJSON(ctx, full, body, headers)
+	stream := (provider == MonitorProviderOpenAI || provider == MonitorProviderGrok) && gjson.GetBytes(body, "stream").Bool()
+	respBytes, streamText, status, firstOutputAt, err := postRawJSON(ctx, full, body, headers, stream, apiMode)
 	if err != nil {
-		return "", "", status, err
+		return "", "", status, 0, err
+	}
+	if !firstOutputAt.IsZero() {
+		firstOutputLatency = firstOutputAt.Sub(startedAt)
+		if firstOutputLatency < 0 {
+			firstOutputLatency = 0
+		}
+	}
+	if stream {
+		return streamText, string(respBytes), status, firstOutputLatency, nil
 	}
 	if provider == MonitorProviderOpenAI && apiMode == MonitorAPIModeResponses {
-		return extractOpenAIResponsesText(respBytes), string(respBytes), status, nil
+		return extractOpenAIResponsesText(respBytes), string(respBytes), status, 0, nil
 	}
-	return extractMonitorResponseText(adapter, respBytes), string(respBytes), status, nil
+	return extractMonitorResponseText(adapter, respBytes), string(respBytes), status, 0, nil
 }
 
 func extractMonitorResponseText(adapter providerAdapter, respBytes []byte) string {
@@ -504,28 +519,164 @@ func hasNonEmptyBodyValue(v any) bool {
 
 // postRawJSON 发送 POST + 已序列化好的 JSON 字节，限制响应体大小，返回响应字节、HTTP status、错误。
 // adapter 自行 marshal 是为了精确控制字段顺序与类型，所以这里直接收 []byte 而不是 any。
-func postRawJSON(ctx context.Context, fullURL string, payload []byte, headers map[string]string) ([]byte, int, error) {
+func postRawJSON(ctx context.Context, fullURL string, payload []byte, headers map[string]string, stream bool, apiMode string) ([]byte, string, int, time.Time, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(payload))
 	if err != nil {
-		return nil, 0, fmt.Errorf("build request: %w", err)
+		return nil, "", 0, time.Time{}, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	if stream {
+		req.Header.Set("Accept", "text/event-stream")
+	} else {
+		req.Header.Set("Accept", "application/json")
+	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 
 	resp, err := monitorHTTPClient.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("do request: %w", err)
+		return nil, "", 0, time.Time{}, fmt.Errorf("do request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if stream && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		raw, text, firstOutputAt, readErr := readMonitorOpenAIStream(resp.Body, defaultAPIMode(apiMode) == MonitorAPIModeResponses)
+		if readErr != nil {
+			return raw, text, resp.StatusCode, firstOutputAt, readErr
+		}
+		return raw, text, resp.StatusCode, firstOutputAt, nil
+	}
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, monitorResponseMaxBytes))
 	if err != nil {
-		return nil, resp.StatusCode, fmt.Errorf("read body: %w", err)
+		return nil, "", resp.StatusCode, time.Time{}, fmt.Errorf("read body: %w", err)
 	}
-	return respBody, resp.StatusCode, nil
+	return respBody, "", resp.StatusCode, time.Time{}, nil
+}
+
+func readMonitorOpenAIStream(body io.Reader, responsesMode bool) ([]byte, string, time.Time, error) {
+	if body == nil {
+		return nil, "", time.Time{}, errors.New("read stream: empty body")
+	}
+
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 4096), monitorResponseMaxBytes)
+	var raw bytes.Buffer
+	var text strings.Builder
+	var responsesFinalText string
+	eventType := ""
+	dataLines := make([]string, 0, 1)
+	var firstOutputAt time.Time
+
+	dispatch := func() {
+		if len(dataLines) == 0 {
+			eventType = ""
+			return
+		}
+		data := strings.Join(dataLines, "\n")
+		if firstOutputAt.IsZero() && upstreamModelProbePayloadHasVisibleOutput([]byte(data), eventType, responsesMode) {
+			firstOutputAt = time.Now()
+		}
+		if part := monitorOpenAIStreamText(data, eventType, responsesMode); part != "" {
+			_, _ = text.WriteString(part)
+		}
+		if responsesMode {
+			if finalText := monitorOpenAIStreamFinalText(data, eventType); strings.TrimSpace(finalText) != "" {
+				responsesFinalText = finalText
+			}
+		}
+		eventType = ""
+		dataLines = dataLines[:0]
+	}
+
+	for scanner.Scan() {
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		if raw.Len()+len(line)+1 > monitorResponseMaxBytes {
+			return raw.Bytes(), text.String(), firstOutputAt, errors.New("read stream: response too large")
+		}
+		_, _ = raw.WriteString(line)
+		_ = raw.WriteByte('\n')
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			dispatch()
+			continue
+		}
+		if strings.HasPrefix(trimmed, "event:") {
+			eventType = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
+			continue
+		}
+		if strings.HasPrefix(trimmed, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(trimmed, "data:")))
+		}
+	}
+	dispatch()
+	if err := scanner.Err(); err != nil {
+		return raw.Bytes(), text.String(), firstOutputAt, fmt.Errorf("read stream: %w", err)
+	}
+	streamText := text.String()
+	if responsesMode && streamText == "" {
+		streamText = responsesFinalText
+	}
+	return raw.Bytes(), streamText, firstOutputAt, nil
+}
+
+func monitorOpenAIStreamText(data, eventType string, responsesMode bool) string {
+	trimmed := strings.TrimSpace(data)
+	if trimmed == "" || trimmed == "[DONE]" || !gjson.Valid(trimmed) {
+		return ""
+	}
+	payload := []byte(trimmed)
+	if responsesMode {
+		payloadType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+		if payloadType == "" {
+			payloadType = strings.TrimSpace(eventType)
+		}
+		// Responses streams commonly repeat the same text in delta, done and
+		// completed events. Only deltas are incremental; final snapshots are
+		// handled separately as a fallback when an upstream emits no deltas.
+		if payloadType == "response.output_text.delta" {
+			if delta := gjson.GetBytes(payload, "delta"); delta.Type == gjson.String {
+				return delta.String()
+			}
+		}
+		return ""
+	}
+
+	var parts []string
+	for _, choice := range gjson.GetBytes(payload, "choices").Array() {
+		for _, path := range []string{"delta.content", "delta.reasoning_content", "delta.reasoning", "message.content"} {
+			if value := choice.Get(path); value.Type == gjson.String && value.String() != "" {
+				parts = append(parts, value.String())
+				break
+			}
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+func monitorOpenAIStreamFinalText(data, eventType string) string {
+	trimmed := strings.TrimSpace(data)
+	if trimmed == "" || trimmed == "[DONE]" || !gjson.Valid(trimmed) {
+		return ""
+	}
+	payload := []byte(trimmed)
+	payloadType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+	if payloadType == "" {
+		payloadType = strings.TrimSpace(eventType)
+	}
+
+	if payloadType == "response.output_text.done" {
+		if value := gjson.GetBytes(payload, "text"); value.Type == gjson.String {
+			return value.String()
+		}
+	}
+	if payloadType != "response.completed" && payloadType != "response.done" {
+		return ""
+	}
+	if response := gjson.GetBytes(payload, "response"); response.Exists() {
+		return extractOpenAIResponsesText([]byte(response.Raw))
+	}
+	return extractOpenAIResponsesText(payload)
 }
 
 // joinURL 把 base origin 与 path 拼成完整 URL。

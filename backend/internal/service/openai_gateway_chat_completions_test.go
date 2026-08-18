@@ -80,6 +80,7 @@ func TestHandleChatStreamingResponse_ClassifiesHTTP2ReadError(t *testing.T) {
 
 	require.Error(t, err)
 	require.NotNil(t, result)
+	require.NotNil(t, result.FirstTokenMs, "visible output must still record TTFT when the guard is disabled")
 	require.True(t, c.Writer.Written(), "partial output must make replay unsafe")
 	code, message, ok := OpenAIUpstreamStreamReadErrorDetails(err)
 	require.True(t, ok)
