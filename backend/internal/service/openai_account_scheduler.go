@@ -1390,7 +1390,12 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		candidates:                candidates,
 		staleSnapshotCompactRetry: staleSnapshotCompactRetry,
 		candidateCount:            len(candidates),
-		includeOverflowFallback:   probeRanked,
+		// Auto-priority already provides an ordered failover list. Do not append
+		// every account outside TopK to the synchronous request path: each extra
+		// candidate can incur a Redis slot probe plus transport/DB recheck. The
+		// cost-aware path enables overflow explicitly below when it has a reason
+		// to expand beyond TopK.
+		includeOverflowFallback:   false,
 	}
 	if len(candidates) == 0 {
 		plan.selectionOrder = s.buildOpenAISelectionOrder(req, plan)

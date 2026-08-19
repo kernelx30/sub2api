@@ -42,6 +42,17 @@
             {{ group.name }}
           </option>
         </select>
+        <select
+          v-model="currentModel"
+          class="h-8 min-w-[10rem] rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-200"
+          aria-label="排序模型"
+          data-testid="pool-ranking-model-select"
+        >
+          <option value="">通用模型</option>
+          <option v-for="model in modelOptions" :key="model" :value="model">
+            {{ model }}
+          </option>
+        </select>
         <button
           type="button"
           class="btn btn-secondary h-8 w-8 p-0"
@@ -176,6 +187,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const currentGroupId = ref<number | null>(null)
+const currentModel = ref('')
 const ranking = ref<PoolAutoPriorityRankingResponse | null>(null)
 const entries = ref<PoolAutoPriorityRankingEntry[]>([])
 const loading = ref(false)
@@ -190,6 +202,18 @@ const groupOptions = computed(() =>
     .sort((left, right) => left.sort_order - right.sort_order || left.id - right.id)
 )
 
+const modelOptions = computed(() => {
+  const group = groupOptions.value.find(item => item.id === currentGroupId.value)
+  const models = new Set<string>()
+  for (const pricing of group?.model_pricing ?? []) {
+    for (const model of pricing.models ?? []) {
+      if (model.trim()) models.add(model.trim())
+    }
+  }
+  if (group?.default_mapped_model?.trim()) models.add(group.default_mapped_model.trim())
+  return [...models].sort()
+})
+
 function syncGroupSelection(): void {
   const selected = Number(props.selectedGroup)
   if (Number.isInteger(selected) && groupOptions.value.some(group => group.id === selected)) {
@@ -200,6 +224,7 @@ function syncGroupSelection(): void {
     return
   }
   currentGroupId.value = groupOptions.value[0]?.id ?? null
+  currentModel.value = ''
 }
 
 async function loadRanking(): Promise<void> {
@@ -213,7 +238,9 @@ async function loadRanking(): Promise<void> {
   loading.value = true
   error.value = false
   try {
-    const result = await adminAPI.accounts.getPoolAutoPriorityRanking(groupId, 50)
+    const result = currentModel.value
+      ? await adminAPI.accounts.getPoolAutoPriorityRanking(groupId, 50, currentModel.value)
+      : await adminAPI.accounts.getPoolAutoPriorityRanking(groupId, 50)
     if (sequence !== requestSequence) return
     ranking.value = result
     entries.value = result.items
@@ -301,7 +328,15 @@ watch(
   { immediate: true }
 )
 
-watch(currentGroupId, () => {
+watch(currentGroupId, (next, previous) => {
+  if (next !== previous) currentModel.value = ''
+  entries.value = []
+  ranking.value = null
+  emit('updated', [])
+  void loadRanking()
+})
+
+watch(currentModel, () => {
   entries.value = []
   ranking.value = null
   emit('updated', [])
